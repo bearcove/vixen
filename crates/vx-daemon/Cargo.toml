@@ -21,5 +21,6 @@ vx-manifest = { workspace = true }
 vx-casd = { workspace = true }
 vx-execd = { workspace = true }
 vx-toolchain = { path = "../vx-toolchain" }
+vx-toolchain-proto = { workspace = true }
 vx-report = { workspace = true }
 vx-rs = { path = "../vx-rs" }

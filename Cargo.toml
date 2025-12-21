@@ -45,6 +45,7 @@ thiserror = "2"
 
 # async
 tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
 
 # terminal
 owo-colors = "4"

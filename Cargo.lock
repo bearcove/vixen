@@ -2831,6 +2831,7 @@ dependencies = [
  "vx-report",
  "vx-rs",
  "vx-toolchain",
+ "vx-toolchain-proto",
 ]
 
 [[package]]
@@ -2855,16 +2856,21 @@ dependencies = [
 name = "vx-execd"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "camino",
  "eyre",
  "facet",
+ "futures-util",
  "jiff",
  "rapace",
+ "tar",
  "tokio",
  "tracing",
  "vx-cas-proto",
  "vx-cc",
  "vx-exec-proto",
+ "vx-toolchain-proto",
+ "xz2",
 ]
 
 [[package]]
