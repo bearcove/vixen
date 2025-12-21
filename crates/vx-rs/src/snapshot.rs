@@ -145,6 +145,89 @@ pub fn build_maximalist_snapshot(
     Ok(relative_paths)
 }
 
+/// Build a snapshot for a registry crate's source directory
+///
+/// Registry crates are materialized to `.vx/registry/<name>/<version>/` and
+/// we need to include all their *.rs files in the snapshot when building
+/// dependent crates.
+///
+/// # Arguments
+///
+/// * `registry_source_dir` - Absolute path to materialized registry crate
+///   (e.g., `/path/to/workspace/.vx/registry/serde/1.0.197/`)
+/// * `workspace_root` - Workspace root for computing relative paths
+///
+/// # Returns
+///
+/// A list of workspace-relative paths that should be included in the snapshot.
+pub fn collect_registry_crate_sources(
+    registry_source_dir: &Utf8Path,
+    workspace_root: &Utf8Path,
+) -> Result<Vec<Utf8PathBuf>, SnapshotError> {
+    let mut files = Vec::new();
+
+    // Collect all *.rs files
+    collect_rs_files_recursive(registry_source_dir, &mut files)?;
+
+    // Also include the Cargo.toml
+    let cargo_toml = registry_source_dir.join("Cargo.toml");
+    if cargo_toml.exists() {
+        files.push(cargo_toml);
+    }
+
+    // Convert to workspace-relative paths
+    let mut relative_paths = Vec::new();
+    for path in files {
+        if let Ok(rel_path) = path.strip_prefix(workspace_root) {
+            relative_paths.push(rel_path.to_owned());
+        }
+    }
+
+    // Sort for determinism
+    relative_paths.sort();
+    relative_paths.dedup();
+
+    Ok(relative_paths)
+}
+
+/// Build a combined snapshot for a crate and all its registry dependencies
+///
+/// This is the main entry point for creating snapshots when building crates
+/// that depend on registry crates.
+///
+/// # Arguments
+///
+/// * `crate_root_dir` - Directory containing the user's crate
+/// * `workspace_root` - Workspace root for computing relative paths
+/// * `registry_source_dirs` - Materialized registry crate directories
+/// * `include_workspace_manifest` - Whether to include workspace Cargo.toml/lock
+///
+/// # Returns
+///
+/// A list of workspace-relative paths for the combined snapshot.
+pub fn build_snapshot_with_registry_deps(
+    crate_root_dir: &Utf8Path,
+    workspace_root: &Utf8Path,
+    registry_source_dirs: &[Utf8PathBuf],
+    include_workspace_manifest: bool,
+) -> Result<Vec<Utf8PathBuf>, SnapshotError> {
+    // Start with the main crate's snapshot
+    let mut all_paths =
+        build_maximalist_snapshot(crate_root_dir, workspace_root, include_workspace_manifest)?;
+
+    // Add all registry dependency sources
+    for registry_dir in registry_source_dirs {
+        let registry_paths = collect_registry_crate_sources(registry_dir, workspace_root)?;
+        all_paths.extend(registry_paths);
+    }
+
+    // Sort and dedup the combined result
+    all_paths.sort();
+    all_paths.dedup();
+
+    Ok(all_paths)
+}
+
 /// Recursively collect all *.rs files in a directory
 fn collect_rs_files_recursive(
     dir: &Utf8Path,

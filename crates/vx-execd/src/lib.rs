@@ -2,7 +2,11 @@
 //!
 //! Implements the Exec rapace service trait.
 //! Runs rustc and zig cc, streams outputs to CAS.
-//! Materializes toolchains on-demand from CAS.
+//! Materializes toolchains and registry crates on-demand from CAS.
+
+mod registry;
+
+pub use registry::RegistryMaterializer;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;

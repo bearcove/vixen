@@ -3,13 +3,22 @@
 //! Implements the Cas rapace service trait.
 //! CAS stores immutable content. Clients produce working directories.
 
+mod registry;
+
 use camino::Utf8PathBuf;
 use std::collections::HashMap;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use vx_cas_proto::*;
-use vx_toolchain_proto::*;
+use vx_toolchain_proto::{
+    CasToolchain, EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult,
+    MATERIALIZATION_LAYOUT_VERSION, MaterializationPlan, MaterializeStep, RustChannel, RustToolchainSpec, SpecKey as ToolchainSpecKey,
+    TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentBlob, ToolchainKind, ToolchainManifest,
+    ZigToolchainSpec,
+};
+
+pub use registry::RegistryManager;
 
 /// CAS service implementation
 pub struct CasService {
@@ -21,6 +30,8 @@ pub struct CasService {
     uploads: Mutex<HashMap<u64, ChunkedUpload>>,
     /// Toolchain acquisition manager (handles inflight deduplication)
     toolchain_manager: ToolchainManager,
+    /// Registry crate acquisition manager (handles inflight deduplication)
+    registry_manager: RegistryManager,
 }
 
 /// State for an in-progress chunked upload
@@ -37,6 +48,7 @@ impl CasService {
             next_upload_id: AtomicU64::new(1),
             uploads: Mutex::new(HashMap::new()),
             toolchain_manager: ToolchainManager::new(),
+            registry_manager: RegistryManager::new(),
         }
     }
 
@@ -77,7 +89,7 @@ impl CasService {
         self.root.join("toolchains/spec")
     }
 
-    fn spec_path(&self, spec_key: &SpecKey) -> Utf8PathBuf {
+    fn spec_path(&self, spec_key: &ToolchainSpecKey) -> Utf8PathBuf {
         let hex = spec_key.to_hex();
         self.toolchains_spec_dir().join(&hex[..2]).join(&hex)
     }
@@ -88,7 +100,7 @@ impl CasService {
     /// DURABILITY: Uses O_EXCL + fsync + directory sync for crash safety.
     fn publish_spec_mapping(
         &self,
-        spec_key: &SpecKey,
+        spec_key: &ToolchainSpecKey,
         manifest_hash: &Blake3Hash,
     ) -> std::io::Result<bool> {
         use std::fs::{File, OpenOptions};
@@ -129,7 +141,7 @@ impl CasService {
     ///
     /// If the mapping file exists but is unreadable/corrupt, we treat it as
     /// a cache miss (re-acquire will fix it via first-writer-wins).
-    fn lookup_spec(&self, spec_key: &SpecKey) -> Option<Blake3Hash> {
+    fn lookup_spec(&self, spec_key: &ToolchainSpecKey) -> Option<Blake3Hash> {
         let path = self.spec_path(spec_key);
         let content = std::fs::read_to_string(&path).ok()?;
         Blake3Hash::from_hex(content.trim())
@@ -326,11 +338,11 @@ type InflightFuture = Arc<tokio::sync::OnceCell<EnsureToolchainResult>>;
 /// Manages in-flight toolchain acquisitions with deduplication.
 ///
 /// Inflight entries are never removed. This is intentional:
-/// - Memory cost is negligible (one OnceCell per unique SpecKey)
+/// - Memory cost is negligible (one OnceCell per unique ToolchainSpecKey)
 /// - Avoids race between CAS lookup miss and inflight insert
 /// - Once CAS has the mapping, lookup_fn fast-paths and OnceCell is never awaited
 pub struct ToolchainManager {
-    inflight: tokio::sync::Mutex<HashMap<SpecKey, InflightFuture>>,
+    inflight: tokio::sync::Mutex<HashMap<ToolchainSpecKey, InflightFuture>>,
 }
 
 impl ToolchainManager {
@@ -345,7 +357,7 @@ impl ToolchainManager {
     /// `lookup_fn` is async because CAS is remote in production.
     pub async fn ensure<L, LFut, A, AFut>(
         &self,
-        spec_key: SpecKey,
+        spec_key: ToolchainSpecKey,
         lookup_fn: L,
         acquire_fn: A,
     ) -> EnsureToolchainResult
@@ -361,7 +373,7 @@ impl ToolchainManager {
                 spec_key: Some(spec_key),
                 toolchain_id: None, // Caller should read manifest for ID
                 manifest_hash: Some(manifest_hash),
-                status: EnsureStatus::Hit,
+                status: ToolchainEnsureStatus::Hit,
                 error: None,
             };
         }
@@ -401,7 +413,7 @@ impl CasToolchain for CasService {
                     spec_key: None, // Can't compute - no sentinel hash
                     toolchain_id: None,
                     manifest_hash: None,
-                    status: EnsureStatus::Failed,
+                    status: ToolchainEnsureStatus::Failed,
                     error: Some(format!("invalid spec: {}", e)),
                 };
             }
@@ -441,7 +453,7 @@ impl CasToolchain for CasService {
                                 spec_key: Some(spec_key),
                                 toolchain_id: None,
                                 manifest_hash: None,
-                                status: EnsureStatus::Failed,
+                                status: ToolchainEnsureStatus::Failed,
                                 error: Some(format!("{}", e)),
                             };
                         }
@@ -453,7 +465,7 @@ impl CasToolchain for CasService {
                             spec_key: Some(spec_key),
                             toolchain_id: None,
                             manifest_hash: None,
-                            status: EnsureStatus::Failed,
+                            status: ToolchainEnsureStatus::Failed,
                             error: Some(format!("rustc tarball invalid: {}", e)),
                         };
                     }
@@ -462,7 +474,7 @@ impl CasToolchain for CasService {
                             spec_key: Some(spec_key),
                             toolchain_id: None,
                             manifest_hash: None,
-                            status: EnsureStatus::Failed,
+                            status: ToolchainEnsureStatus::Failed,
                             error: Some(format!("rust-std tarball invalid: {}", e)),
                         };
                     }
@@ -518,7 +530,7 @@ impl CasToolchain for CasService {
                         spec_key: Some(spec_key),
                         toolchain_id: Some(acquired.id.0),
                         manifest_hash: Some(manifest_hash),
-                        status: EnsureStatus::Downloaded,
+                        status: ToolchainEnsureStatus::Downloaded,
                         error: None,
                     }
                 },
@@ -532,7 +544,7 @@ impl CasToolchain for CasService {
             spec_key: None,
             toolchain_id: None,
             manifest_hash: None,
-            status: EnsureStatus::Failed,
+            status: ToolchainEnsureStatus::Failed,
             error: Some("Zig toolchain acquisition not yet implemented".to_string()),
         }
     }
@@ -543,7 +555,7 @@ impl CasToolchain for CasService {
         facet_json::from_str(&json).ok()
     }
 
-    async fn lookup_toolchain_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash> {
+    async fn lookup_toolchain_spec(&self, spec_key: ToolchainSpecKey) -> Option<Blake3Hash> {
         self.lookup_spec(&spec_key)
     }
 

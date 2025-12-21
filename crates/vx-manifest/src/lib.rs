@@ -1,16 +1,23 @@
-//! Cargo.toml parsing for vx
+//! Cargo.toml and Cargo.lock parsing for vx
 //!
-//! Parses `Cargo.toml` into a typed internal model and validates
-//! that only the v0-supported subset is used.
+//! This crate provides:
+//! - `Manifest`: Cargo.toml parsing with v0 subset validation
+//! - `Lockfile`: Cargo.lock parsing with reachability analysis
 //!
-//! ## v0.3 Subset
+//! ## v0.3 Subset (Cargo.toml)
 //!
 //! - Package with [lib] or [[bin]] targets (at least one required)
 //! - Path dependencies only: `foo = { path = "../foo" }`
 //! - No features, no optional deps, no dev-deps/build-deps
 //! - No build.rs, proc-macros, tests/benches/examples
+//!
+//! ## Lockfile Support
+//!
+//! - Supports Cargo.lock v3 and v4 formats
+//! - Computes reachable packages from root crate
+//! - Validates registry packages have checksums
 
-pub mod full;
+pub mod lockfile;
 
 use std::collections::HashMap;
 
@@ -95,6 +102,15 @@ pub struct PathDependency {
     pub path: Utf8PathBuf,
 }
 
+/// A versioned (registry) dependency
+#[derive(Debug, Clone)]
+pub struct VersionDependency {
+    /// Dependency name (used as extern crate name)
+    pub name: String,
+    /// Version requirement string (e.g., "1.0", "^1.2.3")
+    pub version: String,
+}
+
 /// Parsed and validated manifest (v0.3 subset)
 #[derive(Debug, Clone)]
 pub struct Manifest {
@@ -106,6 +122,8 @@ pub struct Manifest {
     pub bin: Option<BinTarget>,
     /// Path dependencies
     pub deps: Vec<PathDependency>,
+    /// Versioned (registry) dependencies - require Cargo.lock
+    pub version_deps: Vec<VersionDependency>,
 }
 
 impl Manifest {
@@ -122,6 +140,12 @@ impl Manifest {
     /// Get the crate name (with hyphens converted to underscores)
     pub fn crate_name(&self) -> String {
         self.name.replace('-', "_")
+    }
+
+    /// Returns true if this manifest has versioned (registry) dependencies.
+    /// If true, a Cargo.lock file is required.
+    pub fn has_version_deps(&self) -> bool {
+        !self.version_deps.is_empty()
     }
 }
 
@@ -311,7 +335,7 @@ impl Manifest {
         let edition = package.edition.unwrap_or_default();
 
         // Parse dependencies
-        let deps = parse_dependencies(raw.dependencies)?;
+        let parsed_deps = parse_dependencies(raw.dependencies)?;
 
         // Determine library target
         let lib = determine_lib_target(&name, raw.lib, base_dir);
@@ -329,47 +353,50 @@ impl Manifest {
             edition,
             lib,
             bin,
-            deps,
+            deps: parsed_deps.path_deps,
+            version_deps: parsed_deps.version_deps,
         })
     }
 }
 
-/// Parse [dependencies] table, extracting only path dependencies
+/// Result of parsing dependencies
+struct ParsedDependencies {
+    path_deps: Vec<PathDependency>,
+    version_deps: Vec<VersionDependency>,
+}
+
+/// Parse [dependencies] table, extracting path and version dependencies
 fn parse_dependencies(
     deps_map: Option<HashMap<String, RawDependency>>,
-) -> Result<Vec<PathDependency>, ManifestError> {
+) -> Result<ParsedDependencies, ManifestError> {
     let Some(deps) = deps_map else {
-        return Ok(Vec::new());
+        return Ok(ParsedDependencies {
+            path_deps: Vec::new(),
+            version_deps: Vec::new(),
+        });
     };
 
-    let mut result = Vec::new();
+    let mut path_deps = Vec::new();
+    let mut version_deps = Vec::new();
 
     for (name, dep) in deps {
         match dep {
-            RawDependency::Version(_) => {
-                return Err(ManifestError::InvalidDependency {
-                    name,
-                    reason: "version dependencies are not supported, only path = \"...\"".into(),
-                });
+            RawDependency::Version(version) => {
+                // Simple version string: `foo = "1.0"`
+                version_deps.push(VersionDependency { name, version });
             }
             RawDependency::Table(table) => {
-                // Check for unsupported fields
-                if table.version.is_some() {
-                    return Err(ManifestError::InvalidDependency {
-                        name,
-                        reason: "version field is not supported, only path dependencies".into(),
-                    });
-                }
+                // Check for unsupported fields first
                 if table.git.is_some() {
                     return Err(ManifestError::InvalidDependency {
                         name,
-                        reason: "git dependencies are not supported, only path dependencies".into(),
+                        reason: "git dependencies are not supported".into(),
                     });
                 }
                 if table.registry.is_some() {
                     return Err(ManifestError::InvalidDependency {
                         name,
-                        reason: "registry dependencies are not supported".into(),
+                        reason: "custom registry dependencies are not supported".into(),
                     });
                 }
                 if table.features.is_some() {
@@ -397,23 +424,43 @@ fn parse_dependencies(
                     });
                 }
 
-                // Extract path (required)
-                let Some(path) = table.path else {
-                    return Err(ManifestError::InvalidDependency {
-                        name,
-                        reason: "missing 'path' field, only path dependencies are supported".into(),
-                    });
-                };
-
-                result.push(PathDependency {
-                    name,
-                    path: Utf8PathBuf::from(path),
-                });
+                // Determine dependency type: path or version
+                match (&table.path, &table.version) {
+                    (Some(path), None) => {
+                        // Path dependency: `foo = { path = "../foo" }`
+                        path_deps.push(PathDependency {
+                            name,
+                            path: Utf8PathBuf::from(path),
+                        });
+                    }
+                    (None, Some(version)) => {
+                        // Version dependency: `foo = { version = "1.0" }`
+                        version_deps.push(VersionDependency {
+                            name,
+                            version: version.clone(),
+                        });
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(ManifestError::InvalidDependency {
+                            name,
+                            reason: "cannot specify both 'path' and 'version'".into(),
+                        });
+                    }
+                    (None, None) => {
+                        return Err(ManifestError::InvalidDependency {
+                            name,
+                            reason: "missing 'path' or 'version' field".into(),
+                        });
+                    }
+                }
             }
         }
     }
 
-    Ok(result)
+    Ok(ParsedDependencies {
+        path_deps,
+        version_deps,
+    })
 }
 
 /// Determine the library target from raw manifest data
@@ -423,37 +470,34 @@ fn determine_lib_target(
     base_dir: Option<&Utf8Path>,
 ) -> Option<LibTarget> {
     if let Some(lib) = raw_lib {
-        // Explicit [lib] section
+        // Explicit [lib] section - always trust it
         let path = if let Some(p) = lib.path {
             if let Some(base) = base_dir {
                 base.join(&p)
             } else {
                 Utf8PathBuf::from(p)
             }
+        } else if let Some(base) = base_dir {
+            base.join("src/lib.rs")
         } else {
-            // No explicit path, use default
-            if let Some(base) = base_dir {
-                base.join("src/lib.rs")
-            } else {
-                Utf8PathBuf::from("src/lib.rs")
-            }
+            Utf8PathBuf::from("src/lib.rs")
         };
 
         let name = lib.name.unwrap_or_else(|| package_name.replace('-', "_"));
         Some(LibTarget { name, path })
     } else if let Some(base) = base_dir {
-        // Only auto-detect src/lib.rs when we have a base_dir
-        let default_lib_path = base.join("src/lib.rs");
-        if default_lib_path.exists() {
+        // Auto-detect src/lib.rs only when we have a known base directory
+        let lib_path = base.join("src/lib.rs");
+        if lib_path.exists() {
             Some(LibTarget {
                 name: package_name.replace('-', "_"),
-                path: default_lib_path,
+                path: lib_path,
             })
         } else {
             None
         }
     } else {
-        // No base_dir means we can't auto-detect targets
+        // No explicit [lib] and no base_dir - cannot auto-detect
         None
     }
 }
@@ -473,13 +517,10 @@ fn determine_bin_target(
                 } else {
                     Utf8PathBuf::from(p)
                 }
+            } else if let Some(base) = base_dir {
+                base.join("src/main.rs")
             } else {
-                // No explicit path, use default
-                if let Some(base) = base_dir {
-                    base.join("src/main.rs")
-                } else {
-                    Utf8PathBuf::from("src/main.rs")
-                }
+                Utf8PathBuf::from("src/main.rs")
             };
 
             let name = bin.name.unwrap_or_else(|| package_name.to_string());
@@ -487,19 +528,19 @@ fn determine_bin_target(
         }
     }
 
-    // Only auto-detect src/main.rs when we have a base_dir
+    // Auto-detect src/main.rs only when we have a known base directory
     if let Some(base) = base_dir {
-        let default_main_path = base.join("src/main.rs");
-        if default_main_path.exists() {
+        let main_path = base.join("src/main.rs");
+        if main_path.exists() {
             Some(BinTarget {
                 name: package_name.to_string(),
-                path: default_main_path,
+                path: main_path,
             })
         } else {
             None
         }
     } else {
-        // No base_dir means we can't auto-detect targets
+        // No explicit [[bin]] and no base_dir - cannot auto-detect
         None
     }
 }
@@ -606,7 +647,7 @@ common = { path = "../common" }
     }
 
     #[test]
-    fn reject_version_dependency() {
+    fn parse_version_dependency_simple() {
         let dir = tempfile::tempdir().unwrap();
         let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
         std::fs::create_dir_all(base.join("src")).unwrap();
@@ -619,8 +660,53 @@ name = "app"
 [dependencies]
 serde = "1.0"
 "#;
-        let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
-        assert!(matches!(err, ManifestError::InvalidDependency { name, .. } if name == "serde"));
+        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        assert_eq!(manifest.version_deps.len(), 1);
+        assert_eq!(manifest.version_deps[0].name, "serde");
+        assert_eq!(manifest.version_deps[0].version, "1.0");
+        assert!(manifest.has_version_deps());
+    }
+
+    #[test]
+    fn parse_version_dependency_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let toml = r#"
+[package]
+name = "app"
+
+[dependencies]
+serde = { version = "1.0.197" }
+"#;
+        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        assert_eq!(manifest.version_deps.len(), 1);
+        assert_eq!(manifest.version_deps[0].name, "serde");
+        assert_eq!(manifest.version_deps[0].version, "1.0.197");
+    }
+
+    #[test]
+    fn parse_mixed_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let toml = r#"
+[package]
+name = "app"
+
+[dependencies]
+serde = "1.0"
+mylib = { path = "../mylib" }
+"#;
+        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        assert_eq!(manifest.deps.len(), 1);
+        assert_eq!(manifest.deps[0].name, "mylib");
+        assert_eq!(manifest.version_deps.len(), 1);
+        assert_eq!(manifest.version_deps[0].name, "serde");
     }
 
     #[test]
