@@ -145,7 +145,15 @@ If a versioned dep exists but Cargo.lock is missing or doesn’t contain a match
 Before accepting the tarball:
 - Ensure exactly one top-level directory.
 - Reject absolute paths and `..` components.
-- Reject symlink escapes.
+- Reject symlink escapes (symlinks pointing to `/` or containing `..`).
+- **Reject all symlinks entirely** (not just escaping ones).
+
+**Rationale for rejecting all symlinks**: While non-escaping symlinks are technically safe,
+preserving them through the CAS→execd pipeline adds complexity (manifest format changes,
+platform-specific extraction logic). In practice, crates.io crates rarely use symlinks—
+cargo's own packaging strips them. If we encounter a crate that legitimately needs symlinks,
+we can revisit this decision. For now, fail-fast with a clear error is better than silent
+breakage (extracting symlinks as empty/broken files).
 
 This validation belongs in casd (like toolchain validation) to keep execd simple.
 

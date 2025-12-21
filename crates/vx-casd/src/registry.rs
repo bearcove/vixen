@@ -223,20 +223,14 @@ fn validate_crate_tarball(tarball_bytes: &[u8]) -> Result<(), String> {
             }
         }
 
-        // Check for symlink escapes
+        // Reject all symlinks - we don't preserve them through the CAS→execd pipeline,
+        // and extracting them as regular files would cause silent breakage.
+        // Cargo's packaging typically strips symlinks anyway.
         if entry.header().entry_type().is_symlink() {
-            if let Ok(link_target) = entry.link_name() {
-                if let Some(target) = link_target {
-                    // Reject symlinks that start with / or contain ..
-                    let target_str = target.to_string_lossy();
-                    if target_str.starts_with('/') || target_str.contains("..") {
-                        return Err(format!(
-                            "symlink escape in tarball: {:?} -> {:?}",
-                            path, target
-                        ));
-                    }
-                }
-            }
+            return Err(format!(
+                "symlinks not supported in crate tarballs: {:?}",
+                path
+            ));
         }
 
         // Track top-level directory

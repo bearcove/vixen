@@ -80,6 +80,15 @@ pub enum CrateGraphError {
 
     #[error("registry crate not materialized: {name} {version}")]
     RegistryNotMaterialized { name: String, version: String },
+
+    #[error(
+        "registry crate '{name}' {version} depends on path crate '{dep_name}', which is not supported"
+    )]
+    RegistryDependsOnPath {
+        name: String,
+        version: String,
+        dep_name: String,
+    },
 }
 
 /// Type of crate target
@@ -682,8 +691,18 @@ impl CrateGraph {
                 });
             }
 
+            // Check for build.rs - we don't support build scripts yet
+            let crate_dir = self.workspace_root.join(workspace_rel);
+            if crate_dir.join("build.rs").exists() {
+                return Err(CrateGraphError::RegistryBuildScript {
+                    name: info.name.clone(),
+                    version: info.version.clone(),
+                });
+            }
+
             let lib = manifest.lib.as_ref().unwrap();
-            let crate_root_rel = workspace_rel.join(&lib.path);
+            // lib.path is absolute (manifest parsed with base_dir), normalize to workspace-relative
+            let crate_root_rel = normalize_path(&lib.path, &self.workspace_root)?;
 
             let source = CrateSource::Registry {
                 name: info.name.clone(),
@@ -736,8 +755,14 @@ impl CrateGraph {
                                 crate_id: dep_id,
                             });
                         }
+                    } else {
+                        // Path deps of registry crates are not supported
+                        return Err(CrateGraphError::RegistryDependsOnPath {
+                            name: info.name.clone(),
+                            version: info.version.clone(),
+                            dep_name: dep_pkg.name.clone(),
+                        });
                     }
-                    // Path deps of registry crates are not supported in v1
                 }
             }
 
@@ -746,7 +771,8 @@ impl CrateGraph {
         }
 
         // Phase 3: Link path crates to their registry deps
-        // We need to re-walk path manifests to connect version_deps
+        // We resolve via the path crate's lockfile entry and its dependency list
+        // to correctly handle cases with multiple versions of the same crate.
         for (_id, node) in self.nodes.iter_mut() {
             if node.source.is_path() {
                 let manifest_path = self
@@ -754,16 +780,31 @@ impl CrateGraph {
                     .join(&node.workspace_rel)
                     .join("Cargo.toml");
                 if let Ok(manifest) = Manifest::from_path(&manifest_path) {
-                    for version_dep in &manifest.version_deps {
-                        // Find in lockfile
-                        if let Some(pkg) = reachable.find_by_name_prefix(&version_dep.name) {
-                            if pkg.is_registry() {
-                                let dep_key = (pkg.name.clone(), pkg.version.clone());
-                                if let Some(&dep_id) = registry_id_map.get(&dep_key) {
-                                    node.deps.push(DepEdge {
-                                        extern_name: version_dep.name.replace('-', "_"),
-                                        crate_id: dep_id,
-                                    });
+                    // Find this path crate in the lockfile to get its dependency list.
+                    // Use find_path_package to ensure we get the path entry, not a registry
+                    // crate with the same name.
+                    if let Some(path_pkg) = reachable.find_path_package(&manifest.name) {
+                        for version_dep in &manifest.version_deps {
+                            // Search in the path crate's lockfile dependencies for the correct version
+                            for dep_spec in &path_pkg.dependencies {
+                                // dep_spec format: "name", "name version", or "name version (source)"
+                                let dep_name =
+                                    dep_spec.split_whitespace().next().unwrap_or(dep_spec);
+                                if dep_name == version_dep.name {
+                                    // Found the matching dep - resolve it via the lockfile
+                                    if let Some(dep_pkg) = reachable.find_dependency(dep_spec) {
+                                        if dep_pkg.is_registry() {
+                                            let dep_key =
+                                                (dep_pkg.name.clone(), dep_pkg.version.clone());
+                                            if let Some(&dep_id) = registry_id_map.get(&dep_key) {
+                                                node.deps.push(DepEdge {
+                                                    extern_name: version_dep.name.replace('-', "_"),
+                                                    crate_id: dep_id,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    break; // Found the dep, no need to continue
                                 }
                             }
                         }

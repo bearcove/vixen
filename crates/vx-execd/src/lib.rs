@@ -237,9 +237,12 @@ impl<C: Cas + CasToolchain> ExecService<C> {
             )
             .map_err(|_| "non-UTF8 path in tarball".to_string())?;
 
-            // Security: validate no path traversal or symlink escape
-            if stripped_path.as_str().contains("..") {
-                return Err(format!("invalid path in tarball: {}", stripped_path));
+            // Security: validate no path traversal (use component-based check to avoid
+            // false positives on valid filenames like "foo..rs")
+            for component in stripped_path.components() {
+                if matches!(component, camino::Utf8Component::ParentDir) {
+                    return Err(format!("path traversal in tarball: {}", stripped_path));
+                }
             }
 
             let target_path = dest.join(&stripped_path);

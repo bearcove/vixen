@@ -154,6 +154,14 @@ impl Lockfile {
         self.packages.iter().find(|p| p.name == name)
     }
 
+    /// Find a path package by name (source is None).
+    /// Use this for root package lookup to avoid matching registry crates.
+    pub fn find_path_by_name(&self, name: &str) -> Option<&LockPackage> {
+        self.packages
+            .iter()
+            .find(|p| p.name == name && p.source.is_none())
+    }
+
     /// Find a package by name and version
     pub fn find_by_name_version(&self, name: &str, version: &str) -> Option<&LockPackage> {
         self.packages
@@ -273,6 +281,18 @@ impl ReachablePackages {
             .map(|&idx| &self.packages[idx])
     }
 
+    /// Find a path package by name (source.is_none()).
+    /// Returns None if no path package with that name exists.
+    /// Use this for resolving path crate entries in the lockfile.
+    pub fn find_path_package(&self, name: &str) -> Option<&LockPackage> {
+        self.by_name.get(name).and_then(|indices| {
+            indices
+                .iter()
+                .map(|&idx| &self.packages[idx])
+                .find(|pkg| pkg.source.is_none())
+        })
+    }
+
     /// Resolve a dependency string to a package.
     ///
     /// Handles formats: "name", "name version", "name version (source)"
@@ -316,12 +336,13 @@ impl Lockfile {
     pub fn compute_reachable(&self, root_name: &str) -> Result<ReachablePackages, LockfileError> {
         let index = self.build_index();
 
-        // Find root package
-        let root = self
-            .find_by_name(root_name)
-            .ok_or_else(|| LockfileError::RootNotFound {
-                name: root_name.to_string(),
-            })?;
+        // Find root package - must be a path package (source = None).
+        // This prevents matching a registry crate with the same name.
+        let root =
+            self.find_path_by_name(root_name)
+                .ok_or_else(|| LockfileError::RootNotFound {
+                    name: root_name.to_string(),
+                })?;
 
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<&LockPackage> = VecDeque::new();
