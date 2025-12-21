@@ -164,7 +164,6 @@ fn cache_persists_across_sessions() {
 }
 
 #[test]
-#[ignore = "requires --remap-path-prefix implementation"]
 fn different_checkout_path_is_cache_hit() {
     // This test verifies that the same project checked out in different locations
     // produces a cache hit (path normalization via --remap-path-prefix)
@@ -173,15 +172,31 @@ fn different_checkout_path_is_cache_hit() {
     let env1 = TestEnv::new();
     let env2 = TestEnv::new();
 
-    // Use the same VX_HOME for both
+    // Use a shared VX_HOME for both
     let shared_home = tempfile::TempDir::new().unwrap();
 
     create_hello_world(&env1);
     create_hello_world(&env2);
 
     // Build in first location
-    // (would need to pass shared_home to build())
+    let result1 = env1.build_with_home(shared_home.path(), false);
+    assert!(
+        result1.success,
+        "first build failed: {}\n{}",
+        result1.stdout, result1.stderr
+    );
+    assert!(!result1.was_cached(), "first build should not be cached");
 
     // Build in second location — should be cache hit
     // because content is identical and paths are remapped
+    let result2 = env2.build_with_home(shared_home.path(), false);
+    assert!(
+        result2.success,
+        "second build failed: {}\n{}",
+        result2.stdout, result2.stderr
+    );
+    assert!(
+        result2.was_cached(),
+        "second build should be cached (same content, different path)"
+    );
 }

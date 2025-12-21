@@ -59,12 +59,22 @@ fn main() -> Result<()> {
     }
 }
 
+fn get_vx_home() -> Result<Utf8PathBuf> {
+    // Check VX_HOME env var first, then fall back to ~/.vx
+    if let Ok(vx_home) = std::env::var("VX_HOME") {
+        return Ok(Utf8PathBuf::from(vx_home));
+    }
+
+    let home = std::env::var("HOME").map_err(|_| eyre::eyre!("HOME not set"))?;
+    Ok(Utf8PathBuf::from(home).join(".vx"))
+}
+
 fn cmd_build(release: bool) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
 
     // For v0, we run the daemon in-process
     // Future: connect to a persistent daemon via rapace
-    let cas_root = cwd.join(".vx/cas");
+    let cas_root = get_vx_home()?;
     let daemon = DaemonService::new(cas_root)?;
 
     let request = BuildRequest {
