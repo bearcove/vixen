@@ -22,16 +22,15 @@ v0 is successful if:
 - All outputs are stored in CAS
 - Cache reuse is correct: no-op builds do zero rustc invocations
 - Outputs are materialized under a tool-owned directory (not `target/`)
-- A structured build report is produced
 - Unsupported features fail loudly and clearly
 
 **Definition of done for caching:**
 
-- Run `vx build` twice → second run does zero rustc invocations, only materializes from CAS
-- Move the repo to a different absolute path → still a cache hit (requires `--remap-path-prefix`)
-- Change one byte in `src/main.rs` → cache miss and rebuild
-- Change `edition` in `Cargo.toml` → cache miss and rebuild
-- Change rustc toolchain → cache miss and rebuild
+- Run `vx build` twice → second run does zero rustc invocations, only materializes from CAS ✓
+- Move the repo to a different absolute path → still a cache hit (requires `--remap-path-prefix`) ✓
+- Change one byte in `src/main.rs` → cache miss and rebuild ✓
+- Change `edition` in `Cargo.toml` → cache miss and rebuild ✓
+- Change rustc toolchain → cache miss and rebuild ✓
 
 "Hello world builds deterministically with correct caching" is the bar.
 
@@ -65,19 +64,49 @@ From day one, everything is a service boundary. This sets up for:
 
 ### Process Topology
 
+Four separate binaries communicating over rapace:
+
 ```
-vx              ─── CLI / thin client
-    │
-    └──► vx-daemon  ─── orchestration + graph state (picante DB)
-              │
-              ├──► vx-casd   ─── CAS service (blobs + manifests + cache index)
-              │
-              └──► vx-execd  ─── execution service (run rustc, stream to CAS)
+                              ┌──────────┐
+vx ──rapace──► vx-daemon ─────┤ vx-casd  │
+                    │         └────▲─────┘
+                    │              │ rapace
+                    │              │
+                    └──► vx-execd ─┘
 ```
 
-All communication over rapace transport (SHM locally by default).
+- `vx` — CLI binary, connects to daemon
+- `vx-daemon` — orchestration binary, connects to CAS and Exec
+- `vx-casd` — CAS service binary
+- `vx-execd` — execution service binary, also connects to CAS
 
-**Key principle:** `vx-daemon` never reads/writes artifacts directly. It asks CAS and exec over RPC.
+Rapace handles transport — SHM for local, network for remote.
+
+**Current state:** CLI instantiates services in-process (temporary shortcut).
+**Target state:** All four as separate processes over rapace.
+
+---
+
+## Filesystem Access Rules (Staged)
+
+The "service boundaries" principle needs staged enforcement:
+
+**v0 rules:**
+- Daemon may read project sources (Cargo.toml, src/main.rs) directly
+- Daemon may write materialized outputs to `.vx/build/` directly
+- Daemon may execute rustc directly
+
+**Hard rule (all versions):**
+- Daemon must not persist artifacts except via CAS
+- All durable artifact storage (blobs, manifests, cache mappings) lives in CAS
+- Nothing is cached without going through CAS
+
+**v1 rules:**
+- Execution moves to vx-execd service
+- Materialization moves to a service (or stays daemon-local for perf)
+- Source reading may stay daemon-local (it's input, not artifact)
+
+This staged approach avoids awkward "read file over RPC" shims while maintaining the core invariant: **CAS is the only durable artifact store**.
 
 ---
 
@@ -86,106 +115,127 @@ All communication over rapace transport (SHM locally by default).
 ```
 vx/
   crates/
-    vx/              # CLI binary - thin client, talks to daemon
-    vx-daemon/       # Orchestration daemon with picante DB
-    vx-casd/         # CAS service daemon
-    vx-execd/        # Execution service daemon
-    vx-services/     # Shared rapace service trait definitions
-    vx-manifest/     # Cargo.toml parsing → typed internal model
-    vx-types/        # Shared types (NodeId, CacheKey, Edition, etc.)
+    vx/               # CLI binary - thin client
+    vx-daemon/        # Orchestration with picante DB + DaemonService impl
+    vx-daemon-proto/  # Daemon RPC protocol (BuildRequest, BuildResult, Daemon trait)
+    vx-casd/          # CAS service implementation
+    vx-cas-proto/     # CAS RPC protocol (Cas trait, blob/manifest types)
+    vx-execd/         # Execution service implementation (stub)
+    vx-exec-proto/    # Exec RPC protocol (RustcInvocation, etc.)
+    vx-manifest/      # Cargo.toml parsing → typed internal model
 ```
 
 ### Crate Responsibilities
 
 | Crate | Responsibility |
 |-------|----------------|
-| `vx` | CLI, thin client, starts/connects to daemon |
-| `vx-daemon` | Picante DB, orchestration, scheduling, cache key computation |
-| `vx-casd` | CAS service: blobs, manifests, cache index, materialization |
-| `vx-execd` | Execution service: runs rustc, captures output, streams to CAS |
-| `vx-services` | Rapace service trait definitions (`Cas`, `Exec`) |
+| `vx` | CLI, thin client, instantiates daemon (in-process for v0) |
+| `vx-daemon` | Picante DB, orchestration, cache key computation, build execution |
+| `vx-daemon-proto` | Daemon service trait + request/response types |
+| `vx-casd` | CAS service: blobs, manifests, cache index |
+| `vx-cas-proto` | CAS service trait + blob/manifest types |
+| `vx-execd` | Execution service (stub, daemon runs rustc directly for v0) |
+| `vx-exec-proto` | Exec service trait + invocation types |
 | `vx-manifest` | Parse `Cargo.toml` with facet-toml, validate v0 subset |
-| `vx-types` | Shared types used across crates |
 
 ---
 
-## Service Definitions (`vx-services`)
+## Protocol Definitions
 
-### CAS Service
+### Daemon Protocol (`vx-daemon-proto`)
 
 ```rust
+#[derive(Facet)]
+pub struct BuildRequest {
+    pub project_path: Utf8PathBuf,
+    pub release: bool,
+}
+
+#[derive(Facet)]
+pub struct BuildResult {
+    pub success: bool,
+    pub message: String,
+    pub cached: bool,
+    pub duration_ms: u64,
+    pub output_path: Option<Utf8PathBuf>,
+    pub error: Option<String>,
+}
+
+#[rapace::service]
+pub trait Daemon {
+    async fn build(&self, request: BuildRequest) -> BuildResult;
+}
+```
+
+### CAS Protocol (`vx-cas-proto`)
+
+```rust
+pub const CACHE_KEY_SCHEMA_VERSION: u32 = 1;
+
+pub type BlobHash = Blake3Hash;
+pub type ManifestHash = Blake3Hash;
+pub type CacheKey = Blake3Hash;
+
+#[derive(Facet)]
+pub struct NodeManifest {
+    pub node_id: NodeId,
+    pub cache_key: CacheKey,
+    pub produced_at: String,
+    pub outputs: Vec<OutputEntry>,
+}
+
 #[rapace::service]
 pub trait Cas {
-    /// Look up a cache key, returns manifest hash if found
+    // Cache key operations
     async fn lookup(&self, cache_key: CacheKey) -> Option<ManifestHash>;
-    
-    /// Store a cache key → manifest hash mapping
-    async fn store_cache(&self, cache_key: CacheKey, manifest_hash: ManifestHash);
-    
-    /// Store a manifest, returns its hash
+    async fn publish(&self, cache_key: CacheKey, manifest_hash: ManifestHash) -> PublishResult;
+
+    // Manifest operations
     async fn put_manifest(&self, manifest: NodeManifest) -> ManifestHash;
-    
-    /// Get a manifest by hash
     async fn get_manifest(&self, hash: ManifestHash) -> Option<NodeManifest>;
-    
-    /// Store a blob, returns its hash
+
+    // Blob operations (v0: small blobs only)
     async fn put_blob(&self, data: Vec<u8>) -> BlobHash;
-    
-    /// Get a blob by hash (streaming for large files)
-    async fn get_blob(&self, hash: BlobHash) -> Streaming<Vec<u8>>;
-    
-    /// Materialize outputs to a destination directory (avoids shipping blobs to client)
-    async fn materialize(&self, manifest_hash: ManifestHash, dest_dir: String) -> Result<(), String>;
+    async fn get_blob(&self, hash: BlobHash) -> Option<Vec<u8>>;
+    async fn has_blob(&self, hash: BlobHash) -> bool;
+
+    // Chunked blob upload (large files)
+    async fn begin_blob(&self) -> BlobUploadId;
+    async fn blob_chunk(&self, id: BlobUploadId, chunk: Vec<u8>);
+    async fn finish_blob(&self, id: BlobUploadId) -> FinishBlobResult;
+
+    // Future: chunked download for large artifacts
+    // async fn read_blob(&self, hash: BlobHash, offset: u64, len: u32) -> Option<Vec<u8>>;
 }
 ```
 
-### Exec Service
+**Design notes:**
+- `materialize` removed from CAS — clients read blobs and write outputs themselves
+- v0 uses `get_blob` for small artifacts; large artifacts should use chunked upload
+- Future: add symmetric chunked download (`read_blob` with offset/len)
 
-```rust
-#[rapace::service]
-pub trait Exec {
-    /// Execute a rustc invocation
-    async fn execute_rustc(&self, invocation: RustcInvocation) -> ExecuteResult;
-}
+### Publish Semantics
 
-/// Structured rustc command (not a shell string!)
-struct RustcInvocation {
-    program: String,           // "rustc"
-    args: Vec<String>,
-    env: Vec<(String, String)>,
-    cwd: String,
-    expected_outputs: Vec<ExpectedOutput>,
-}
+`publish(cache_key, manifest_hash)` has specific semantics:
 
-struct ExpectedOutput {
-    logical: String,           // "bin"
-    path: String,              // relative path where output will be written
-    executable: bool,
-}
+1. **Validation:** Fails if `manifest_hash` doesn't exist in CAS
+2. **Overwrite policy:** First writer wins — if cache key already mapped, publish succeeds but doesn't overwrite
+3. **Returns:** `PublishResult { success: bool, error: Option<String> }`
 
-struct ExecuteResult {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-    duration_ms: u64,
-    outputs: Vec<ProducedOutput>,
-    /// If exec pushed to CAS directly, this is set
-    manifest_hash: Option<ManifestHash>,
-}
-
-struct ProducedOutput {
-    logical: String,
-    path: String,
-    blob_hash: BlobHash,       // exec can push to CAS and return hash
-    executable: bool,
-}
-```
+This "first writer wins" policy means:
+- Concurrent builds racing to publish the same key are safe
+- The first to complete wins; others succeed silently
+- No conflict resolution needed
 
 ---
 
 ## Picante Database (`vx-daemon`)
 
 The daemon uses picante for incremental computation.
+
+**Key principle:** Picante determines *when* the cache key must be recomputed; vx defines *what* the cache key is.
+
+The `CacheKey` is an explicit blake3 hash computed by the `cache_key_compile_bin` query from well-defined inputs. This keeps CacheKey stable across picante internal changes — we don't couple CAS stability to picante's internal hashing/encoding.
 
 ### Inputs
 
@@ -200,74 +250,45 @@ pub struct SourceFile {
 #[picante::input]
 pub struct CargoToml {
     pub content_hash: Blake3Hash,
-    pub manifest: Manifest,  // parsed
+    pub name: String,
+    pub edition: Edition,
+    pub bin_path: String,
 }
 
 #[picante::input]
-pub struct RustcVersion {
+pub struct RustcToolchain {
+    pub rustc_path: String,      // resolved path to rustc
     pub version_string: String,  // full `rustc -vV` output
 }
 
 #[picante::input]
 pub struct BuildConfig {
-    pub profile: Profile,
+    pub profile: String,
     pub target_triple: String,
+    pub workspace_root: String,
 }
 ```
+
+**Toolchain resolution rule:** Honor `RUSTC` env var if set, else find `rustc` in `PATH`. The resolved path and its version output become inputs.
 
 ### Tracked Queries
 
 ```rust
-/// Compute the cache key for a compile-bin node
+/// Compute the cache key for compiling a binary crate.
+/// This is an EXPLICIT blake3 hash of all inputs — not picante's internal fingerprint.
 #[picante::tracked]
 pub async fn cache_key_compile_bin<DB: Db>(
     db: &DB,
-    cargo_toml: CargoToml,
     source: SourceFile,
-    rustc: RustcVersion,
-    config: BuildConfig,
-) -> PicanteResult<CacheKey> {
-    // Hash all inputs deterministically
-    // ...
-}
+) -> PicanteResult<CacheKey>;
 
-/// Build a rustc invocation for a compile-bin node
+/// Build a rustc invocation for compiling a binary crate.
 #[picante::tracked]
-pub async fn plan_compile_bin<DB: Db>(
-    db: &DB,
-    cargo_toml: CargoToml,
-    config: BuildConfig,
-) -> PicanteResult<RustcInvocation> {
-    let manifest = cargo_toml.manifest(db)?;
-    // Build the invocation
-    // ...
-}
+pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>;
 
-/// Execute the build (checks cache, runs on miss)
+/// Generate a human-readable node ID.
 #[picante::tracked]
-pub async fn build_compile_bin<DB: Db>(
-    db: &DB,
-    cargo_toml: CargoToml,
-    source: SourceFile,
-    rustc: RustcVersion,
-    config: BuildConfig,
-    cas: &CasClient,
-    exec: &ExecClient,
-) -> PicanteResult<ManifestHash> {
-    let cache_key = cache_key_compile_bin(db, cargo_toml, source, rustc, config).await?;
-    
-    // Check cache
-    if let Some(manifest_hash) = cas.lookup(cache_key).await? {
-        return Ok(manifest_hash);
-    }
-    
-    // Cache miss - execute
-    let invocation = plan_compile_bin(db, cargo_toml, config).await?;
-    let result = exec.execute_rustc(invocation).await?;
-    
-    // Result includes manifest_hash if exec pushed to CAS
-    Ok(result.manifest_hash.unwrap())
-}
+pub async fn node_id_compile_bin<DB: Db>(db: &DB) -> PicanteResult<NodeId>;
 ```
 
 ---
@@ -277,6 +298,9 @@ pub async fn build_compile_bin<DB: Db>(
 For v0, "proper" caching means: if any input that can affect the produced binary changes, the cache key changes.
 
 **CacheKey = blake3 hash of:**
+
+**Schema version:**
+- `CACHE_KEY_SCHEMA_VERSION` (bump when canonicalization changes)
 
 **Toolchain identity:**
 - `rustc -vV` full output (includes version, commit hash, LLVM version, host triple)
@@ -288,19 +312,18 @@ For v0, "proper" caching means: if any input that can affect the produced binary
 - Edition
 - Crate type (`bin`)
 
-**Compiler flags:**
-- The exact rustc flags passed (including `-C` settings)
-- `--remap-path-prefix` for path-independent outputs
-
 **Source inputs:**
 - Content hash (blake3) of `src/main.rs`
 - Content hash (blake3) of `Cargo.toml`
 
-**Environment:**
-- Empty for v0. Do not read `RUSTFLAGS` or `CARGO_*` env vars.
+**What's NOT in the cache key:**
+- Workspace root path — `--remap-path-prefix` normalizes path-sensitive outputs
+- Absolute paths to source files — we hash content, not location
 
 **Path determinism:**
-- Pass `--remap-path-prefix <workspace>=/vx-workspace` so absolute paths don't leak into debuginfo
+- Pass `--remap-path-prefix <workspace>=/vx-workspace` when path-sensitive outputs are enabled (debuginfo)
+- All temp dirs and output dirs are under `.vx/` for consistency
+- Note: some outputs may still embed paths in diagnostics metadata (rare for v0)
 
 ---
 
@@ -310,13 +333,10 @@ For v0, "proper" caching means: if any input that can affect the produced binary
 ```
 .vx/
   cas/
-    blobs/
-      blake3/<hh>/<hash>           # raw bytes (sharded by first 2 hex chars)
-    manifests/
-      blake3/<hh>/<hash>.json      # structured node output records
-    cache/
-      blake3/<hh>/<cachekey>       # contains manifest hash (cache index)
-    tmp/                           # atomic writes stage here
+    blobs/<hh>/<hash>              # raw bytes (sharded by first 2 hex chars)
+    manifests/<hh>/<hash>.json     # structured node output records
+    cache/<hh>/<cachekey>          # contains manifest hash (cache index)
+    tmp/                           # staging for atomic writes
 ```
 
 **Design Rules:**
@@ -324,7 +344,29 @@ For v0, "proper" caching means: if any input that can affect the produced binary
 - Blobs are immutable once written
 - Manifests reference blobs by hash
 - Cache index maps CacheKey → ManifestHash
-- Materialization is done in-daemon (avoids shipping blobs over RPC for local case)
+- `publish()` validates manifest exists before writing cache mapping
+- First writer wins on cache key conflicts
+
+---
+
+## Build Reports vs CAS
+
+Two kinds of truth, different purposes:
+
+**CAS (artifact truth):**
+- `NodeManifest`: outputs + hashes + cache key
+- Cache index: cache key → manifest mapping
+- Blobs: actual artifact bytes
+- Stable, minimal, long-lived
+
+**BuildReport (run log):**
+- Cache hit/miss
+- Rustc invocation used
+- Timings (wall clock, rustc duration)
+- stdout/stderr (maybe as blobs)
+- User-facing, verbose, per-run
+
+The report can be thin because CAS already contains artifact truth. Report adds context about *this run*.
 
 ---
 
@@ -333,9 +375,9 @@ For v0, "proper" caching means: if any input that can affect the produced binary
 ```
 .vx/
   cas/
-    blobs/blake3/<hh>/<hash>
-    manifests/blake3/<hh>/<hash>.json
-    cache/blake3/<hh>/<cachekey>
+    blobs/<hh>/<hash>
+    manifests/<hh>/<hash>.json
+    cache/<hh>/<cachekey>
     tmp/
   build/
     <triple>/
@@ -344,73 +386,40 @@ For v0, "proper" caching means: if any input that can affect the produced binary
       release/
         <crate-name>
   runs/
-    <run-id>.json              # build reports
-    latest -> <run-id>.json    # symlink to most recent
-  daemon.sock                  # rapace SHM socket
+    <run-id>.json              # build reports (future)
 ```
-
----
-
-## Execution Service (`vx-execd`)
-
-Exec is intentionally dumb. It:
-- Accepts a structured `RustcInvocation`
-- Runs it with a clean environment
-- Captures stdout/stderr/status/timing
-- Streams produced outputs directly to CAS
-- Returns the manifest hash
-
-**rustc invocation (v0):**
-```
-rustc
-  --crate-name <name>
-  --crate-type bin
-  --edition <edition>
-  --remap-path-prefix <workspace>=/vx-workspace
-  src/main.rs
-  -o <output-path>
-```
-
-**Notes:**
-- No `--extern`
-- No incremental
-- No linker args unless required by host
-- Explicit flags only
-- `--remap-path-prefix` for portable outputs
-- Clean environment (only PATH for linker)
 
 ---
 
 ## v0 Build Flow
 
 ```
-1. vx build connects to vx-daemon (or starts it)
+1. vx build instantiates DaemonService (in-process for v0)
 
-2. daemon:
-   - Parses Cargo.toml (facet-toml)
-   - Sets picante inputs (SourceFile, CargoToml, RustcVersion, BuildConfig)
-   - Runs build_compile_bin query
+2. DaemonService.build():
+   - Resolves rustc (RUSTC env or PATH)
+   - Parses Cargo.toml (facet-toml via vx-manifest)
+   - Creates picante Database
+   - Sets inputs (SourceFile, CargoToml, RustcToolchain, BuildConfig)
+   - Runs cache_key_compile_bin query
 
-3. build_compile_bin:
-   - Computes cache_key via cache_key_compile_bin query
-   - Calls CAS service: lookup(cache_key)
+3. Cache check:
+   - Calls CAS: lookup(cache_key)
 
 4. If cache hit:
-   - Calls CAS service: materialize(manifest_hash, .vx/build/...)
-   - Returns manifest_hash
+   - Calls CAS: get_manifest(manifest_hash)
+   - For each output: get_blob() and write to .vx/build/...
+   - Returns BuildResult { cached: true, ... }
 
 5. If cache miss:
-   - Computes RustcInvocation via plan_compile_bin query
-   - Calls Exec service: execute_rustc(invocation)
-   - Exec runs rustc, streams outputs to CAS
-   - Exec returns ExecuteResult with manifest_hash
-   - Calls CAS service: store_cache(cache_key, manifest_hash)
-   - Calls CAS service: materialize(manifest_hash, .vx/build/...)
-   - Returns manifest_hash
+   - Runs plan_compile_bin query to get RustcInvocation
+   - Executes rustc directly (future: via vx-execd)
+   - Reads output binary, calls CAS: put_blob()
+   - Creates NodeManifest, calls CAS: put_manifest()
+   - Calls CAS: publish(cache_key, manifest_hash)
+   - Returns BuildResult { cached: false, duration_ms, ... }
 
-6. daemon writes build report to .vx/runs/<id>.json
-
-7. vx prints summary to user
+6. CLI prints result
 ```
 
 ---
@@ -419,22 +428,14 @@ rustc
 
 ### `vx build`
 
-1. Connect to daemon (start if needed)
-2. Send build request with working directory + profile
-3. Receive build result (success/failure, cache hit/miss, outputs)
+1. Instantiate daemon (in-process)
+2. Send BuildRequest with working directory + release flag
+3. Receive BuildResult (success/failure, cache hit/miss, outputs)
 4. Print minimal human summary
 
 ### `vx explain`
 
-1. Read latest build report (or specified run)
-2. Print:
-   - What ran vs what was cached
-   - Cache keys and why they matched/didn't
-   - How long execution took
-   - What failed (if any)
-   - Where outputs are
-
-No flags beyond `--release` (optional).
+Not yet implemented.
 
 ---
 
@@ -464,50 +465,33 @@ dependencies are not supported yet (found `foo = "1.0"` in [dependencies])
 3. **No global mutable state** — Everything needed to explain a build must be in the report.
 4. **Stable identifiers** — Node IDs must be deterministic across runs.
 5. **Model > execution** — Never "just run a command" without a node.
-6. **CAS for all artifacts** — Nothing is materialized without going through CAS first.
+6. **CAS for all artifacts** — All durable artifact state lives in CAS. Daemon orchestrates via RPC.
 7. **Correct cache keys** — If inputs change, the cache key must change.
-8. **Service boundaries** — Daemon never touches files directly; always via CAS/Exec RPC.
-
----
-
-## Why Services Even When Local?
-
-Because it forces:
-- Transport-agnostic orchestration
-- Replayable commands
-- Centralized auditing
-- Easy future remote workers
-- Consistent CI topology (GitHub runner just runs daemons)
-
-And local is still fast:
-- SHM transport
-- Materialize on-host (CAS hardlinks/copies locally)
-- Avoid blob round-trips
-
-Rapace's SHM transport + service model was made for this "local but separated" architecture.
+8. **Explicit cache keys** — CacheKey is a well-defined blake3 hash, not picante internals.
 
 ---
 
 ## v0 Checklist (Engineering Tasks)
 
-- [ ] Create crate structure (vx, vx-daemon, vx-casd, vx-execd, vx-services, vx-manifest, vx-types)
-- [ ] Define rapace service traits (Cas, Exec)
-- [ ] Implement vx-casd (blobs, manifests, cache index, materialize)
-- [ ] Implement vx-execd (run rustc, stream to CAS)
-- [ ] Implement vx-daemon with picante DB
-  - [ ] Define inputs (SourceFile, CargoToml, RustcVersion, BuildConfig)
-  - [ ] Implement cache_key_compile_bin query
-  - [ ] Implement plan_compile_bin query
-  - [ ] Implement build_compile_bin query
-- [ ] Implement vx CLI (connect to daemon, send build request)
-- [ ] Parse `Cargo.toml` → internal manifest
-- [ ] Validate supported subset (reject deps, workspace, features, build.rs)
+- [x] Create crate structure
+- [x] Define rapace service traits (Cas, Daemon)
+- [x] Implement vx-casd (blobs, manifests, cache index)
+- [x] Implement vx-daemon with picante DB
+  - [x] Define inputs (SourceFile, CargoToml, RustcVersion, BuildConfig)
+  - [x] Implement cache_key_compile_bin query
+  - [x] Implement plan_compile_bin query
+  - [x] Implement node_id_compile_bin query
+- [x] Implement vx CLI as thin client
+- [x] Parse `Cargo.toml` → internal manifest
+- [x] Validate supported subset (reject deps, workspace, features, build.rs)
+- [x] Verify: second build = cache hit (zero rustc invocations)
+- [x] Verify: source change = cache miss
+- [x] Verify: profile change (debug/release) = separate cache keys
+- [ ] Add RustcToolchain input (resolve RUSTC env / PATH)
+- [ ] Implement vx-execd (currently daemon runs rustc directly)
 - [ ] Write build reports
 - [ ] Implement `vx explain`
-- [ ] Add golden "hello world" test repo
-- [ ] Verify: second build = zero rustc invocations
 - [ ] Verify: different checkout path = cache hit
-- [ ] Verify: source change = cache miss
 
 ---
 
