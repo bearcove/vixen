@@ -9,7 +9,9 @@
 use std::process::Command;
 use std::sync::Arc;
 
-use camino::{Utf8Path, Utf8PathBuf};
+use std::collections::HashMap;
+
+use camino::Utf8PathBuf;
 use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
 use picante::{HasRuntime, PicanteResult};
 use tokio::sync::Mutex;
@@ -23,7 +25,7 @@ use vx_report::{
     BuildReport, CacheOutcome, DiagnosticsRecord, InputRecord, InvocationRecord, MissReason,
     NodeReport, NodeTiming, OutputRecord, ReportStore, ToolchainRef, ToolchainsUsed,
 };
-use vx_rs::ModuleError;
+use vx_rs::{CrateGraph, CrateId, CrateType, ModuleError};
 
 // =============================================================================
 // INPUTS
@@ -1343,6 +1345,554 @@ impl DaemonService {
             output_path: Some(output_path),
             error: None,
         })
+    }
+
+    /// Build a multi-crate project with path dependencies.
+    ///
+    /// This method:
+    /// 1. Builds the CrateGraph from the invocation directory
+    /// 2. Computes source closures for all crates
+    /// 3. Builds lib crates in topological order
+    /// 4. Builds the root bin crate with --extern flags for deps
+    async fn do_build_multi_crate(&self, request: BuildRequest) -> Result<BuildResult, String> {
+        let project_path = &request.project_path;
+
+        // Build the crate graph (this parses all Cargo.toml files and computes LCA)
+        let graph = CrateGraph::build(project_path)
+            .map_err(|e| format!("failed to build crate graph: {}", e))?;
+
+        info!(
+            workspace_root = %graph.workspace_root,
+            crate_count = graph.nodes.len(),
+            "resolved crate graph"
+        );
+
+        // Get rustc version and target triple
+        let rustc_version = get_rustc_version().map_err(|e| e.to_string())?;
+        let target_triple = get_target_triple().map_err(|e| e.to_string())?;
+        let profile = if request.release { "release" } else { "debug" };
+
+        // Initialize build report
+        let mut build_report = BuildReport::new(
+            project_path.to_string(),
+            profile.to_string(),
+            target_triple.clone(),
+        );
+
+        build_report.toolchains = ToolchainsUsed {
+            rust: Some(ToolchainRef {
+                id: Blake3Hash::from_bytes(rustc_version.as_bytes()).to_hex(),
+                version: extract_rustc_version(&rustc_version),
+            }),
+            zig: None,
+        };
+
+        // Set up shared picante inputs
+        let db = self.db.lock().await;
+
+        RustcVersion::set(&*db, rustc_version.clone())
+            .map_err(|e| format!("picante error: {}", e))?;
+
+        BuildConfig::set(
+            &*db,
+            profile.to_string(),
+            target_triple.clone(),
+            graph.workspace_root.to_string(),
+        )
+        .map_err(|e| format!("picante error: {}", e))?;
+
+        // Track rlib outputs for bin dependencies
+        // Maps CrateId -> (rlib_hash, rlib_path)
+        let mut rlib_outputs: HashMap<CrateId, (Blake3Hash, String)> = HashMap::new();
+
+        // Build output base directory
+        let output_base = graph
+            .workspace_root
+            .join(".vx/build")
+            .join(&target_triple)
+            .join(profile);
+
+        // Process crates in topological order (deps before dependents)
+        let total_start = std::time::Instant::now();
+        let mut any_rebuilt = false;
+        let mut final_output_path: Option<Utf8PathBuf> = None;
+
+        for crate_node in graph.iter_topo() {
+            debug!(
+                crate_name = %crate_node.crate_name,
+                crate_type = ?crate_node.crate_type,
+                "processing crate"
+            );
+
+            // Compute source closure for this crate
+            let crate_root_abs = graph.workspace_root.join(&crate_node.crate_root_rel);
+            let closure_paths = vx_rs::rust_source_closure(&crate_root_abs, &graph.workspace_root)
+                .map_err(|e| {
+                    let error_msg = format_module_error(&e);
+                    build_report.finalize(false, Some(error_msg.clone()));
+                    self.save_report(project_path, &build_report);
+                    error_msg
+                })?;
+
+            let closure_hash = vx_rs::hash_source_closure(&closure_paths, &graph.workspace_root)
+                .map_err(|e| {
+                    format!(
+                        "failed to hash source closure for {}: {}",
+                        crate_node.crate_name, e
+                    )
+                })?;
+
+            // Create RustCrate input (keyed by crate_id_hex)
+            let crate_id_hex = crate_node.id.short_hex();
+            let rust_crate = RustCrate::new(
+                &*db,
+                crate_id_hex.clone(),
+                crate_node.crate_name.clone(),
+                crate_node.edition.as_str().to_string(),
+                crate_node.crate_type.as_str().to_string(),
+                crate_node.crate_root_rel.to_string(),
+                closure_hash.clone(),
+            )
+            .map_err(|e| format!("picante error: {}", e))?;
+
+            match crate_node.crate_type {
+                CrateType::Lib => {
+                    // Build library crate
+                    let (rlib_hash, rlib_path, node_report) = self
+                        .build_rlib(
+                            &*db,
+                            rust_crate.clone(),
+                            &graph.workspace_root,
+                            &target_triple,
+                            profile,
+                        )
+                        .await?;
+
+                    if !matches!(node_report.cache, CacheOutcome::Hit { .. }) {
+                        any_rebuilt = true;
+                    }
+                    build_report.add_node(node_report);
+
+                    // Record output for dependents
+                    rlib_outputs.insert(crate_node.id, (rlib_hash.clone(), rlib_path.clone()));
+
+                    // Create RlibOutput input for this crate
+                    let _rlib_output =
+                        RlibOutput::new(&*db, crate_id_hex.clone(), rlib_hash, rlib_path)
+                            .map_err(|e| format!("picante error: {}", e))?;
+                }
+
+                CrateType::Bin => {
+                    // Collect dependency outputs (sorted by extern_name)
+                    let mut dep_rlib_hashes: Vec<(String, Blake3Hash)> = Vec::new();
+                    let mut dep_extern_paths: Vec<(String, String)> = Vec::new();
+
+                    for dep in &crate_node.deps {
+                        let (rlib_hash, rlib_path) =
+                            rlib_outputs.get(&dep.crate_id).ok_or_else(|| {
+                                format!(
+                                    "rlib output not found for dependency {} of {}",
+                                    dep.extern_name, crate_node.crate_name
+                                )
+                            })?;
+                        dep_rlib_hashes.push((dep.extern_name.clone(), *rlib_hash));
+                        dep_extern_paths.push((dep.extern_name.clone(), rlib_path.clone()));
+                    }
+
+                    // Sort for determinism (should already be sorted, but be safe)
+                    dep_rlib_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+                    dep_extern_paths.sort_by(|a, b| a.0.cmp(&b.0));
+
+                    // Build binary crate
+                    let (output_path, node_report) = self
+                        .build_bin_with_deps(
+                            &*db,
+                            rust_crate.clone(),
+                            dep_rlib_hashes,
+                            dep_extern_paths,
+                            &graph.workspace_root,
+                            &target_triple,
+                            profile,
+                        )
+                        .await?;
+
+                    if !matches!(node_report.cache, CacheOutcome::Hit { .. }) {
+                        any_rebuilt = true;
+                    }
+                    build_report.add_node(node_report);
+                    final_output_path = Some(output_path);
+                }
+            }
+        }
+
+        // Release db lock
+        drop(db);
+
+        let total_duration = total_start.elapsed();
+
+        // Save picante cache if anything was rebuilt
+        if any_rebuilt {
+            if let Err(e) = self.save_cache().await {
+                warn!(error = %e, "failed to save picante cache (non-fatal)");
+            }
+        }
+
+        // Finalize report
+        let root_name = &graph.root().crate_name;
+        build_report.finalize(true, None);
+        self.save_report(project_path, &build_report);
+
+        let cached = !any_rebuilt;
+        let message = if cached {
+            format!("{} {} (cached)", root_name, profile)
+        } else {
+            format!(
+                "{} {} in {:.2}s",
+                root_name,
+                profile,
+                total_duration.as_secs_f64()
+            )
+        };
+
+        Ok(BuildResult {
+            success: true,
+            message,
+            cached,
+            duration_ms: total_duration.as_millis() as u64,
+            output_path: final_output_path,
+            error: None,
+        })
+    }
+
+    /// Build a library crate to rlib.
+    ///
+    /// Returns (rlib_hash, rlib_path, node_report).
+    async fn build_rlib(
+        &self,
+        db: &Database,
+        rust_crate: RustCrate,
+        workspace_root: &Utf8PathBuf,
+        target_triple: &str,
+        profile: &str,
+    ) -> Result<(Blake3Hash, String, NodeReport), String> {
+        let crate_name = rust_crate
+            .crate_name(db)
+            .map_err(|e| format!("picante error: {}", e))?;
+        let crate_id = rust_crate
+            .crate_id(db)
+            .map_err(|e| format!("picante error: {}", e))?;
+        let closure_hash = rust_crate
+            .source_closure_hash(db)
+            .map_err(|e| format!("picante error: {}", e))?;
+
+        // Compute cache key
+        let cache_key = cache_key_compile_rlib(db, rust_crate.clone())
+            .await
+            .map_err(|e| format!("failed to compute rlib cache key: {}", e))?;
+
+        let node_id = node_id_compile_rlib(db, rust_crate.clone())
+            .await
+            .map_err(|e| format!("failed to get rlib node id: {}", e))?;
+
+        // Output path
+        let output_dir = format!(
+            ".vx/build/{}/{}/deps/{}",
+            target_triple, profile, &*crate_id
+        );
+        let rlib_filename = format!("lib{}.rlib", &*crate_name);
+        let rlib_path = format!("{}/{}", output_dir, rlib_filename);
+
+        // Create output directory
+        let output_dir_abs = workspace_root.join(&output_dir);
+        std::fs::create_dir_all(&output_dir_abs)
+            .map_err(|e| format!("failed to create output dir: {}", e))?;
+
+        let inputs = vec![
+            InputRecord {
+                label: "source_closure".to_string(),
+                value: closure_hash.to_hex(),
+            },
+            InputRecord {
+                label: "crate_name".to_string(),
+                value: crate_name.to_string(),
+            },
+        ];
+
+        // Check cache
+        if let Some(cached_manifest_hash) = self.cas.lookup(cache_key).await {
+            if let Some(cached_manifest) = self.cas.get_manifest(cached_manifest_hash.clone()).await
+            {
+                // Cache hit - materialize rlib
+                for output in &cached_manifest.outputs {
+                    if output.logical == "rlib" {
+                        if let Some(blob_data) = self.cas.get_blob(output.blob).await {
+                            let dest_path = workspace_root.join(&rlib_path);
+                            atomic_write_file(&dest_path, &blob_data, false)
+                                .map_err(|e| format!("failed to write {}: {}", dest_path, e))?;
+
+                            let node_report = NodeReport {
+                                node_id: node_id.0.clone(),
+                                kind: "rust.compile_rlib".to_string(),
+                                cache_key: cache_key.to_hex(),
+                                cache: CacheOutcome::Hit {
+                                    manifest: cached_manifest_hash.to_hex(),
+                                },
+                                timing: NodeTiming {
+                                    queued_ms: 0,
+                                    execute_ms: 0,
+                                },
+                                inputs,
+                                outputs: vec![OutputRecord {
+                                    logical: "rlib".to_string(),
+                                    manifest: Some(cached_manifest_hash.to_hex()),
+                                    blob: Some(output.blob.to_hex()),
+                                    path: Some(rlib_path.clone()),
+                                }],
+                                invocation: None,
+                                diagnostics: DiagnosticsRecord::default(),
+                            };
+
+                            return Ok((output.blob, rlib_path, node_report));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cache miss - build
+        let invocation = plan_compile_rlib(db, rust_crate)
+            .await
+            .map_err(|e| format!("failed to plan rlib build: {}", e))?;
+
+        let start = std::time::Instant::now();
+        let output = Command::new(&invocation.program)
+            .args(&invocation.args)
+            .current_dir(&invocation.cwd)
+            .output()
+            .map_err(|e| format!("failed to execute rustc: {}", e))?;
+        let duration = start.elapsed();
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("rustc failed for {}: {}", crate_name, stderr));
+        }
+
+        // Store output in CAS
+        let rlib_abs = workspace_root.join(&rlib_path);
+        let rlib_data = std::fs::read(&rlib_abs)
+            .map_err(|e| format!("failed to read rlib {}: {}", rlib_abs, e))?;
+        let blob_hash = self.cas.put_blob(rlib_data).await;
+
+        // Create manifest
+        let node_manifest = NodeManifest {
+            node_id: node_id.clone(),
+            cache_key,
+            produced_at: unix_timestamp(),
+            outputs: vec![OutputEntry {
+                logical: "rlib".to_string(),
+                filename: rlib_filename,
+                blob: blob_hash,
+                executable: false,
+            }],
+        };
+
+        let manifest_hash = self.cas.put_manifest(node_manifest).await;
+        self.cas.publish(cache_key, manifest_hash.clone()).await;
+
+        let node_report = NodeReport {
+            node_id: node_id.0.clone(),
+            kind: "rust.compile_rlib".to_string(),
+            cache_key: cache_key.to_hex(),
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            timing: NodeTiming {
+                queued_ms: 0,
+                execute_ms: duration.as_millis() as u64,
+            },
+            inputs,
+            outputs: vec![OutputRecord {
+                logical: "rlib".to_string(),
+                manifest: Some(manifest_hash.to_hex()),
+                blob: Some(blob_hash.to_hex()),
+                path: Some(rlib_path.clone()),
+            }],
+            invocation: Some(InvocationRecord {
+                program: invocation.program,
+                args: invocation.args,
+                cwd: invocation.cwd,
+                exit_code: 0,
+            }),
+            diagnostics: DiagnosticsRecord::default(),
+        };
+
+        Ok((blob_hash, rlib_path, node_report))
+    }
+
+    /// Build a binary crate with dependencies.
+    ///
+    /// Returns (output_path, node_report).
+    async fn build_bin_with_deps(
+        &self,
+        db: &Database,
+        rust_crate: RustCrate,
+        dep_rlib_hashes: Vec<(String, Blake3Hash)>,
+        dep_extern_paths: Vec<(String, String)>,
+        workspace_root: &Utf8PathBuf,
+        target_triple: &str,
+        profile: &str,
+    ) -> Result<(Utf8PathBuf, NodeReport), String> {
+        let crate_name = rust_crate
+            .crate_name(db)
+            .map_err(|e| format!("picante error: {}", e))?;
+        let closure_hash = rust_crate
+            .source_closure_hash(db)
+            .map_err(|e| format!("picante error: {}", e))?;
+
+        // Compute cache key (includes dep hashes!)
+        let cache_key =
+            cache_key_compile_bin_with_deps(db, rust_crate.clone(), dep_rlib_hashes.clone())
+                .await
+                .map_err(|e| format!("failed to compute bin cache key: {}", e))?;
+
+        let node_id = node_id_compile_bin_with_deps(db, rust_crate.clone())
+            .await
+            .map_err(|e| format!("failed to get bin node id: {}", e))?;
+
+        // Output path
+        let output_dir = format!(".vx/build/{}/{}", target_triple, profile);
+        let output_path = workspace_root.join(&output_dir).join(&*crate_name);
+
+        // Create output directory
+        std::fs::create_dir_all(workspace_root.join(&output_dir))
+            .map_err(|e| format!("failed to create output dir: {}", e))?;
+
+        let mut inputs = vec![
+            InputRecord {
+                label: "source_closure".to_string(),
+                value: closure_hash.to_hex(),
+            },
+            InputRecord {
+                label: "crate_name".to_string(),
+                value: crate_name.to_string(),
+            },
+        ];
+
+        // Add dep hashes to inputs
+        for (extern_name, rlib_hash) in &dep_rlib_hashes {
+            inputs.push(InputRecord {
+                label: format!("dep:{}", extern_name),
+                value: rlib_hash.to_hex(),
+            });
+        }
+
+        // Check cache
+        if let Some(cached_manifest_hash) = self.cas.lookup(cache_key).await {
+            if let Some(cached_manifest) = self.cas.get_manifest(cached_manifest_hash.clone()).await
+            {
+                // Cache hit - materialize binary
+                for output in &cached_manifest.outputs {
+                    if output.logical == "bin" {
+                        if let Some(blob_data) = self.cas.get_blob(output.blob).await {
+                            atomic_write_file(&output_path, &blob_data, true)
+                                .map_err(|e| format!("failed to write {}: {}", output_path, e))?;
+
+                            let node_report = NodeReport {
+                                node_id: node_id.0.clone(),
+                                kind: "rust.compile_bin".to_string(),
+                                cache_key: cache_key.to_hex(),
+                                cache: CacheOutcome::Hit {
+                                    manifest: cached_manifest_hash.to_hex(),
+                                },
+                                timing: NodeTiming {
+                                    queued_ms: 0,
+                                    execute_ms: 0,
+                                },
+                                inputs,
+                                outputs: vec![OutputRecord {
+                                    logical: "bin".to_string(),
+                                    manifest: Some(cached_manifest_hash.to_hex()),
+                                    blob: Some(output.blob.to_hex()),
+                                    path: Some(output_path.to_string()),
+                                }],
+                                invocation: None,
+                                diagnostics: DiagnosticsRecord::default(),
+                            };
+
+                            return Ok((output_path, node_report));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cache miss - build
+        let invocation = plan_compile_bin_with_deps(db, rust_crate, dep_extern_paths)
+            .await
+            .map_err(|e| format!("failed to plan bin build: {}", e))?;
+
+        let start = std::time::Instant::now();
+        let output = Command::new(&invocation.program)
+            .args(&invocation.args)
+            .current_dir(&invocation.cwd)
+            .output()
+            .map_err(|e| format!("failed to execute rustc: {}", e))?;
+        let duration = start.elapsed();
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("rustc failed for {}: {}", crate_name, stderr));
+        }
+
+        // Store output in CAS
+        let bin_data = std::fs::read(&output_path)
+            .map_err(|e| format!("failed to read binary {}: {}", output_path, e))?;
+        let blob_hash = self.cas.put_blob(bin_data).await;
+
+        // Create manifest
+        let node_manifest = NodeManifest {
+            node_id: node_id.clone(),
+            cache_key,
+            produced_at: unix_timestamp(),
+            outputs: vec![OutputEntry {
+                logical: "bin".to_string(),
+                filename: crate_name.to_string(),
+                blob: blob_hash,
+                executable: true,
+            }],
+        };
+
+        let manifest_hash = self.cas.put_manifest(node_manifest).await;
+        self.cas.publish(cache_key, manifest_hash.clone()).await;
+
+        let node_report = NodeReport {
+            node_id: node_id.0.clone(),
+            kind: "rust.compile_bin".to_string(),
+            cache_key: cache_key.to_hex(),
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            timing: NodeTiming {
+                queued_ms: 0,
+                execute_ms: duration.as_millis() as u64,
+            },
+            inputs,
+            outputs: vec![OutputRecord {
+                logical: "bin".to_string(),
+                manifest: Some(manifest_hash.to_hex()),
+                blob: Some(blob_hash.to_hex()),
+                path: Some(output_path.to_string()),
+            }],
+            invocation: Some(InvocationRecord {
+                program: invocation.program,
+                args: invocation.args,
+                cwd: invocation.cwd,
+                exit_code: 0,
+            }),
+            diagnostics: DiagnosticsRecord::default(),
+        };
+
+        Ok((output_path, node_report))
     }
 
     /// Save a build report to the project's .vx/runs/ directory.
