@@ -23,6 +23,7 @@ facet = { git = "https://github.com/facet-rs/facet" }
 facet-args = { git = "https://github.com/facet-rs/facet" }
 facet-json = { git = "https://github.com/facet-rs/facet" }
 facet-toml = { git = "https://github.com/facet-rs/facet" }
+facet-value = { git = "https://github.com/facet-rs/facet" }
 
 # incremental computation
 picante = { git = "https://github.com/bearcove/picante", features = ["macros"] }
@@ -68,3 +69,4 @@ facet-json = { git = "https://github.com/facet-rs/facet" }
 facet-toml = { git = "https://github.com/facet-rs/facet" }
 facet-args = { git = "https://github.com/facet-rs/facet" }
 facet-postcard = { git = "https://github.com/facet-rs/facet" }
+facet-value = { git = "https://github.com/facet-rs/facet" }

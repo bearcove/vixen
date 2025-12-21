@@ -467,6 +467,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-value"
+version = "0.32.3"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
+dependencies = [
+ "facet-core",
+ "facet-reflect",
+ "indexmap",
+ "static_assertions",
+]
+
+[[package]]
 name = "fast-srgb8"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2167,6 +2178,22 @@ dependencies = [
  "facet",
  "facet-toml",
  "thiserror",
+]
+
+[[package]]
+name = "vx-toolchain"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "camino",
+ "eyre",
+ "facet",
+ "facet-toml",
+ "facet-value",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "vx-cas-proto",
 ]
 
 [[package]]
