@@ -1,0 +1,12 @@
+[package]
+name = "vx-toolchain-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+facet.workspace = true
+vx-cas-proto = { path = "../vx-cas-proto" }
+blake3.workspace = true
+rapace.workspace = true
