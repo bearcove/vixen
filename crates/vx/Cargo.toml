@@ -11,6 +11,7 @@ owo-colors = { workspace = true }
 camino = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
 
 vx-daemon = { workspace = true }
 vx-daemon-proto = { workspace = true }
