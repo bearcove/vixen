@@ -2757,6 +2757,7 @@ dependencies = [
  "vx-exec-proto",
  "vx-execd",
  "vx-manifest",
+ "vx-rs",
  "vx-toolchain",
 ]
 

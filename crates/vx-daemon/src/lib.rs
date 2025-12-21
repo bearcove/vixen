@@ -9,7 +9,7 @@
 use std::process::Command;
 use std::sync::Arc;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
 use picante::{HasRuntime, PicanteResult};
 use tokio::sync::Mutex;
@@ -19,19 +19,23 @@ use vx_casd::CasService;
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
 use vx_exec_proto::{ExpectedOutput, RustcInvocation};
 use vx_manifest::{Edition, Manifest};
+use vx_rs::ModuleError;
 
 // =============================================================================
 // INPUTS
 // =============================================================================
 
-/// A source file with its content hash (keyed by path)
+/// The complete source closure for a Rust crate (singleton).
+///
+/// This represents all source files that make up the crate, discovered by
+/// parsing `mod` declarations starting from the crate root.
 #[picante::input]
-pub struct SourceFile {
-    /// Path relative to project root (e.g., "src/main.rs")
-    #[key]
-    pub path: String,
-    /// Blake3 hash of the file content
-    pub content_hash: Blake3Hash,
+pub struct SourceClosure {
+    /// Blake3 hash of all source files (paths + contents).
+    /// Computed by vx_rs::hash_source_closure().
+    pub closure_hash: Blake3Hash,
+    /// Workspace-relative paths of all source files in the closure (sorted).
+    pub paths: Vec<String>,
 }
 
 /// The parsed Cargo.toml manifest (singleton)
@@ -111,13 +115,13 @@ pub struct ZigToolchainConfig {
 
 /// Compute the cache key for compiling a binary crate.
 #[picante::tracked]
-pub async fn cache_key_compile_bin<DB: Db>(db: &DB, source: SourceFile) -> PicanteResult<CacheKey> {
+pub async fn cache_key_compile_bin<DB: Db>(db: &DB) -> PicanteResult<CacheKey> {
     debug!("cache_key_compile_bin: COMPUTING (not memoized)");
 
     let cargo = CargoToml::get(db)?.expect("CargoToml not set");
     let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
-    let source_hash = source.content_hash(db)?;
+    let closure = SourceClosure::get(db)?.expect("SourceClosure not set");
 
     let mut hasher = blake3::Hasher::new();
 
@@ -147,8 +151,9 @@ pub async fn cache_key_compile_bin<DB: Db>(db: &DB, source: SourceFile) -> Pican
 
     hasher.update(b"crate_type:bin\n");
 
-    hasher.update(b"source:");
-    hasher.update(&source_hash.0);
+    // Source closure hash includes all source file paths and contents
+    hasher.update(b"source_closure:");
+    hasher.update(&closure.closure_hash.0);
     hasher.update(b"\n");
 
     hasher.update(b"manifest:");
@@ -534,7 +539,7 @@ pub async fn node_id_cc_link<DB: Db>(db: &DB, target: CTarget) -> PicanteResult<
 
 #[picante::db(
     inputs(
-        SourceFile,
+        SourceClosure,
         CargoToml,
         RustcVersion,
         BuildConfig,
@@ -653,21 +658,14 @@ impl DaemonService {
         let rustc_version = get_rustc_version().map_err(|e| e.to_string())?;
         let target_triple = get_target_triple().map_err(|e| e.to_string())?;
 
-        // Hash source file
-        let main_rs_path = project_path.join(&manifest.bin.path);
-        if !main_rs_path.exists() {
-            return Ok(BuildResult {
-                success: false,
-                message: format!("source file not found: {}", main_rs_path),
-                cached: false,
-                duration_ms: 0,
-                output_path: None,
-                error: Some(format!("source file not found: {}", main_rs_path)),
-            });
-        }
-        let main_rs_content = std::fs::read(&main_rs_path)
-            .map_err(|e| format!("failed to read {}: {}", main_rs_path, e))?;
-        let source_hash = Blake3Hash::from_bytes(&main_rs_content);
+        // Compute source closure (all .rs files in the crate)
+        let crate_root = Utf8Path::new("src/main.rs"); // TODO: use manifest.bin.path properly
+        let closure_paths = vx_rs::rust_source_closure(crate_root, project_path)
+            .map_err(|e| format_module_error(&e))?;
+
+        // Hash the closure (paths + contents)
+        let closure_hash = vx_rs::hash_source_closure(&closure_paths, project_path)
+            .map_err(|e| format!("failed to hash source closure: {}", e))?;
 
         // Hash Cargo.toml
         let cargo_toml_content = std::fs::read(&cargo_toml_path)
@@ -680,8 +678,9 @@ impl DaemonService {
         let db = self.db.lock().await;
 
         // Set inputs
-        // Keyed input: SourceFile::new(db, key, data_fields...)
-        let source_id = SourceFile::new(&*db, manifest.bin.path.to_string(), source_hash)
+        let closure_paths_strings: Vec<String> =
+            closure_paths.iter().map(|p| p.to_string()).collect();
+        SourceClosure::set(&*db, closure_hash, closure_paths_strings)
             .map_err(|e| format!("picante error: {}", e))?;
 
         // Singletons: Type::set(db, field1, field2, ...)
@@ -705,7 +704,7 @@ impl DaemonService {
         .map_err(|e| format!("picante error: {}", e))?;
 
         // Compute cache key via picante
-        let cache_key = cache_key_compile_bin(&*db, source_id)
+        let cache_key = cache_key_compile_bin(&*db)
             .await
             .map_err(|e| format!("failed to compute cache key: {}", e))?;
 
@@ -847,6 +846,12 @@ impl Daemon for DaemonService {
 // =============================================================================
 // HELPERS
 // =============================================================================
+
+/// Format a module scanner error for user-friendly display.
+fn format_module_error(e: &ModuleError) -> String {
+    // The error type already has good Display impl with file:line info
+    e.to_string()
+}
 
 fn get_rustc_version() -> eyre::Result<String> {
     let output = Command::new("rustc").arg("-vV").output()?;
