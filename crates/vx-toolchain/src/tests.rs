@@ -120,28 +120,42 @@ fn rust_toolchain_spec_effective_target() {
 
 #[test]
 fn rust_toolchain_id_deterministic() {
-    // Toolchain ID is derived from manifest SHA256 hashes (hex strings)
+    // Toolchain ID is derived from host/target triples + manifest SHA256 hashes
+    let host = "aarch64-apple-darwin";
+    let target = "aarch64-apple-darwin";
     let rustc_sha256 = "abc123def456";
     let std_sha256 = "789xyz000111";
 
-    let id1 = RustToolchainId::from_manifest_sha256s(rustc_sha256, std_sha256);
-    let id2 = RustToolchainId::from_manifest_sha256s(rustc_sha256, std_sha256);
+    let id1 = RustToolchainId::from_manifest_sha256s(host, target, rustc_sha256, std_sha256);
+    let id2 = RustToolchainId::from_manifest_sha256s(host, target, rustc_sha256, std_sha256);
 
     assert_eq!(id1, id2);
     assert_eq!(id1.to_hex(), id2.to_hex());
 
     // Different manifest hash = different ID
     let std_sha256_different = "different_hash";
-    let id3 = RustToolchainId::from_manifest_sha256s(rustc_sha256, std_sha256_different);
+    let id3 =
+        RustToolchainId::from_manifest_sha256s(host, target, rustc_sha256, std_sha256_different);
     assert_ne!(id1, id3);
+
+    // Different target = different ID (even with same hashes)
+    let id4 = RustToolchainId::from_manifest_sha256s(
+        host,
+        "x86_64-unknown-linux-gnu",
+        rustc_sha256,
+        std_sha256,
+    );
+    assert_ne!(id1, id4);
 }
 
 #[test]
 fn rust_toolchain_id_display() {
+    let host = "aarch64-apple-darwin";
+    let target = "aarch64-apple-darwin";
     let rustc_sha256 = "abc123";
     let std_sha256 = "def456";
 
-    let id = RustToolchainId::from_manifest_sha256s(rustc_sha256, std_sha256);
+    let id = RustToolchainId::from_manifest_sha256s(host, target, rustc_sha256, std_sha256);
     let display = format!("{}", id);
 
     assert!(display.starts_with("rust:"));

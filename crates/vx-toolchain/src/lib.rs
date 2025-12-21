@@ -396,12 +396,25 @@ impl RustToolchainSpec {
 pub struct RustToolchainId(pub Blake3Hash);
 
 impl RustToolchainId {
-    /// Create from manifest SHA256 hashes (not downloaded byte hashes!)
+    /// Create from manifest SHA256 hashes and target triples.
     ///
     /// Both hashes are the SHA256 hex strings from the channel manifest.
-    pub fn from_manifest_sha256s(rustc_sha256: &str, rust_std_sha256: &str) -> Self {
+    /// Host and target triples are included to avoid ID collisions across
+    /// different host/target combinations (even if Rust ever reused hashes).
+    pub fn from_manifest_sha256s(
+        host_triple: &str,
+        target_triple: &str,
+        rustc_sha256: &str,
+        rust_std_sha256: &str,
+    ) -> Self {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"rust-toolchain-v1\n");
+        hasher.update(b"rust-toolchain-v2\n"); // Bumped version for new format
+        hasher.update(b"host:");
+        hasher.update(host_triple.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(b"target:");
+        hasher.update(target_triple.as_bytes());
+        hasher.update(b"\n");
         hasher.update(b"rustc_sha256:");
         hasher.update(rustc_sha256.as_bytes());
         hasher.update(b"\n");
@@ -523,13 +536,19 @@ pub async fn acquire_rust_toolchain(
     let rust_std_target = manifest.rust_std_for_target(target)?;
     let rust_std_manifest_sha256 = rust_std_target.hash.clone();
 
-    // Compute toolchain ID from manifest SHA256s (before downloading)
-    // This ensures ID is stable and defined by what Rust publishes
-    let id =
-        RustToolchainId::from_manifest_sha256s(&rustc_manifest_sha256, &rust_std_manifest_sha256);
+    // Compute toolchain ID from manifest SHA256s + triples (before downloading)
+    // This ensures ID is stable, defined by what Rust publishes, and unique per host/target
+    let id = RustToolchainId::from_manifest_sha256s(
+        &spec.host,
+        target,
+        &rustc_manifest_sha256,
+        &rust_std_manifest_sha256,
+    );
 
     tracing::info!(
         toolchain_id = %id,
+        host = %spec.host,
+        target = %target,
         rustc_version = %manifest.rustc.version,
         rustc_sha256 = %rustc_manifest_sha256,
         rust_std_sha256 = %rust_std_manifest_sha256,
