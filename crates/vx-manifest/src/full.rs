@@ -228,6 +228,7 @@ pub enum Dependency {
     Version(String),
 
     /// Detailed specification: `serde = { version = "1.0", features = [...] }`
+    /// Must come before Workspace to match regular deps first
     Detailed(DependencyDetail),
 
     /// Workspace inheritance: `serde = { workspace = true }`
@@ -281,8 +282,9 @@ pub struct DependencyDetail {
 }
 
 #[derive(Facet, Debug, Clone)]
-#[facet(rename_all = "kebab-case")]
+#[facet(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct WorkspaceDependency {
+    /// Must be true - this is how we distinguish workspace deps from detailed deps
     pub workspace: bool,
 
     /// Override features from workspace
@@ -299,16 +301,19 @@ pub struct WorkspaceDependency {
 // Target-specific configuration
 // ============================================================================
 
-#[derive(Facet, Debug, Clone)]
+#[derive(Facet, Debug, Clone, Default)]
 #[facet(rename_all = "kebab-case")]
 pub struct TargetSpec {
     /// Target-specific dependencies
+    #[facet(default)]
     pub dependencies: Option<HashMap<String, Dependency>>,
 
     /// Target-specific dev dependencies
+    #[facet(default)]
     pub dev_dependencies: Option<HashMap<String, Dependency>>,
 
     /// Target-specific build dependencies
+    #[facet(default)]
     pub build_dependencies: Option<HashMap<String, Dependency>>,
 }
 
@@ -524,16 +529,10 @@ pub struct Lints {
 #[repr(u8)]
 #[facet(untagged)]
 pub enum LintLevel {
-    /// Simple level: `warn`, `deny`, etc.
-    Simple(LintLevelValue),
+    /// Detailed config with priority (table format)
+    Config(LintConfig),
 
-    /// Detailed config with priority
-    Detailed(LintConfig),
-}
-
-#[derive(Facet, Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum LintLevelValue {
+    /// Simple string level: "forbid", "deny", "warn", or "allow"
     #[facet(rename = "forbid")]
     Forbid,
     #[facet(rename = "deny")]
@@ -546,8 +545,21 @@ pub enum LintLevelValue {
 
 #[derive(Facet, Debug, Clone)]
 pub struct LintConfig {
-    pub level: LintLevelValue,
+    pub level: LintLevelString,
     pub priority: Option<i32>,
+}
+
+#[derive(Facet, Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum LintLevelString {
+    #[facet(rename = "forbid")]
+    Forbid,
+    #[facet(rename = "deny")]
+    Deny,
+    #[facet(rename = "warn")]
+    Warn,
+    #[facet(rename = "allow")]
+    Allow,
 }
 
 // ============================================================================
