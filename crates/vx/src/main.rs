@@ -33,6 +33,12 @@ enum CliCommand {
         release: bool,
     },
 
+    /// Stop the daemon process
+    Kill,
+
+    /// Stop the daemon and remove .vx/ directory
+    Clean,
+
     /// Explain the last build
     Explain,
 }
@@ -47,6 +53,8 @@ fn main() -> Result<()> {
 
     match cli.command {
         CliCommand::Build { release } => cmd_build(release),
+        CliCommand::Kill => cmd_kill(),
+        CliCommand::Clean => cmd_clean(),
         CliCommand::Explain => cmd_explain(),
     }
 }
@@ -88,6 +96,34 @@ fn cmd_build(release: bool) -> Result<()> {
         }
         bail!("{}", result.message)
     }
+}
+
+fn cmd_kill() -> Result<()> {
+    // For v0, the daemon runs in-process, so there's nothing to kill.
+    // When we have a persistent daemon, this will send a shutdown signal.
+    println!(
+        "{} daemon not running (v0 runs in-process)",
+        "Note:".yellow().bold()
+    );
+    Ok(())
+}
+
+fn cmd_clean() -> Result<()> {
+    let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
+    let vx_dir = cwd.join(".vx");
+
+    // First, try to kill the daemon (no-op for v0)
+    let _ = cmd_kill();
+
+    // Then remove .vx/ if it exists
+    if vx_dir.exists() {
+        std::fs::remove_dir_all(&vx_dir)?;
+        println!("{} {}", "Removed".green().bold(), vx_dir);
+    } else {
+        println!("{} {} does not exist", "Note:".yellow().bold(), vx_dir);
+    }
+
+    Ok(())
 }
 
 fn cmd_explain() -> Result<()> {
