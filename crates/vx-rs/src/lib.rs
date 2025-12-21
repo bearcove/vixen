@@ -17,7 +17,7 @@ pub use crate_graph::{CrateGraph, CrateGraphError, CrateId, CrateNode, CrateType
 pub use depfile::{normalize_dep_path, DepfileError, parse_depfile, parse_depfile_content};
 pub use exec_action::{
     CompilationOutput, ExecutionStatus, GeneratedArtifact, OrchestrationDoc, RustDepInfoAction,
-    RustDepInfoResult,
+    RustDepInfoResult, MAX_SNAPSHOT_RETRIES,
 };
 pub use input_set::{
     build_input_set_from_depinfo, classify_path, DeclaredExternal, GeneratedFile, InputRecords,
