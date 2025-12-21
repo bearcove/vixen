@@ -128,7 +128,7 @@ pub enum StringOrWorkspace {
 #[repr(u8)]
 #[facet(untagged)]
 pub enum VecOrWorkspace {
-    Vec(Vec<String>),
+    Values(Vec<String>),
     Workspace(WorkspaceRef),
 }
 
