@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 blake3 = { workspace = true }
 camino = { workspace = true }
+facet = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 ra-ap-rustc_lexer = "0.144.0"
