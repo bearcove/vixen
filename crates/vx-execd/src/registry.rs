@@ -133,6 +133,7 @@ impl<C: Cas + CasRegistry + CasToolchain + Send + Sync> RegistryMaterializer<C> 
         Ok(RegistryMaterializationResult {
             workspace_rel_path: workspace_rel,
             global_cache_path: global_path.to_string(),
+            was_cached: !needs_copy,
         })
     }
 

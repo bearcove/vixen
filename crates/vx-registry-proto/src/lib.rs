@@ -154,6 +154,8 @@ pub struct RegistryMaterializationResult {
     pub workspace_rel_path: String,
     /// Global cache path (for debugging/reporting)
     pub global_cache_path: String,
+    /// Whether the workspace copy was already present with matching checksum
+    pub was_cached: bool,
 }
 
 // =============================================================================

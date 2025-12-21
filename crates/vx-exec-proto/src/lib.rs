@@ -101,6 +101,42 @@ pub struct CcExecuteResult {
     pub manifest_hash: Option<ManifestHash>,
 }
 
+/// Request to materialize a registry crate into workspace-local staging
+#[derive(Debug, Clone, Facet)]
+pub struct RegistryMaterializeRequest {
+    /// RegistryCrateManifest hash stored in CAS
+    pub manifest_hash: ManifestHash,
+
+    /// Absolute workspace root, used to place .vx/registry/<name>/<version>
+    pub workspace_root: String,
+}
+
+/// Result of materializing a registry crate
+#[derive(Debug, Clone, Facet)]
+pub struct RegistryMaterializeResult {
+    /// Workspace-relative path to staged crate, e.g. ".vx/registry/serde/1.0.197"
+    pub workspace_rel_path: String,
+
+    /// Whether the crate was already cached (no extraction needed)
+    pub was_cached: bool,
+
+    /// Status of the materialization
+    pub status: MaterializeStatus,
+
+    /// Error message if status is Failed
+    pub error: Option<String>,
+}
+
+/// Status of registry crate materialization
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Facet)]
+#[repr(u8)]
+pub enum MaterializeStatus {
+    /// Successfully materialized (extracted or copied from cache)
+    Ok = 0,
+    /// Failed to materialize
+    Failed = 1,
+}
+
 /// Exec service trait
 #[rapace::service]
 pub trait Exec {
@@ -112,4 +148,13 @@ pub trait Exec {
     /// This runs zig cc, captures outputs, and parses the depfile (if any)
     /// to return discovered dependencies for incremental builds.
     async fn execute_cc(&self, invocation: CcInvocation) -> CcExecuteResult;
+
+    /// Materialize a registry crate into workspace-local staging directory.
+    ///
+    /// This fetches the RegistryCrateManifest from CAS, extracts the tarball
+    /// to global cache if needed, then clones into `.vx/registry/<name>/<version>`.
+    async fn materialize_registry_crate(
+        &self,
+        request: RegistryMaterializeRequest,
+    ) -> RegistryMaterializeResult;
 }
