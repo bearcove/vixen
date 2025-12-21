@@ -1,20 +1,17 @@
 [package]
-name = "vx"
+name = "vx-daemon"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 facet = { workspace = true }
-facet-args = { workspace = true }
-eyre = { workspace = true }
-owo-colors = { workspace = true }
-camino = { workspace = true }
+picante = { workspace = true }
+rapace = { workspace = true }
 tokio = { workspace = true }
 blake3 = { workspace = true }
+camino = { workspace = true }
+eyre = { workspace = true }
 
 vx-cas-proto = { workspace = true }
 vx-exec-proto = { workspace = true }
-vx-casd = { workspace = true }
-vx-execd = { workspace = true }
-vx-daemon = { workspace = true }
 vx-manifest = { workspace = true }

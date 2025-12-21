@@ -2,16 +2,61 @@
 members = ["crates/*"]
 resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bearcove/vx"
+
 [workspace.dependencies]
+# internal crates
+vx-cas-proto = { path = "crates/vx-cas-proto" }
+vx-exec-proto = { path = "crates/vx-exec-proto" }
+vx-manifest = { path = "crates/vx-manifest" }
+vx-daemon = { path = "crates/vx-daemon" }
+vx-casd = { path = "crates/vx-casd" }
+vx-execd = { path = "crates/vx-execd" }
+
 # facet ecosystem
-facet = { path = "../facet/facet" }
-facet-args = { path = "../facet/facet-args" }
-facet-json = { path = "../facet/facet-json" }
-facet-pretty = { path = "../facet/facet-pretty" }
+facet = { git = "https://github.com/facet-rs/facet" }
+facet-args = { git = "https://github.com/facet-rs/facet" }
+facet-json = { git = "https://github.com/facet-rs/facet" }
+facet-toml = { git = "https://github.com/facet-rs/facet" }
+
+# incremental computation
+picante = { git = "https://github.com/bearcove/picante", features = ["macros"] }
+
+# RPC
+rapace = { git = "https://github.com/bearcove/rapace" }
+
+# hashing
+blake3 = "1"
 
 # error handling
 eyre = "0.6"
-color-eyre = "0.6"
+thiserror = "2"
 
-# terminal colors
+# async
+tokio = { version = "1", features = ["full"] }
+
+# terminal
 owo-colors = "4"
+
+# time
+jiff = "0.2"
+
+# paths
+camino = "1"
+
+[patch.crates-io]
+facet = { git = "https://github.com/facet-rs/facet" }
+facet-core = { git = "https://github.com/facet-rs/facet" }
+facet-macros = { git = "https://github.com/facet-rs/facet" }
+facet-macros-impl = { git = "https://github.com/facet-rs/facet" }
+facet-macro-parse = { git = "https://github.com/facet-rs/facet" }
+facet-macro-types = { git = "https://github.com/facet-rs/facet" }
+facet-reflect = { git = "https://github.com/facet-rs/facet" }
+facet-json = { git = "https://github.com/facet-rs/facet" }
+facet-toml = { git = "https://github.com/facet-rs/facet" }
+facet-args = { git = "https://github.com/facet-rs/facet" }
+facet-postcard = { git = "https://github.com/facet-rs/facet" }
