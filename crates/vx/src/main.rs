@@ -51,9 +51,9 @@ enum CliCommand {
         #[facet(args::named, args::short = 'v')]
         verbose: bool,
 
-        /// Explain only this specific node ID (empty string means all)
-        #[facet(args::named, default)]
-        node: String,
+        /// Explain only this specific node ID
+        #[facet(args::named)]
+        node: Option<String>,
 
         /// Show only fanout analysis
         #[facet(args::named)]
@@ -119,20 +119,9 @@ async fn main() -> Result<()> {
             json,
             diff,
             last_miss,
-        } => {
-            let node_filter = if node.is_empty() { None } else { Some(node) };
-            cmd_explain(
-                all,
-                verbose,
-                node_filter,
-                fanout,
-                inputs,
-                deps,
-                json,
-                diff,
-                last_miss,
-            )
-        }
+        } => cmd_explain(
+            all, verbose, node, fanout, inputs, deps, json, diff, last_miss,
+        ),
     }
 }
 

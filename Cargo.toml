@@ -64,6 +64,12 @@ tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Compile dependencies with optimizations even in dev builds.
+# This dramatically speeds up CPU-intensive operations like decompression (xz2/lzma)
+# and hashing (sha2, blake3) which dominate toolchain acquisition time.
+[profile.dev.package."*"]
+opt-level = 2
+
 [patch.crates-io]
 facet = { git = "https://github.com/facet-rs/facet" }
 facet-core = { git = "https://github.com/facet-rs/facet" }
