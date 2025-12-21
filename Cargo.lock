@@ -2804,6 +2804,8 @@ dependencies = [
  "camino",
  "facet",
  "facet-toml",
+ "facet-value",
+ "tempfile",
  "thiserror",
 ]
 
@@ -2823,10 +2825,12 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "camino",
+ "hex",
  "ra-ap-rustc_lexer",
  "tempfile",
  "thiserror",
  "vx-cas-proto",
+ "vx-manifest",
 ]
 
 [[package]]

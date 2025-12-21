@@ -35,6 +35,7 @@ rapace = { path = "../rapace/crates/rapace" }
 
 # hashing
 blake3 = "1"
+hex = "0.4"
 
 # error handling
 eyre = "0.6"

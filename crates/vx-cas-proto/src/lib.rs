@@ -15,7 +15,7 @@ pub const CACHE_KEY_SCHEMA_VERSION: u32 = 1;
 
 /// A blake3 hash, used for blobs, manifests, and cache keys.
 /// Internally stored as raw bytes; hex formatting is for display only.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Facet)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Facet)]
 pub struct Blake3Hash(#[facet(sensitive)] pub [u8; 32]);
 
 impl Blake3Hash {
