@@ -194,6 +194,113 @@ pub enum OutsideWorkspaceError {
     },
 }
 
+/// Error when dep-info references workspace files not in snapshot
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotIncompleteError {
+    /// Workspace-relative paths that were missing from snapshot
+    pub missing_files: Vec<String>,
+}
+
+impl SnapshotIncompleteError {
+    pub fn new(missing_files: Vec<String>) -> Self {
+        Self { missing_files }
+    }
+}
+
+/// Error when non-.rs files are used but not declared
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndeclaredExtraInputsError {
+    /// Workspace-relative paths to non-.rs files that need to be declared
+    pub undeclared_files: Vec<String>,
+}
+
+impl UndeclaredExtraInputsError {
+    pub fn new(undeclared_files: Vec<String>) -> Self {
+        Self { undeclared_files }
+    }
+}
+
+/// Check if observed inputs are all covered by snapshot
+///
+/// This detects cases where rustc read workspace files that weren't included
+/// in the snapshot (e.g., via include_str!(), #[path="..."], etc.).
+///
+/// # Arguments
+///
+/// * `observed_inputs` - The InputSet from parsing dep-info
+/// * `snapshot_files` - Set of workspace-relative paths that were in the snapshot
+///
+/// # Returns
+///
+/// Ok(()) if all observed workspace files were in snapshot
+/// Err(SnapshotIncompleteError) with the list of missing files otherwise
+pub fn validate_snapshot_complete(
+    observed_inputs: &InputSet,
+    snapshot_files: &HashSet<String>,
+) -> Result<(), SnapshotIncompleteError> {
+    let mut missing = Vec::new();
+
+    for workspace_file in &observed_inputs.workspace_files {
+        if !snapshot_files.contains(&workspace_file.rel_path) {
+            missing.push(workspace_file.rel_path.clone());
+        }
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        missing.sort();
+        Err(SnapshotIncompleteError::new(missing))
+    }
+}
+
+/// Validate that all non-.rs workspace files are declared as extra_inputs
+///
+/// This enforces the contract that files like templates, images, or other
+/// assets used via include_str!(), include_bytes!(), etc. must be explicitly
+/// declared in the build configuration.
+///
+/// # Arguments
+///
+/// * `observed_inputs` - The InputSet from parsing dep-info
+/// * `declared_extra_inputs` - Set of workspace-relative paths explicitly declared
+///
+/// # Returns
+///
+/// Ok(()) if all non-.rs files are declared
+/// Err(UndeclaredExtraInputsError) with undeclared files otherwise
+///
+/// # V1 Behavior
+///
+/// Currently, this validation is informational only. V2 will enforce the requirement.
+pub fn validate_extra_inputs(
+    observed_inputs: &InputSet,
+    declared_extra_inputs: &HashSet<String>,
+) -> Result<(), UndeclaredExtraInputsError> {
+    let mut undeclared = Vec::new();
+
+    for workspace_file in &observed_inputs.workspace_files {
+        let path = &workspace_file.rel_path;
+
+        // Check if this is a non-.rs file
+        if !path.ends_with(".rs") && !path.ends_with("Cargo.toml") && !path.ends_with("Cargo.lock")
+        {
+            // Non-.rs workspace file - must be declared
+            if !declared_extra_inputs.contains(path) {
+                undeclared.push(path.clone());
+            }
+        }
+    }
+
+    if undeclared.is_empty() {
+        Ok(())
+    } else {
+        undeclared.sort();
+        // V1: Return error but caller may choose to warn instead of fail
+        Err(UndeclaredExtraInputsError::new(undeclared))
+    }
+}
+
 /// Validate that all external deps are either toolchain or explicitly allowed
 ///
 /// This enforces hermetic builds: only files in workspace, toolchain, or
@@ -297,6 +404,138 @@ pub fn classify_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_snapshot_complete_all_present() {
+        let mut input_set = InputSet::new();
+        input_set.add_workspace_file("src/lib.rs".to_string());
+        input_set.add_workspace_file("src/mod.rs".to_string());
+
+        let mut snapshot_files = HashSet::new();
+        snapshot_files.insert("src/lib.rs".to_string());
+        snapshot_files.insert("src/mod.rs".to_string());
+        snapshot_files.insert("src/extra.rs".to_string()); // Extra files in snapshot are OK
+
+        let result = validate_snapshot_complete(&input_set, &snapshot_files);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_snapshot_complete_missing_file() {
+        let mut input_set = InputSet::new();
+        input_set.add_workspace_file("src/lib.rs".to_string());
+        input_set.add_workspace_file("src/missing.rs".to_string());
+
+        let mut snapshot_files = HashSet::new();
+        snapshot_files.insert("src/lib.rs".to_string());
+
+        let result = validate_snapshot_complete(&input_set, &snapshot_files);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.missing_files, vec!["src/missing.rs"]);
+    }
+
+    #[test]
+    fn test_validate_snapshot_complete_multiple_missing() {
+        let mut input_set = InputSet::new();
+        input_set.add_workspace_file("src/a.rs".to_string());
+        input_set.add_workspace_file("src/z.rs".to_string());
+        input_set.add_workspace_file("src/m.rs".to_string());
+
+        let mut snapshot_files = HashSet::new();
+        snapshot_files.insert("src/a.rs".to_string());
+
+        let result = validate_snapshot_complete(&input_set, &snapshot_files);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        // Should be sorted
+        assert_eq!(err.missing_files, vec!["src/m.rs", "src/z.rs"]);
+    }
+
+    #[test]
+    fn test_validate_snapshot_complete_empty() {
+        let input_set = InputSet::new();
+        let snapshot_files = HashSet::new();
+
+        let result = validate_snapshot_complete(&input_set, &snapshot_files);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_extra_inputs_all_rs_files() {
+        let mut input_set = InputSet::new();
+        input_set.add_workspace_file("src/lib.rs".to_string());
+        input_set.add_workspace_file("src/mod.rs".to_string());
+
+        let declared = HashSet::new(); // No extra inputs declared
+
+        let result = validate_extra_inputs(&input_set, &declared);
+        assert!(result.is_ok()); // .rs files don't need to be declared
+    }
+
+    #[test]
+    fn test_validate_extra_inputs_with_declared() {
+        let mut input_set = InputSet::new();
+        input_set.add_workspace_file("src/lib.rs".to_string());
+        input_set.add_workspace_file("templates/index.html".to_string());
+
+        let mut declared = HashSet::new();
+        declared.insert("templates/index.html".to_string());
+
+        let result = validate_extra_inputs(&input_set, &declared);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_extra_inputs_undeclared() {
+        let mut input_set = InputSet::new();
+        input_set.add_workspace_file("src/lib.rs".to_string());
+        input_set.add_workspace_file("data/config.json".to_string());
+
+        let declared = HashSet::new();
+
+        let result = validate_extra_inputs(&input_set, &declared);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.undeclared_files, vec!["data/config.json"]);
+    }
+
+    #[test]
+    fn test_validate_extra_inputs_cargo_files_allowed() {
+        let mut input_set = InputSet::new();
+        input_set.add_workspace_file("src/lib.rs".to_string());
+        input_set.add_workspace_file("Cargo.toml".to_string());
+        input_set.add_workspace_file("Cargo.lock".to_string());
+
+        let declared = HashSet::new();
+
+        let result = validate_extra_inputs(&input_set, &declared);
+        assert!(result.is_ok()); // Cargo files don't need declaration
+    }
+
+    #[test]
+    fn test_validate_extra_inputs_multiple_undeclared() {
+        let mut input_set = InputSet::new();
+        input_set.add_workspace_file("assets/logo.png".to_string());
+        input_set.add_workspace_file("data/schema.sql".to_string());
+        input_set.add_workspace_file("templates/base.html".to_string());
+
+        let mut declared = HashSet::new();
+        declared.insert("templates/base.html".to_string()); // Only one declared
+
+        let result = validate_extra_inputs(&input_set, &declared);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        // Should be sorted
+        assert_eq!(
+            err.undeclared_files,
+            vec!["assets/logo.png", "data/schema.sql"]
+        );
+    }
 
     #[test]
     fn test_input_set_normalize() {

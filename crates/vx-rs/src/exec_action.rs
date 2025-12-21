@@ -3,6 +3,8 @@
 //! This module defines the RustDepInfo action that runs rustc remotely
 //! via execd to produce both compilation outputs and dep-info.
 
+use crate::input_set::InputSet;
+use crate::snapshot::SnapshotManifest;
 use facet::Facet;
 
 /// Action for remote Rust compilation with dep-info
@@ -13,34 +15,39 @@ use facet::Facet;
 ///
 /// The dep-info output is used to compute `observed_inputs` which become
 /// the authoritative record for cache keys.
+///
+/// ## Invariants
+/// - Only execd runs rustc (daemon NEVER shells out to rustc)
+/// - Toolchain is hermetic and referenced by toolchain_manifest
+/// - Observed inputs are authoritative for cache keys
 #[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct RustDepInfoAction {
     /// Toolchain manifest hash (Blake3)
     /// References the hermetic Rust toolchain in CAS
     pub toolchain_manifest: String,
 
-    /// Snapshot manifest hash (Blake3)
-    /// References the SnapshotManifest in CAS that describes
-    /// which workspace files to materialize
-    pub snapshot_manifest_hash: String,
+    /// Crate identifier (Blake3 or node ID)
+    /// Used for tracking which crate this build is for
+    pub crate_id: String,
 
-    /// Workspace-relative path to the crate root
-    /// (e.g., "src/lib.rs" or "src/main.rs")
-    pub crate_root_rel: String,
+    /// Workspace root identifier (Blake3)
+    /// Opaque identifier for workspace identity (used for path normalization)
+    pub workspace_root_id: String,
 
-    /// Crate name for identification
-    pub crate_name: String,
+    /// Snapshot manifest describing all files to materialize
+    /// This is the maximalist superset of files (all *.rs + Cargo.toml/lock)
+    pub snapshot_manifest: SnapshotManifest,
 
     /// Arguments to pass to rustc
-    /// Must include --emit=dep-info plus other output kinds
+    /// MUST include --emit=dep-info and a deterministic --dep-info output path
     pub rustc_args: Vec<String>,
 
     /// Working directory (workspace-relative)
     /// Usually the crate directory or workspace root
     pub cwd_rel: String,
 
-    /// Explicit environment variables (allowlist only)
-    /// Ambient environment is NOT inherited
+    /// Explicit environment variables (strict allowlist only)
+    /// Ambient environment is NOT inherited. Should be almost empty.
     pub env: Vec<(String, String)>,
 }
 
@@ -48,15 +55,15 @@ impl RustDepInfoAction {
     /// Create a new RustDepInfo action
     pub fn new(
         toolchain_manifest: String,
-        snapshot_manifest_hash: String,
-        crate_root_rel: String,
-        crate_name: String,
+        crate_id: String,
+        workspace_root_id: String,
+        snapshot_manifest: SnapshotManifest,
     ) -> Self {
         Self {
             toolchain_manifest,
-            snapshot_manifest_hash,
-            crate_root_rel,
-            crate_name,
+            crate_id,
+            workspace_root_id,
+            snapshot_manifest,
             rustc_args: Vec::new(),
             cwd_rel: String::new(),
             env: Vec::new(),
@@ -79,24 +86,102 @@ impl RustDepInfoAction {
     }
 }
 
+/// Execution status for RustDepInfo action
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ExecutionStatus {
+    /// Compilation succeeded
+    Success = 0,
+    /// Compilation failed (rustc returned non-zero)
+    CompilationFailed = 1,
+    /// Snapshot was incomplete (missing workspace files)
+    SnapshotIncomplete = 2,
+    /// Referenced untracked generated files
+    UntrackedGeneratedFiles = 3,
+    /// Other execution failure
+    ExecutionError = 4,
+}
+
+impl ExecutionStatus {
+    /// Convert status to u8 for serialization
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            Self::Success => 0,
+            Self::CompilationFailed => 1,
+            Self::SnapshotIncomplete => 2,
+            Self::UntrackedGeneratedFiles => 3,
+            Self::ExecutionError => 4,
+        }
+    }
+
+    /// Convert u8 to status for deserialization
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Success),
+            1 => Some(Self::CompilationFailed),
+            2 => Some(Self::SnapshotIncomplete),
+            3 => Some(Self::UntrackedGeneratedFiles),
+            4 => Some(Self::ExecutionError),
+            _ => None,
+        }
+    }
+}
+
+/// A generated artifact that was written during compilation
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+pub struct GeneratedArtifact {
+    /// Workspace-relative path (or generated-root-relative)
+    pub path: String,
+
+    /// Blake3 hash if the artifact was captured
+    pub blob_hash: Option<String>,
+
+    /// Provenance: which node/action produced this
+    /// If empty, this is "generated-but-untracked" (should fail hermetic builds)
+    pub producer_id: Option<String>,
+}
+
 /// Result from a RustDepInfo execution
 #[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct RustDepInfoResult {
-    /// Blake3 hash of the dep-info file content
-    pub depinfo_blob: String,
+    /// Execution status (as u8, use ExecutionStatus::from_u8 to decode)
+    pub status_code: u8,
+
+    /// Blake3 hash of the dep-info file content (stored in CAS)
+    /// Don't inline large strings - always use CAS for dep-info text
+    pub dep_info_text_blob: String,
+
+    /// Observed inputs parsed from dep-info, normalized and classified
+    /// This is the authoritative record used for cache keys
+    pub observed_inputs: InputSet,
 
     /// Compilation outputs (rlib, rmeta, bin, etc.)
-    /// Maps output kind to CAS blob hash
     pub outputs: Vec<CompilationOutput>,
 
-    /// Exit status code
+    /// Generated artifacts written during compilation
+    /// If dep-info references generated files, we need provenance
+    pub writes: Vec<GeneratedArtifact>,
+
+    /// Exit status code from rustc
     pub exit_code: i32,
 
-    /// Blake3 hash of stdout content (for diagnostics)
+    /// Blake3 hash of stdout content (bounded, stored in CAS)
     pub stdout_blob: Option<String>,
 
-    /// Blake3 hash of stderr content (for diagnostics)
+    /// Blake3 hash of stderr content (bounded, stored in CAS)
     pub stderr_blob: Option<String>,
+}
+
+impl RustDepInfoResult {
+    /// Get the execution status
+    pub fn status(&self) -> Option<ExecutionStatus> {
+        ExecutionStatus::from_u8(self.status_code)
+    }
+
+    /// Set the execution status
+    pub fn set_status(&mut self, status: ExecutionStatus) {
+        self.status_code = status.to_u8();
+    }
 }
 
 /// A single compilation output artifact
