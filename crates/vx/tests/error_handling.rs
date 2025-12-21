@@ -56,7 +56,6 @@ fn rejects_build_script() {
 }
 
 #[test]
-#[ignore = "not yet implemented"]
 fn rejects_features() {
     let env = TestEnv::new();
     env.write_file(
@@ -83,7 +82,6 @@ foo = []
 }
 
 #[test]
-#[ignore = "not yet implemented"]
 fn rejects_proc_macros() {
     let env = TestEnv::new();
     env.write_file(
