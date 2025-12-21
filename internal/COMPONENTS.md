@@ -74,8 +74,6 @@ vx ──rapace──► vx-daemon ─────┤ vx-casd  │
 - `vx-daemon-proto` — for `BuildRequest`, `BuildResult`, `Daemon` trait
 - `rapace` — for RPC connection
 
-**Current state:** Instantiates DaemonService in-process (temporary). Target: separate process over rapace.
-
 ---
 
 ### `vx-daemon-proto` — Daemon Protocol
@@ -147,7 +145,7 @@ pub trait Daemon {
 - `picante` — incremental queries
 - `rapace` — RPC to CAS and Exec
 
-**Current state:** Instantiates CasService in-process, runs rustc directly. Target: connect to vx-casd and vx-execd over rapace.
+
 
 ---
 
@@ -291,7 +289,7 @@ pub trait Exec {
 - `vx-cas-proto` — for CAS client
 - `rapace` — for serving RPC and CAS client
 
-**Current state:** Stub. Daemon runs rustc directly. Target: separate binary that handles execution.
+
 
 ---
 
@@ -334,12 +332,12 @@ pub enum Edition { E2015, E2018, E2021, E2024 }
 | Crate | Reads | Writes |
 |-------|-------|--------|
 | `vx` | cwd path only | none |
-| `vx-daemon` | `Cargo.toml`, `src/main.rs` | `.vx/build/` (via atomic write) |
-| `vx-casd` | `.vx/cas/` | `.vx/cas/` |
+| `vx-daemon` | `Cargo.toml`, `src/main.rs` | `<project>/.vx/build/` |
+| `vx-casd` | `~/.vx/` | `~/.vx/` |
 | `vx-manifest` | `Cargo.toml` | none |
 | `*-proto` | none | none |
 
-**Key isolation rule:** `vx-daemon` never touches `.vx/cas/` directly — all CAS operations go through `CasService` methods.
+**Key isolation rule:** `vx-daemon` never touches `~/.vx/` directly — all CAS operations go through the `Cas` trait (rapace RPC).
 
 ---
 

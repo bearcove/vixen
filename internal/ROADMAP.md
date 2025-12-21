@@ -21,18 +21,7 @@ This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the n
 - [x] `SourceFile` (path + content hash)
 - [x] `CargoToml` (hash + name + edition + bin_path)
 - [x] `BuildConfig` (profile + target + workspace)
-- [ ] `RustcToolchain` — proper toolchain management (see below)
-
-### Toolchain Management
-
-Current: honor `RUSTC` env var or find `rustc` in PATH, use `rustc -vV` for cache key.
-
-Goal: vx owns the toolchain completely:
-- [ ] Read `rust-toolchain.toml` or default to a pinned version
-- [ ] Download toolchain from rustup if not present
-- [ ] Store toolchain in CAS (it's just bytes)
-- [ ] Toolchain hash becomes part of cache key
-- [ ] No dependency on system rustc
+- [ ] `RustcToolchain` (rustc path + `rustc -vV` output)
 
 ### Picante Queries
 
@@ -55,12 +44,15 @@ Goal: vx owns the toolchain completely:
 
 ### Cache Correctness
 
-- [x] No-op build = zero rustc invocations
+**Note:** Current caching uses in-memory picante memoization + ad-hoc file checks. v0 completion requires CAS-backed manifest/index for proper cross-session persistence.
+
+- [x] No-op build = zero rustc invocations (within session)
 - [x] Source change = cache miss
 - [x] Profile change = cache miss
 - [x] Edition change = cache miss
 - [ ] Toolchain change = cache miss (needs RustcToolchain input)
 - [ ] Different checkout path = still cache hit (--remap-path-prefix)
+- [ ] Cross-session cache persistence (needs CAS manifest/index)
 
 ### Service Separation
 
@@ -127,3 +119,14 @@ These are explicitly out of scope for v0:
 - Incremental compilation
 - Remote execution
 - CI integration
+
+### Toolchain Management (post-v0)
+
+v0 uses system rustc (honor `RUSTC` env var or find in PATH).
+
+Future: vx owns the toolchain completely:
+- Read `rust-toolchain.toml` or default to a pinned version
+- Download toolchain from rustup if not present
+- Store toolchain in CAS (it's just bytes)
+- Toolchain hash becomes part of cache key
+- No dependency on system rustc

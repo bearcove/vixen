@@ -55,9 +55,9 @@ Each unsupported feature must produce a clear diagnostic, not silent fallback.
 
 ---
 
-## Architecture: Everything is a Service
+## Architecture: Everything Durable Crosses a Service Boundary
 
-From day one, everything is a service boundary. This sets up for:
+From day one, all durable storage and execution crosses a service boundary. This sets up for:
 - Daemonization
 - Remote workers
 - CI parity
@@ -83,6 +83,13 @@ vx ──rapace──► vx-daemon ─────┤ vx-casd  │
 
 Rapace handles transport — SHM for local, network for remote.
 
+**Service endpoints are configured:**
+- CLI knows daemon endpoint (env var or default socket)
+- Daemon knows CAS endpoint and Exec endpoint
+- Execd knows CAS endpoint (configured at startup)
+
+**v0 deployment:** All four run as separate processes on localhost using SHM transport. The CLI can auto-spawn them if not running.
+
 ---
 
 ## Filesystem Access Rules
@@ -94,12 +101,16 @@ The "service boundaries" principle needs staged enforcement:
 - Nothing is cached without going through CAS
 - Daemon never writes to `.vx/cas/` directly
 
-**Allowed direct access:**
+**Allowed direct filesystem access:**
 - Daemon may read project sources (Cargo.toml, src/main.rs)
 - Daemon may write materialized outputs to `.vx/build/`
 - vx-execd may read sources and write temp files during compilation
 
 This avoids awkward "read file over RPC" shims while maintaining the core invariant: **CAS is the only durable artifact store**.
+
+**Staged capability for execd:**
+- v0: execd reads sources directly from the local workspace (simplest)
+- Later: execd can fetch source blobs from CAS, enabling remote execution
 
 ---
 
@@ -194,10 +205,19 @@ pub trait Cas {
 `publish(cache_key, manifest_hash)`:
 
 1. **Validation:** Fails if `manifest_hash` doesn't exist in CAS
-2. **Overwrite policy:** First writer wins — if cache key already mapped, publish succeeds but doesn't overwrite
-3. **Returns:** `PublishResult { success: bool, error: Option<String> }`
+2. **Idempotent:** If cache key already maps to `manifest_hash`, returns `AlreadyExists`
+3. **Conflict detection:** If cache key maps to a *different* manifest hash, returns `Conflict { existing: ManifestHash }`
+4. **Returns:** `PublishResult { status: PublishStatus, error: Option<String> }`
 
-Concurrent builds racing to publish the same key are safe. First to complete wins; others succeed silently.
+```rust
+pub enum PublishStatus {
+    Published,        // New mapping created
+    AlreadyExists,    // Same mapping already existed (idempotent success)
+    Conflict,         // Different mapping exists (bug: same key, different output)
+}
+```
+
+Conflicts should never happen with correct cache keys. If they do, it indicates a bug in cache key computation — the error makes it visible rather than silently using a stale artifact.
 
 ---
 
@@ -273,8 +293,13 @@ pub async fn node_id_compile_bin<DB: Db>(db: &DB) -> PicanteResult<NodeId>;
 - Crate name
 - Edition
 - Crate type (`bin`)
-- Content hash of source files
+- Content hash of all source files in the crate
 - Content hash of `Cargo.toml`
+
+**v0 source enumeration rule:**
+v0 supports only single-file crates (`src/main.rs` only). `mod` declarations that reference other files are rejected with a clear error. This keeps source discovery trivial while maintaining correctness.
+
+Later versions will implement proper module discovery by parsing `mod` declarations and walking the source closure.
 
 **What's NOT in the cache key:**
 - Workspace root path — `--remap-path-prefix` normalizes path-sensitive outputs
@@ -288,14 +313,19 @@ pub async fn node_id_compile_bin<DB: Db>(db: &DB) -> PicanteResult<NodeId>;
 
 ## Content-Addressed Storage
 
+CAS is global, shared across all projects. This enables cross-project cache reuse.
+
+**Cache entries are not namespaced by project, only by CacheKey.** This is intentional — two projects with identical inputs produce identical cache keys and share artifacts. Don't add "project id" to the key; that would break cross-project reuse.
+
+**CAS Location:** `~/.vx/` (or `$VX_HOME` if set)
+
 **Storage Layout:**
 ```
-.vx/
-  cas/
-    blobs/<hh>/<hash>              # raw bytes
-    manifests/<hh>/<hash>.json     # structured node output records
-    cache/<hh>/<cachekey>          # contains manifest hash
-    tmp/                           # staging for atomic writes
+~/.vx/
+  blobs/<hh>/<hash>              # raw bytes
+  manifests/<hh>/<hash>.json     # structured node output records
+  cache/<hh>/<cachekey>          # contains manifest hash
+  tmp/                           # staging for atomic writes
 ```
 
 **Design Rules:**
@@ -303,7 +333,7 @@ pub async fn node_id_compile_bin<DB: Db>(db: &DB) -> PicanteResult<NodeId>;
 - Blobs are immutable once written
 - Manifests reference blobs by hash
 - Cache index maps CacheKey → ManifestHash
-- First writer wins on cache key conflicts
+- Conflicts detected and reported (see Publish Semantics)
 
 ---
 
@@ -326,13 +356,18 @@ pub async fn node_id_compile_bin<DB: Db>(db: &DB) -> PicanteResult<NodeId>;
 
 ## Filesystem Layout
 
+**Global (shared CAS):**
 ```
-.vx/
-  cas/
-    blobs/<hh>/<hash>
-    manifests/<hh>/<hash>.json
-    cache/<hh>/<cachekey>
-    tmp/
+~/.vx/
+  blobs/<hh>/<hash>
+  manifests/<hh>/<hash>.json
+  cache/<hh>/<cachekey>
+  tmp/
+```
+
+**Project-local:**
+```
+<project>/.vx/
   build/
     <triple>/
       debug/<crate-name>
@@ -356,6 +391,8 @@ Stop the daemon process.
 ### `vx clean`
 
 Stop the daemon and remove the entire `.vx/` directory.
+
+**Note:** Project-local `.vx/` contains build outputs and run logs. The CAS is shared globally at `~/.vx/`. `vx clean` removes only the project-local `.vx/` directory, not the global CAS.
 
 ### `vx explain`
 
