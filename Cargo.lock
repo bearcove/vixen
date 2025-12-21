@@ -2701,6 +2701,7 @@ dependencies = [
  "tracing-subscriber",
  "vx-daemon",
  "vx-daemon-proto",
+ "vx-report",
 ]
 
 [[package]]
@@ -2757,6 +2758,7 @@ dependencies = [
  "vx-exec-proto",
  "vx-execd",
  "vx-manifest",
+ "vx-report",
  "vx-rs",
  "vx-toolchain",
 ]
@@ -2803,6 +2805,16 @@ dependencies = [
  "facet",
  "facet-toml",
  "thiserror",
+]
+
+[[package]]
+name = "vx-report"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "facet",
+ "facet-json",
+ "vx-cas-proto",
 ]
 
 [[package]]

@@ -16,6 +16,10 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, CacheKey, Cas, NodeId, NodeManifest, OutputEntry};
 use vx_casd::CasService;
+use vx_report::{
+    BuildReport, CacheOutcome, DiagnosticsRecord, InputRecord, InvocationRecord, MissReason,
+    NodeReport, NodeTiming, OutputRecord, ReportStore, ToolchainRef, ToolchainsUsed,
+};
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
 use vx_exec_proto::{ExpectedOutput, RustcInvocation};
 use vx_manifest::{Edition, Manifest};
@@ -658,10 +662,33 @@ impl DaemonService {
         let rustc_version = get_rustc_version().map_err(|e| e.to_string())?;
         let target_triple = get_target_triple().map_err(|e| e.to_string())?;
 
+        let profile = if request.release { "release" } else { "debug" };
+
+        // Initialize build report
+        let mut build_report = BuildReport::new(
+            project_path.to_string(),
+            profile.to_string(),
+            target_triple.clone(),
+        );
+
+        // Record toolchain info
+        build_report.toolchains = ToolchainsUsed {
+            rust: Some(ToolchainRef {
+                id: Blake3Hash::from_bytes(rustc_version.as_bytes()).to_hex(),
+                version: extract_rustc_version(&rustc_version),
+            }),
+            zig: None, // Not used for Rust builds
+        };
+
         // Compute source closure (all .rs files in the crate)
         let crate_root = Utf8Path::new("src/main.rs"); // TODO: use manifest.bin.path properly
         let closure_paths = vx_rs::rust_source_closure(crate_root, project_path)
-            .map_err(|e| format_module_error(&e))?;
+            .map_err(|e| {
+                let error_msg = format_module_error(&e);
+                build_report.finalize(false, Some(error_msg.clone()));
+                self.save_report(project_path, &build_report);
+                error_msg
+            })?;
 
         // Hash the closure (paths + contents)
         let closure_hash = vx_rs::hash_source_closure(&closure_paths, project_path)
@@ -672,28 +699,27 @@ impl DaemonService {
             .map_err(|e| format!("failed to read Cargo.toml: {}", e))?;
         let cargo_toml_hash = Blake3Hash::from_bytes(&cargo_toml_content);
 
-        let profile = if request.release { "release" } else { "debug" };
-
         // Use the shared picante database
         let db = self.db.lock().await;
 
         // Set inputs
         let closure_paths_strings: Vec<String> =
             closure_paths.iter().map(|p| p.to_string()).collect();
-        SourceClosure::set(&*db, closure_hash, closure_paths_strings)
+        SourceClosure::set(&*db, closure_hash.clone(), closure_paths_strings)
             .map_err(|e| format!("picante error: {}", e))?;
 
         // Singletons: Type::set(db, field1, field2, ...)
         CargoToml::set(
             &*db,
-            cargo_toml_hash,
+            cargo_toml_hash.clone(),
             manifest.name.clone(),
             manifest.edition,
             manifest.bin.path.to_string(),
         )
         .map_err(|e| format!("picante error: {}", e))?;
 
-        RustcVersion::set(&*db, rustc_version).map_err(|e| format!("picante error: {}", e))?;
+        RustcVersion::set(&*db, rustc_version.clone())
+            .map_err(|e| format!("picante error: {}", e))?;
 
         BuildConfig::set(
             &*db,
@@ -718,9 +744,33 @@ impl DaemonService {
 
         let output_path = output_dir.join(&manifest.name);
 
+        // Build the inputs list for the report
+        let inputs = vec![
+            InputRecord {
+                label: "source_closure".to_string(),
+                value: closure_hash.to_hex(),
+            },
+            InputRecord {
+                label: "Cargo.toml".to_string(),
+                value: cargo_toml_hash.to_hex(),
+            },
+            InputRecord {
+                label: "rustc".to_string(),
+                value: Blake3Hash::from_bytes(rustc_version.as_bytes()).to_hex(),
+            },
+            InputRecord {
+                label: "target".to_string(),
+                value: target_triple.clone(),
+            },
+            InputRecord {
+                label: "profile".to_string(),
+                value: profile.to_string(),
+            },
+        ];
+
         // Check cache
         if let Some(cached_manifest_hash) = self.cas.lookup(cache_key.clone()).await
-            && let Some(cached_manifest) = self.cas.get_manifest(cached_manifest_hash).await
+            && let Some(cached_manifest) = self.cas.get_manifest(cached_manifest_hash.clone()).await
         {
             // Cache hit - materialize outputs
             for output in &cached_manifest.outputs {
@@ -732,6 +782,39 @@ impl DaemonService {
                     return Err(format!("blob {} not found in CAS", output.blob.to_hex()));
                 }
             }
+
+            // Record cache hit in report
+            let node_report = NodeReport {
+                node_id: cached_manifest.node_id.0.clone(),
+                kind: "rust.compile_bin".to_string(),
+                cache_key: cache_key.to_hex(),
+                cache: CacheOutcome::Hit {
+                    manifest: cached_manifest_hash.to_hex(),
+                },
+                timing: NodeTiming {
+                    queued_ms: 0,
+                    execute_ms: 0,
+                },
+                inputs,
+                outputs: cached_manifest
+                    .outputs
+                    .iter()
+                    .map(|o| OutputRecord {
+                        logical: o.logical.clone(),
+                        manifest: Some(cached_manifest_hash.to_hex()),
+                        blob: Some(o.blob.to_hex()),
+                        path: Some(format!(
+                            ".vx/build/{}/{}/{}",
+                            target_triple, profile, o.filename
+                        )),
+                    })
+                    .collect(),
+                invocation: None,
+                diagnostics: DiagnosticsRecord::default(),
+            };
+            build_report.add_node(node_report);
+            build_report.finalize(true, None);
+            self.save_report(project_path, &build_report);
 
             return Ok(BuildResult {
                 success: true,
@@ -765,8 +848,50 @@ impl DaemonService {
 
         let duration = start.elapsed();
 
+        // Store stdout/stderr in CAS (even for failures)
+        let stdout_blob = if !output.stdout.is_empty() {
+            Some(self.cas.put_blob(output.stdout.clone()).await)
+        } else {
+            None
+        };
+        let stderr_blob = if !output.stderr.is_empty() {
+            Some(self.cas.put_blob(output.stderr.clone()).await)
+        } else {
+            None
+        };
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Record failed build in report
+            let node_report = NodeReport {
+                node_id: node_id.0.clone(),
+                kind: "rust.compile_bin".to_string(),
+                cache_key: cache_key.to_hex(),
+                cache: CacheOutcome::Miss {
+                    reason: MissReason::KeyNotFound,
+                },
+                timing: NodeTiming {
+                    queued_ms: 0,
+                    execute_ms: duration.as_millis() as u64,
+                },
+                inputs,
+                outputs: vec![],
+                invocation: Some(InvocationRecord {
+                    program: invocation.program.clone(),
+                    args: invocation.args.clone(),
+                    cwd: invocation.cwd.clone(),
+                    exit_code: output.status.code().unwrap_or(-1),
+                }),
+                diagnostics: DiagnosticsRecord {
+                    stdout_blob: stdout_blob.map(|h| h.to_hex()),
+                    stderr_blob: stderr_blob.map(|h| h.to_hex()),
+                },
+            };
+            build_report.add_node(node_report);
+            build_report.finalize(false, Some(stderr.to_string()));
+            self.save_report(project_path, &build_report);
+
             return Ok(BuildResult {
                 success: false,
                 message: "rustc failed".to_string(),
@@ -784,13 +909,13 @@ impl DaemonService {
 
         // Create manifest
         let node_manifest = NodeManifest {
-            node_id,
+            node_id: node_id.clone(),
             cache_key: cache_key.clone(),
             produced_at: unix_timestamp(),
             outputs: vec![OutputEntry {
                 logical: "bin".to_string(),
                 filename: manifest.name.clone(),
-                blob: blob_hash,
+                blob: blob_hash.clone(),
                 executable: true,
             }],
         };
@@ -798,13 +923,50 @@ impl DaemonService {
         let manifest_hash = self.cas.put_manifest(node_manifest).await;
 
         // Publish to cache
-        let publish_result = self.cas.publish(cache_key, manifest_hash).await;
+        let publish_result = self.cas.publish(cache_key.clone(), manifest_hash.clone()).await;
         if !publish_result.success {
             return Err(format!(
                 "failed to publish cache entry: {:?}",
                 publish_result.error
             ));
         }
+
+        // Record successful build in report
+        let node_report = NodeReport {
+            node_id: node_id.0.clone(),
+            kind: "rust.compile_bin".to_string(),
+            cache_key: cache_key.to_hex(),
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            timing: NodeTiming {
+                queued_ms: 0,
+                execute_ms: duration.as_millis() as u64,
+            },
+            inputs,
+            outputs: vec![OutputRecord {
+                logical: "bin".to_string(),
+                manifest: Some(manifest_hash.to_hex()),
+                blob: Some(blob_hash.to_hex()),
+                path: Some(format!(
+                    ".vx/build/{}/{}/{}",
+                    target_triple, profile, manifest.name
+                )),
+            }],
+            invocation: Some(InvocationRecord {
+                program: invocation.program.clone(),
+                args: invocation.args.clone(),
+                cwd: invocation.cwd.clone(),
+                exit_code: 0,
+            }),
+            diagnostics: DiagnosticsRecord {
+                stdout_blob: stdout_blob.map(|h| h.to_hex()),
+                stderr_blob: stderr_blob.map(|h| h.to_hex()),
+            },
+        };
+        build_report.add_node(node_report);
+        build_report.finalize(true, None);
+        self.save_report(project_path, &build_report);
 
         // Save picante cache after successful build
         if let Err(e) = self.save_cache().await {
@@ -824,6 +986,16 @@ impl DaemonService {
             output_path: Some(output_path),
             error: None,
         })
+    }
+
+    /// Save a build report to the project's .vx/runs/ directory.
+    fn save_report(&self, project_path: &Utf8PathBuf, report: &BuildReport) {
+        let store = ReportStore::new(project_path);
+        if let Err(e) = store.save(report) {
+            warn!(error = %e, "failed to save build report (non-fatal)");
+        } else {
+            debug!(run_id = %report.run_id, "saved build report");
+        }
     }
 }
 
@@ -861,6 +1033,21 @@ fn get_rustc_version() -> eyre::Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Extract a human-readable version from `rustc -vV` output.
+fn extract_rustc_version(rustc_version: &str) -> Option<String> {
+    // Example output:
+    // rustc 1.84.0 (9fc6b4312 2024-01-17)
+    // binary: rustc
+    // commit-hash: 9fc6b43126469e3858e2fe86f5c5d5f8f3e39649
+    // ...
+    for line in rustc_version.lines() {
+        if line.starts_with("rustc ") {
+            return Some(line.to_string());
+        }
+    }
+    None
 }
 
 fn get_target_triple() -> eyre::Result<String> {

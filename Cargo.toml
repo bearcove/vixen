@@ -18,6 +18,7 @@ vx-daemon = { path = "crates/vx-daemon" }
 vx-daemon-proto = { path = "crates/vx-daemon-proto" }
 vx-casd = { path = "crates/vx-casd" }
 vx-execd = { path = "crates/vx-execd" }
+vx-report = { path = "crates/vx-report" }
 
 # facet ecosystem
 facet = { git = "https://github.com/facet-rs/facet" }
