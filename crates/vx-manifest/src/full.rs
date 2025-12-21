@@ -236,16 +236,16 @@ pub enum Dependency {
     /// Simple version: `serde = "1.0"`
     Version(String),
 
-    /// Detailed specification: `serde = { version = "1.0", features = [...] }`
-    /// Must come before Workspace to match regular deps first
-    Detailed(DependencyDetail),
-
     /// Workspace inheritance: `serde = { workspace = true }`
+    /// Must come before Detailed to match workspace deps first
     Workspace(WorkspaceDependency),
+
+    /// Detailed specification: `serde = { version = "1.0", features = [...] }`
+    Detailed(DependencyDetail),
 }
 
 #[derive(Facet, Debug, Clone, Default)]
-#[facet(rename_all = "kebab-case", deny_unknown_fields)]
+#[facet(rename_all = "kebab-case")]
 pub struct DependencyDetail {
     /// Version requirement
     pub version: Option<String>,
@@ -291,7 +291,7 @@ pub struct DependencyDetail {
 }
 
 #[derive(Facet, Debug, Clone)]
-#[facet(rename_all = "kebab-case", deny_unknown_fields)]
+#[facet(rename_all = "kebab-case")]
 pub struct WorkspaceDependency {
     /// Must be true - this is how we distinguish workspace deps from detailed deps
     pub workspace: bool,

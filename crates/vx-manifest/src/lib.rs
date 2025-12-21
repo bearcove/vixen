@@ -422,13 +422,6 @@ fn determine_lib_target(
     raw_lib: Option<RawLibTarget>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<LibTarget> {
-    // Check if src/lib.rs exists
-    let default_lib_path = if let Some(base) = base_dir {
-        base.join("src/lib.rs")
-    } else {
-        Utf8PathBuf::from("src/lib.rs")
-    };
-
     if let Some(lib) = raw_lib {
         // Explicit [lib] section
         let path = if let Some(p) = lib.path {
@@ -438,18 +431,29 @@ fn determine_lib_target(
                 Utf8PathBuf::from(p)
             }
         } else {
-            default_lib_path
+            // No explicit path, use default
+            if let Some(base) = base_dir {
+                base.join("src/lib.rs")
+            } else {
+                Utf8PathBuf::from("src/lib.rs")
+            }
         };
 
         let name = lib.name.unwrap_or_else(|| package_name.replace('-', "_"));
         Some(LibTarget { name, path })
-    } else if default_lib_path.exists() {
-        // Auto-detect src/lib.rs
-        Some(LibTarget {
-            name: package_name.replace('-', "_"),
-            path: default_lib_path,
-        })
+    } else if let Some(base) = base_dir {
+        // Only auto-detect src/lib.rs when we have a base_dir
+        let default_lib_path = base.join("src/lib.rs");
+        if default_lib_path.exists() {
+            Some(LibTarget {
+                name: package_name.replace('-', "_"),
+                path: default_lib_path,
+            })
+        } else {
+            None
+        }
     } else {
+        // No base_dir means we can't auto-detect targets
         None
     }
 }
@@ -460,13 +464,6 @@ fn determine_bin_target(
     raw_bins: Option<Vec<RawBinTarget>>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<BinTarget> {
-    // Check if src/main.rs exists
-    let default_main_path = if let Some(base) = base_dir {
-        base.join("src/main.rs")
-    } else {
-        Utf8PathBuf::from("src/main.rs")
-    };
-
     if let Some(bins) = raw_bins {
         // Explicit [[bin]] section(s) - we only support one (validated earlier)
         if let Some(bin) = bins.into_iter().next() {
@@ -477,7 +474,12 @@ fn determine_bin_target(
                     Utf8PathBuf::from(p)
                 }
             } else {
-                default_main_path
+                // No explicit path, use default
+                if let Some(base) = base_dir {
+                    base.join("src/main.rs")
+                } else {
+                    Utf8PathBuf::from("src/main.rs")
+                }
             };
 
             let name = bin.name.unwrap_or_else(|| package_name.to_string());
@@ -485,13 +487,19 @@ fn determine_bin_target(
         }
     }
 
-    // Auto-detect src/main.rs
-    if default_main_path.exists() {
-        Some(BinTarget {
-            name: package_name.to_string(),
-            path: default_main_path,
-        })
+    // Only auto-detect src/main.rs when we have a base_dir
+    if let Some(base) = base_dir {
+        let default_main_path = base.join("src/main.rs");
+        if default_main_path.exists() {
+            Some(BinTarget {
+                name: package_name.to_string(),
+                path: default_main_path,
+            })
+        } else {
+            None
+        }
     } else {
+        // No base_dir means we can't auto-detect targets
         None
     }
 }
