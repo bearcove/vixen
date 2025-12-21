@@ -2696,6 +2696,7 @@ dependencies = [
  "facet",
  "facet-args",
  "owo-colors",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing-subscriber",

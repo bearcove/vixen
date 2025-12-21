@@ -50,6 +50,26 @@ enum CliCommand {
         /// Show verbose output (full hashes, unchanged deps)
         #[facet(args::named, args::short = 'v')]
         verbose: bool,
+
+        /// Explain only this specific node ID
+        #[facet(args::named)]
+        node: Option<String>,
+
+        /// Show only fanout analysis
+        #[facet(args::named)]
+        fanout: bool,
+
+        /// Show detailed input diffs
+        #[facet(args::named)]
+        inputs: bool,
+
+        /// Show detailed dependency diffs
+        #[facet(args::named)]
+        deps: bool,
+
+        /// Output in JSON format
+        #[facet(args::named)]
+        json: bool,
     },
 }
 
@@ -72,7 +92,15 @@ async fn main() -> Result<()> {
         CliCommand::Build { release } => cmd_build(release).await,
         CliCommand::Kill => cmd_kill(),
         CliCommand::Clean => cmd_clean(),
-        CliCommand::Explain { all, verbose } => cmd_explain(all, verbose),
+        CliCommand::Explain {
+            all,
+            verbose,
+            node,
+            fanout,
+            inputs,
+            deps,
+            json,
+        } => cmd_explain(all, verbose, node, fanout, inputs, deps, json),
     }
 }
 
@@ -164,7 +192,15 @@ fn cmd_clean() -> Result<()> {
     Ok(())
 }
 
-fn cmd_explain(show_all: bool, verbose: bool) -> Result<()> {
+fn cmd_explain(
+    show_all: bool,
+    verbose: bool,
+    node_filter: Option<String>,
+    fanout_only: bool,
+    show_inputs: bool,
+    show_deps: bool,
+    output_json: bool,
+) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
     let store = ReportStore::new(&cwd);
 
@@ -181,7 +217,20 @@ fn cmd_explain(show_all: bool, verbose: bool) -> Result<()> {
     // Load previous report for diffing deps
     let prev_report = store.load_previous().ok().flatten();
 
-    cmd_explain_report(&report, prev_report.as_ref(), show_all, verbose)
+    if output_json {
+        cmd_explain_json(&report, prev_report.as_ref(), node_filter)
+    } else {
+        cmd_explain_report(
+            &report,
+            prev_report.as_ref(),
+            show_all,
+            verbose,
+            node_filter,
+            fanout_only,
+            show_inputs,
+            show_deps,
+        )
+    }
 }
 
 fn cmd_explain_report(
@@ -189,6 +238,10 @@ fn cmd_explain_report(
     prev_report: Option<&vx_report::BuildReport>,
     show_all: bool,
     verbose: bool,
+    node_filter: Option<String>,
+    fanout_only: bool,
+    _show_inputs: bool,
+    _show_deps: bool,
 ) -> Result<()> {
     use std::collections::HashMap;
 
@@ -231,12 +284,25 @@ fn cmd_explain_report(
         .map(|r| r.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect())
         .unwrap_or_default();
 
+    // Handle fanout-only mode
+    if fanout_only {
+        print_fanout_analysis(report, verbose);
+        return Ok(());
+    }
+
     // Separate nodes by outcome
     let mut failures = Vec::new();
     let mut misses = Vec::new();
     let mut hits = Vec::new();
 
     for node in &report.nodes {
+        // Apply node filter if specified
+        if let Some(ref filter) = node_filter {
+            if &node.node_id != filter {
+                continue;
+            }
+        }
+
         match &node.cache {
             CacheOutcome::Miss { .. } => {
                 if node.invocation.as_ref().map(|i| i.exit_code != 0).unwrap_or(false) {
@@ -258,14 +324,20 @@ fn cmd_explain_report(
         println!();
     }
 
-    // Print misses with dep diffs
+    // Print misses with explanations
     if !misses.is_empty() {
-        println!("{}", "Rebuilt:".yellow().bold());
+        println!("{}", "=== WHY REBUILT ===".yellow().bold());
+        println!();
         for node in &misses {
             let prev_node = prev_nodes.get(node.node_id.as_str()).copied();
-            print_node(node, prev_node, verbose);
+            print_node_explanation(node, prev_node, verbose);
         }
         println!();
+    }
+
+    // Compute and print fanout
+    if !misses.is_empty() {
+        print_fanout_analysis(report, verbose);
     }
 
     // Summary of hits (unless --all)
@@ -293,14 +365,159 @@ fn cmd_explain_report(
     Ok(())
 }
 
-/// Print a single node with optional dep diff
-fn print_node(
+/// Print a node explanation using Lane 2 analysis
+fn print_node_explanation(
     node: &vx_report::NodeReport,
     prev_node: Option<&vx_report::NodeReport>,
     verbose: bool,
 ) {
-    use std::collections::HashMap;
+    use vx_report::NodeRebuildExplanation;
 
+    // Compute explanation
+    let Some(explanation) = NodeRebuildExplanation::compute(node, prev_node) else {
+        // Cache hit - shouldn't happen in this context
+        return;
+    };
+
+    let duration_ms = node.timing.execute_ms;
+    let duration_str = if duration_ms >= 1000 {
+        format!("{:.2}s", duration_ms as f64 / 1000.0)
+    } else {
+        format!("{}ms", duration_ms)
+    };
+
+    // Print node header with observed reason
+    println!(
+        "  {} ({}) {}",
+        node.node_id.cyan().bold(),
+        explanation.observed_reason.to_string().yellow(),
+        duration_str.dimmed()
+    );
+
+    // Print input changes
+    if !explanation.input_changes.is_empty() {
+        println!("    {}:", "Inputs".dimmed());
+        for change in &explanation.input_changes {
+            match (&change.old_value, &change.new_value) {
+                (Some(old), Some(new)) => {
+                    let old_short = short_hex(old, verbose);
+                    let new_short = short_hex(new, verbose);
+                    println!(
+                        "      {} {} → {}",
+                        change.label,
+                        old_short.dimmed(),
+                        new_short
+                    );
+                }
+                (None, Some(new)) => {
+                    let new_short = short_hex(new, verbose);
+                    println!("      {} {} (added)", change.label, new_short);
+                }
+                (Some(old), None) => {
+                    let old_short = short_hex(old, verbose);
+                    println!("      {} {} (removed)", change.label, old_short.dimmed());
+                }
+                (None, None) => {}
+            }
+        }
+    }
+
+    // Print dependency changes
+    if !explanation.dep_changes.is_empty() {
+        println!("    {}:", "Dependencies".dimmed());
+        for change in &explanation.dep_changes {
+            use vx_report::DepChangeKind;
+
+            let crate_id_short = short_hex(&change.crate_id, verbose);
+
+            match &change.change {
+                DepChangeKind::Added { rlib_hash, manifest_hash } => {
+                    let rlib_short = short_hex(rlib_hash, verbose);
+                    let manifest_short = short_hex(manifest_hash, verbose);
+                    println!(
+                        "      {} (crate {}): rlib {} (manifest {})",
+                        change.extern_name.cyan(),
+                        crate_id_short.dimmed(),
+                        rlib_short,
+                        manifest_short.dimmed()
+                    );
+                }
+                DepChangeKind::Removed { rlib_hash, manifest_hash } => {
+                    let rlib_short = short_hex(rlib_hash, verbose);
+                    let manifest_short = short_hex(manifest_hash, verbose);
+                    println!(
+                        "      {} (crate {}): {} (removed)",
+                        change.extern_name.cyan(),
+                        crate_id_short.dimmed(),
+                        format!("rlib {} manifest {}", rlib_short, manifest_short).dimmed()
+                    );
+                }
+                DepChangeKind::RlibChanged {
+                    old_rlib,
+                    new_rlib,
+                    old_manifest,
+                    new_manifest,
+                } => {
+                    let old_rlib_short = short_hex(old_rlib, verbose);
+                    let new_rlib_short = short_hex(new_rlib, verbose);
+                    let old_manifest_short = short_hex(old_manifest, verbose);
+                    let new_manifest_short = short_hex(new_manifest, verbose);
+
+                    print!(
+                        "      {} (crate {}): rlib {} → {}",
+                        change.extern_name.cyan(),
+                        crate_id_short.dimmed(),
+                        old_rlib_short.dimmed(),
+                        new_rlib_short
+                    );
+                    if verbose || old_manifest != new_manifest {
+                        print!(
+                            " (manifest {} → {})",
+                            old_manifest_short.dimmed(),
+                            new_manifest_short
+                        );
+                    }
+                    println!();
+                }
+                DepChangeKind::ManifestChanged {
+                    rlib_hash,
+                    old_manifest,
+                    new_manifest,
+                } => {
+                    let rlib_short = short_hex(rlib_hash, verbose);
+                    let old_manifest_short = short_hex(old_manifest, verbose);
+                    let new_manifest_short = short_hex(new_manifest, verbose);
+                    println!(
+                        "      {} (crate {}): rlib {} manifest {} → {}",
+                        change.extern_name.cyan(),
+                        crate_id_short.dimmed(),
+                        rlib_short.dimmed(),
+                        old_manifest_short.dimmed(),
+                        new_manifest_short
+                    );
+                }
+            }
+        }
+    }
+
+    // If verbose, also show the reported reason from daemon
+    if verbose {
+        println!(
+            "    {} {}",
+            "Reported reason:".dimmed(),
+            explanation.reported_reason.to_string().dimmed()
+        );
+    }
+
+    println!();
+}
+
+/// Print the old-style node display (for cache hits and failures)
+fn print_node(
+    node: &vx_report::NodeReport,
+    _prev_node: Option<&vx_report::NodeReport>,
+    verbose: bool,
+) {
     let outcome_str = match &node.cache {
         CacheOutcome::Hit { .. } => "HIT ".green().to_string(),
         CacheOutcome::Miss { reason } => format!("MISS ({})", reason).yellow().to_string(),
@@ -315,65 +532,43 @@ fn print_node(
 
     println!("  {} {:<15} {}", node.node_id, outcome_str, duration_str.dimmed());
 
-    // =========================================================================
-    // 3. DEPENDENCY DIFFS
-    // =========================================================================
-    if !node.deps.is_empty() {
-        // Build a map of previous deps by extern_name
-        let prev_deps: HashMap<&str, &vx_report::DependencyRecord> = prev_node
-            .map(|pn| {
-                pn.deps
-                    .iter()
-                    .map(|d| (d.extern_name.as_str(), d))
-                    .collect()
-            })
-            .unwrap_or_default();
+    if verbose {
+        let cache_key_short = short_hex(&node.cache_key, verbose);
+        println!("    cache_key: {}", cache_key_short.dimmed());
+    }
+}
 
-        for dep in &node.deps {
-            let extern_name = &dep.extern_name;
-            let crate_id_short = short_hex(&dep.crate_id, verbose);
-            let rlib_short = short_hex(&dep.rlib_hash, verbose);
-            let manifest_short = short_hex(&dep.manifest_hash, verbose);
+/// Print fanout analysis showing which rebuilds triggered downstream rebuilds
+fn print_fanout_analysis(report: &vx_report::BuildReport, verbose: bool) {
+    use vx_report::FanoutAnalysis;
 
-            if let Some(prev_dep) = prev_deps.get(extern_name.as_str()) {
-                // Check if anything changed
-                let rlib_changed = prev_dep.rlib_hash != dep.rlib_hash;
-                let manifest_changed = prev_dep.manifest_hash != dep.manifest_hash;
+    let fanout = FanoutAnalysis::compute(report);
 
-                if rlib_changed || manifest_changed {
-                    // Show the change
-                    let prev_rlib_short = short_hex(&prev_dep.rlib_hash, verbose);
-                    let prev_manifest_short = short_hex(&prev_dep.manifest_hash, verbose);
+    // Only print if there's actual fanout
+    if fanout.fanout_map.is_empty() {
+        return;
+    }
 
-                    print!("    dep {} (crate {}):", extern_name.cyan(), crate_id_short.dimmed());
+    println!("{}", "=== FANOUT ===".cyan().bold());
+    println!();
 
-                    if rlib_changed {
-                        print!(" rlib {} → {}", prev_rlib_short.dimmed(), rlib_short);
-                    }
-                    if manifest_changed {
-                        print!(" (manifest {} → {})", prev_manifest_short.dimmed(), manifest_short);
-                    }
-                    println!();
-                } else if verbose {
-                    // Show unchanged deps in verbose mode
-                    println!(
-                        "    dep {} (crate {}): {} unchanged",
-                        extern_name.cyan(),
-                        crate_id_short.dimmed(),
-                        "rlib".dimmed()
-                    );
-                }
-            } else {
-                // New dep (no previous run or dep wasn't present before)
-                println!(
-                    "    dep {} (crate {}): rlib {} (manifest {})",
-                    extern_name.cyan(),
-                    crate_id_short.dimmed(),
-                    rlib_short,
-                    manifest_short.dimmed()
-                );
-            }
+    // Sort crate IDs for stable output
+    let mut crate_ids: Vec<_> = fanout.fanout_map.keys().collect();
+    crate_ids.sort();
+
+    for crate_id in crate_ids {
+        let dependents = fanout.get_dependents(crate_id);
+        if dependents.is_empty() {
+            continue;
         }
+
+        let crate_id_short = short_hex(crate_id, verbose);
+        println!("  crate {}:", crate_id_short.cyan());
+
+        for dependent in dependents {
+            println!("    ↳ {}", dependent.dimmed());
+        }
+        println!();
     }
 }
 
@@ -620,4 +815,139 @@ fn truncate_node_id(id: &str, max_len: usize) -> String {
     } else {
         format!("{}...", &id[..max_len - 3])
     }
+}
+
+/// Output explanation in JSON format
+fn cmd_explain_json(
+    report: &vx_report::BuildReport,
+    prev_report: Option<&vx_report::BuildReport>,
+    node_filter: Option<String>,
+) -> Result<()> {
+    use serde_json::json;
+    use std::collections::HashMap;
+    use vx_report::{CacheOutcome, FanoutAnalysis, NodeRebuildExplanation};
+
+    let prev_nodes: HashMap<&str, &vx_report::NodeReport> = prev_report
+        .map(|r| r.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect())
+        .unwrap_or_default();
+
+    let mut nodes_json = Vec::new();
+
+    for node in &report.nodes {
+        // Apply node filter if specified
+        if let Some(ref filter) = node_filter {
+            if &node.node_id != filter {
+                continue;
+            }
+        }
+
+        let prev_node = prev_nodes.get(node.node_id.as_str()).copied();
+
+        // For cache hits, include minimal info
+        if matches!(node.cache, CacheOutcome::Hit { .. }) {
+            nodes_json.push(json!({
+                "node_id": node.node_id,
+                "kind": node.kind,
+                "cache": "hit",
+                "execute_ms": node.timing.execute_ms,
+            }));
+            continue;
+        }
+
+        // For cache misses, compute explanation
+        let explanation = NodeRebuildExplanation::compute(node, prev_node);
+
+        if let Some(expl) = explanation {
+            let mut input_changes = Vec::new();
+            for change in &expl.input_changes {
+                input_changes.push(json!({
+                    "label": change.label,
+                    "old_value": change.old_value,
+                    "new_value": change.new_value,
+                }));
+            }
+
+            let mut dep_changes = Vec::new();
+            for change in &expl.dep_changes {
+                use vx_report::DepChangeKind;
+
+                let change_json = match &change.change {
+                    DepChangeKind::Added { rlib_hash, manifest_hash } => json!({
+                        "kind": "added",
+                        "rlib_hash": rlib_hash,
+                        "manifest_hash": manifest_hash,
+                    }),
+                    DepChangeKind::Removed { rlib_hash, manifest_hash } => json!({
+                        "kind": "removed",
+                        "rlib_hash": rlib_hash,
+                        "manifest_hash": manifest_hash,
+                    }),
+                    DepChangeKind::RlibChanged {
+                        old_rlib,
+                        new_rlib,
+                        old_manifest,
+                        new_manifest,
+                    } => json!({
+                        "kind": "rlib_changed",
+                        "old_rlib": old_rlib,
+                        "new_rlib": new_rlib,
+                        "old_manifest": old_manifest,
+                        "new_manifest": new_manifest,
+                    }),
+                    DepChangeKind::ManifestChanged {
+                        rlib_hash,
+                        old_manifest,
+                        new_manifest,
+                    } => json!({
+                        "kind": "manifest_changed",
+                        "rlib_hash": rlib_hash,
+                        "old_manifest": old_manifest,
+                        "new_manifest": new_manifest,
+                    }),
+                };
+
+                dep_changes.push(json!({
+                    "extern_name": change.extern_name,
+                    "crate_id": change.crate_id,
+                    "change": change_json,
+                }));
+            }
+
+            nodes_json.push(json!({
+                "node_id": expl.node_id,
+                "kind": node.kind,
+                "cache": "miss",
+                "reported_reason": expl.reported_reason.to_string(),
+                "observed_reason": expl.observed_reason.to_string(),
+                "execute_ms": node.timing.execute_ms,
+                "input_changes": input_changes,
+                "dep_changes": dep_changes,
+            }));
+        }
+    }
+
+    // Compute fanout
+    let fanout = FanoutAnalysis::compute(report);
+    let mut fanout_json = serde_json::Map::new();
+    for (crate_id, dependents) in &fanout.fanout_map {
+        fanout_json.insert(
+            crate_id.clone(),
+            json!(dependents),
+        );
+    }
+
+    let output = json!({
+        "run_id": report.run_id.to_string(),
+        "prev_run_id": prev_report.map(|r| r.run_id.to_string()),
+        "workspace_root": report.workspace_root,
+        "profile": report.profile,
+        "target_triple": report.target_triple,
+        "success": report.success,
+        "duration_ms": report.duration_ms(),
+        "nodes": nodes_json,
+        "fanout": fanout_json,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
 }

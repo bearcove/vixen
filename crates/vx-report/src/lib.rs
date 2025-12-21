@@ -293,6 +293,38 @@ impl std::fmt::Display for MissReason {
     }
 }
 
+/// Observed reason for a rebuild, computed by diffing reports.
+///
+/// This is distinct from MissReason (which is reported by the daemon).
+/// ObservedReason is computed in vx explain by comparing NodeReports
+/// across runs to determine what actually changed.
+#[derive(Debug, Clone, Facet)]
+#[repr(u8)]
+pub enum ObservedReason {
+    /// No previous run exists for this node
+    FirstBuild,
+    /// One or more inputs changed
+    InputsChanged,
+    /// One or more dependencies changed (rlib or manifest)
+    DepsChanged,
+    /// Both inputs and deps changed
+    InputsAndDepsChanged,
+    /// Cache miss but no diffs observed (potential tracking bug)
+    Unknown,
+}
+
+impl std::fmt::Display for ObservedReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ObservedReason::FirstBuild => write!(f, "first build"),
+            ObservedReason::InputsChanged => write!(f, "inputs changed"),
+            ObservedReason::DepsChanged => write!(f, "deps changed"),
+            ObservedReason::InputsAndDepsChanged => write!(f, "inputs and deps changed"),
+            ObservedReason::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
 /// Timing information for a node.
 #[derive(Debug, Clone, Default, Facet)]
 pub struct NodeTiming {
@@ -329,6 +361,75 @@ pub struct DependencyRecord {
     pub rlib_hash: String,
     /// Manifest hash from CAS (hex)
     pub manifest_hash: String,
+}
+
+// =============================================================================
+// DIFF STRUCTURES (for vx explain)
+// =============================================================================
+
+/// Detailed explanation of why a node was rebuilt.
+#[derive(Debug, Clone)]
+pub struct NodeRebuildExplanation {
+    /// Node ID
+    pub node_id: String,
+    /// Observed reason (computed from diffs)
+    pub observed_reason: ObservedReason,
+    /// Reported reason (from daemon)
+    pub reported_reason: MissReason,
+    /// Input changes
+    pub input_changes: Vec<InputChange>,
+    /// Dependency changes
+    pub dep_changes: Vec<DepChange>,
+}
+
+/// A change in an input between runs.
+#[derive(Debug, Clone)]
+pub struct InputChange {
+    /// Input label
+    pub label: String,
+    /// Old value (None if added)
+    pub old_value: Option<String>,
+    /// New value (None if removed)
+    pub new_value: Option<String>,
+}
+
+/// A change in a dependency between runs.
+#[derive(Debug, Clone)]
+pub struct DepChange {
+    /// Extern name
+    pub extern_name: String,
+    /// Crate ID
+    pub crate_id: String,
+    /// What changed
+    pub change: DepChangeKind,
+}
+
+/// Kind of dependency change.
+#[derive(Debug, Clone)]
+pub enum DepChangeKind {
+    /// Dependency was added
+    Added {
+        rlib_hash: String,
+        manifest_hash: String,
+    },
+    /// Dependency was removed
+    Removed {
+        rlib_hash: String,
+        manifest_hash: String,
+    },
+    /// Rlib hash changed
+    RlibChanged {
+        old_rlib: String,
+        new_rlib: String,
+        old_manifest: String,
+        new_manifest: String,
+    },
+    /// Manifest hash changed (but not rlib)
+    ManifestChanged {
+        rlib_hash: String,
+        old_manifest: String,
+        new_manifest: String,
+    },
 }
 
 /// Record of an output produced by a node.
@@ -618,6 +719,247 @@ impl RunDiff {
     }
 }
 
+impl NodeRebuildExplanation {
+    /// Compute the rebuild explanation for a node by comparing it to the previous run.
+    ///
+    /// Returns None if the node was a cache hit.
+    pub fn compute(
+        current_node: &NodeReport,
+        previous_node: Option<&NodeReport>,
+    ) -> Option<Self> {
+        // Only compute for cache misses
+        let reported_reason = match &current_node.cache {
+            CacheOutcome::Hit { .. } => return None,
+            CacheOutcome::Miss { reason } => reason.clone(),
+        };
+
+        // If no previous node, it's a first build
+        let Some(prev) = previous_node else {
+            return Some(NodeRebuildExplanation {
+                node_id: current_node.node_id.clone(),
+                observed_reason: ObservedReason::FirstBuild,
+                reported_reason,
+                input_changes: Vec::new(),
+                dep_changes: Vec::new(),
+            });
+        };
+
+        // Compute input changes
+        let input_changes = Self::compute_input_changes(&prev.inputs, &current_node.inputs);
+
+        // Compute dependency changes
+        let dep_changes = Self::compute_dep_changes(&prev.deps, &current_node.deps);
+
+        // Determine observed reason based on what changed
+        let observed_reason = match (input_changes.is_empty(), dep_changes.is_empty()) {
+            (true, true) => ObservedReason::Unknown,
+            (false, true) => ObservedReason::InputsChanged,
+            (true, false) => ObservedReason::DepsChanged,
+            (false, false) => ObservedReason::InputsAndDepsChanged,
+        };
+
+        Some(NodeRebuildExplanation {
+            node_id: current_node.node_id.clone(),
+            observed_reason,
+            reported_reason,
+            input_changes,
+            dep_changes,
+        })
+    }
+
+    fn compute_input_changes(before: &[InputRecord], after: &[InputRecord]) -> Vec<InputChange> {
+        use std::collections::HashMap;
+
+        let before_map: HashMap<&str, &str> =
+            before.iter().map(|i| (i.label.as_str(), i.value.as_str())).collect();
+
+        let after_map: HashMap<&str, &str> =
+            after.iter().map(|i| (i.label.as_str(), i.value.as_str())).collect();
+
+        let mut changes = Vec::new();
+
+        // Find changed and added inputs
+        for input in after {
+            if let Some(&old_value) = before_map.get(input.label.as_str()) {
+                if old_value != input.value {
+                    changes.push(InputChange {
+                        label: input.label.clone(),
+                        old_value: Some(old_value.to_string()),
+                        new_value: Some(input.value.clone()),
+                    });
+                }
+            } else {
+                // Added input
+                changes.push(InputChange {
+                    label: input.label.clone(),
+                    old_value: None,
+                    new_value: Some(input.value.clone()),
+                });
+            }
+        }
+
+        // Find removed inputs
+        for input in before {
+            if !after_map.contains_key(input.label.as_str()) {
+                changes.push(InputChange {
+                    label: input.label.clone(),
+                    old_value: Some(input.value.clone()),
+                    new_value: None,
+                });
+            }
+        }
+
+        // Sort by label for stable output
+        changes.sort_by(|a, b| a.label.cmp(&b.label));
+        changes
+    }
+
+    fn compute_dep_changes(before: &[DependencyRecord], after: &[DependencyRecord]) -> Vec<DepChange> {
+        use std::collections::HashMap;
+
+        // Key by (extern_name, crate_id)
+        let before_map: HashMap<(&str, &str), &DependencyRecord> =
+            before.iter().map(|d| ((d.extern_name.as_str(), d.crate_id.as_str()), d)).collect();
+
+        let after_map: HashMap<(&str, &str), &DependencyRecord> =
+            after.iter().map(|d| ((d.extern_name.as_str(), d.crate_id.as_str()), d)).collect();
+
+        let mut changes = Vec::new();
+
+        // Find changed and added deps
+        for dep in after {
+            let key = (dep.extern_name.as_str(), dep.crate_id.as_str());
+            if let Some(&old_dep) = before_map.get(&key) {
+                // Check what changed
+                let rlib_changed = old_dep.rlib_hash != dep.rlib_hash;
+                let manifest_changed = old_dep.manifest_hash != dep.manifest_hash;
+
+                if rlib_changed && manifest_changed {
+                    changes.push(DepChange {
+                        extern_name: dep.extern_name.clone(),
+                        crate_id: dep.crate_id.clone(),
+                        change: DepChangeKind::RlibChanged {
+                            old_rlib: old_dep.rlib_hash.clone(),
+                            new_rlib: dep.rlib_hash.clone(),
+                            old_manifest: old_dep.manifest_hash.clone(),
+                            new_manifest: dep.manifest_hash.clone(),
+                        },
+                    });
+                } else if manifest_changed {
+                    changes.push(DepChange {
+                        extern_name: dep.extern_name.clone(),
+                        crate_id: dep.crate_id.clone(),
+                        change: DepChangeKind::ManifestChanged {
+                            rlib_hash: dep.rlib_hash.clone(),
+                            old_manifest: old_dep.manifest_hash.clone(),
+                            new_manifest: dep.manifest_hash.clone(),
+                        },
+                    });
+                }
+            } else {
+                // Added dependency
+                changes.push(DepChange {
+                    extern_name: dep.extern_name.clone(),
+                    crate_id: dep.crate_id.clone(),
+                    change: DepChangeKind::Added {
+                        rlib_hash: dep.rlib_hash.clone(),
+                        manifest_hash: dep.manifest_hash.clone(),
+                    },
+                });
+            }
+        }
+
+        // Find removed deps
+        for dep in before {
+            let key = (dep.extern_name.as_str(), dep.crate_id.as_str());
+            if !after_map.contains_key(&key) {
+                changes.push(DepChange {
+                    extern_name: dep.extern_name.clone(),
+                    crate_id: dep.crate_id.clone(),
+                    change: DepChangeKind::Removed {
+                        rlib_hash: dep.rlib_hash.clone(),
+                        manifest_hash: dep.manifest_hash.clone(),
+                    },
+                });
+            }
+        }
+
+        // Sort by (extern_name, crate_id) for stable output
+        changes.sort_by(|a, b| {
+            a.extern_name.cmp(&b.extern_name).then(a.crate_id.cmp(&b.crate_id))
+        });
+        changes
+    }
+}
+
+/// Fanout analysis showing which rebuilds triggered which downstream rebuilds.
+#[derive(Debug, Clone)]
+pub struct FanoutAnalysis {
+    /// Map from crate_id to list of dependent node IDs that rebuilt
+    pub fanout_map: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl FanoutAnalysis {
+    /// Compute fanout from a build report.
+    ///
+    /// A node A fans out to node B if:
+    /// - B.deps contains A.crate_id
+    /// - and A rebuilt in this run
+    /// - and B rebuilt in this run
+    pub fn compute(report: &BuildReport) -> Self {
+        use std::collections::{HashMap, HashSet};
+
+        // Track which nodes rebuilt
+        let mut rebuilt_nodes: HashSet<String> = HashSet::new();
+
+        for node in &report.nodes {
+            // Track rebuilt nodes
+            if matches!(node.cache, CacheOutcome::Miss { .. }) {
+                rebuilt_nodes.insert(node.node_id.clone());
+            }
+        }
+
+        // Build reverse dependency map: crate_id -> Vec<node_id that depends on it>
+        let mut fanout_map: HashMap<String, Vec<String>> = HashMap::new();
+
+        for node in &report.nodes {
+            // Only consider rebuilt nodes
+            if !rebuilt_nodes.contains(&node.node_id) {
+                continue;
+            }
+
+            // For each dependency of this node
+            for dep in &node.deps {
+                // Find if the dependency's crate rebuilt
+                // We need to match crate_id to nodes
+                // For now, we'll track fanout by crate_id
+                fanout_map
+                    .entry(dep.crate_id.clone())
+                    .or_default()
+                    .push(node.node_id.clone());
+            }
+        }
+
+        // Deduplicate and sort for stable output
+        for dependents in fanout_map.values_mut() {
+            dependents.sort();
+            dependents.dedup();
+        }
+
+        FanoutAnalysis { fanout_map }
+    }
+
+    /// Get the list of nodes that depend on the given crate_id and rebuilt.
+    pub fn get_dependents(&self, crate_id: &str) -> &[String] {
+        self.fanout_map.get(crate_id).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Check if a crate_id has any dependents that rebuilt.
+    pub fn has_fanout(&self, crate_id: &str) -> bool {
+        self.fanout_map.get(crate_id).map(|v| !v.is_empty()).unwrap_or(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,5 +1017,238 @@ mod tests {
 
         assert!(report.success);
         assert!(report.ended_at_unix_ms >= report.started_at_unix_ms);
+    }
+
+    // =========================================================================
+    // Lane 2 Tests
+    // =========================================================================
+
+    #[test]
+    fn test_node_rebuild_explanation_first_build() {
+        let node = NodeReport {
+            node_id: "test-node".to_string(),
+            kind: "rust.compile_bin".to_string(),
+            cache_key: "abc123".to_string(),
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            timing: NodeTiming::default(),
+            inputs: vec![],
+            deps: vec![],
+            outputs: vec![],
+            invocation: None,
+            diagnostics: DiagnosticsRecord::default(),
+        };
+
+        let explanation = NodeRebuildExplanation::compute(&node, None).unwrap();
+
+        assert_eq!(explanation.node_id, "test-node");
+        assert!(matches!(
+            explanation.observed_reason,
+            ObservedReason::FirstBuild
+        ));
+        assert!(explanation.input_changes.is_empty());
+        assert!(explanation.dep_changes.is_empty());
+    }
+
+    #[test]
+    fn test_node_rebuild_explanation_input_changed() {
+        let prev_node = NodeReport {
+            node_id: "test-node".to_string(),
+            kind: "rust.compile_bin".to_string(),
+            cache_key: "abc123".to_string(),
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            timing: NodeTiming::default(),
+            inputs: vec![InputRecord {
+                label: "src".to_string(),
+                value: "hash_old".to_string(),
+            }],
+            deps: vec![],
+            outputs: vec![],
+            invocation: None,
+            diagnostics: DiagnosticsRecord::default(),
+        };
+
+        let current_node = NodeReport {
+            inputs: vec![InputRecord {
+                label: "src".to_string(),
+                value: "hash_new".to_string(),
+            }],
+            ..prev_node.clone()
+        };
+
+        let explanation = NodeRebuildExplanation::compute(&current_node, Some(&prev_node)).unwrap();
+
+        assert!(matches!(
+            explanation.observed_reason,
+            ObservedReason::InputsChanged
+        ));
+        assert_eq!(explanation.input_changes.len(), 1);
+        assert_eq!(explanation.input_changes[0].label, "src");
+        assert_eq!(
+            explanation.input_changes[0].old_value,
+            Some("hash_old".to_string())
+        );
+        assert_eq!(
+            explanation.input_changes[0].new_value,
+            Some("hash_new".to_string())
+        );
+    }
+
+    #[test]
+    fn test_node_rebuild_explanation_dep_changed() {
+        let prev_node = NodeReport {
+            node_id: "test-node".to_string(),
+            kind: "rust.compile_bin".to_string(),
+            cache_key: "abc123".to_string(),
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            timing: NodeTiming::default(),
+            inputs: vec![],
+            deps: vec![DependencyRecord {
+                extern_name: "util".to_string(),
+                crate_id: "crate_123".to_string(),
+                rlib_hash: "rlib_old".to_string(),
+                manifest_hash: "manifest_old".to_string(),
+            }],
+            outputs: vec![],
+            invocation: None,
+            diagnostics: DiagnosticsRecord::default(),
+        };
+
+        let current_node = NodeReport {
+            deps: vec![DependencyRecord {
+                extern_name: "util".to_string(),
+                crate_id: "crate_123".to_string(),
+                rlib_hash: "rlib_new".to_string(),
+                manifest_hash: "manifest_new".to_string(),
+            }],
+            ..prev_node.clone()
+        };
+
+        let explanation = NodeRebuildExplanation::compute(&current_node, Some(&prev_node)).unwrap();
+
+        assert!(matches!(
+            explanation.observed_reason,
+            ObservedReason::DepsChanged
+        ));
+        assert_eq!(explanation.dep_changes.len(), 1);
+        assert_eq!(explanation.dep_changes[0].extern_name, "util");
+        assert_eq!(explanation.dep_changes[0].crate_id, "crate_123");
+    }
+
+    #[test]
+    fn test_fanout_analysis() {
+        let mut report = BuildReport::new(
+            "/test".to_string(),
+            "debug".to_string(),
+            "test-triple".to_string(),
+        );
+
+        // Add a rebuilt lib node
+        report.nodes.push(NodeReport {
+            node_id: "lib-util".to_string(),
+            kind: "rust.compile_rlib".to_string(),
+            cache_key: "key1".to_string(),
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            timing: NodeTiming::default(),
+            inputs: vec![],
+            deps: vec![],
+            outputs: vec![],
+            invocation: None,
+            diagnostics: DiagnosticsRecord::default(),
+        });
+
+        // Add a rebuilt app node that depends on util
+        report.nodes.push(NodeReport {
+            node_id: "bin-app".to_string(),
+            kind: "rust.compile_bin".to_string(),
+            cache_key: "key2".to_string(),
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            timing: NodeTiming::default(),
+            inputs: vec![],
+            deps: vec![DependencyRecord {
+                extern_name: "util".to_string(),
+                crate_id: "crate_util".to_string(),
+                rlib_hash: "rlib_hash".to_string(),
+                manifest_hash: "manifest_hash".to_string(),
+            }],
+            outputs: vec![],
+            invocation: None,
+            diagnostics: DiagnosticsRecord::default(),
+        });
+
+        // Add a cache hit node (should not appear in fanout)
+        report.nodes.push(NodeReport {
+            node_id: "bin-other".to_string(),
+            kind: "rust.compile_bin".to_string(),
+            cache_key: "key3".to_string(),
+            cache: CacheOutcome::Hit {
+                manifest: "manifest".to_string(),
+            },
+            timing: NodeTiming::default(),
+            inputs: vec![],
+            deps: vec![DependencyRecord {
+                extern_name: "util".to_string(),
+                crate_id: "crate_util".to_string(),
+                rlib_hash: "rlib_hash".to_string(),
+                manifest_hash: "manifest_hash".to_string(),
+            }],
+            outputs: vec![],
+            invocation: None,
+            diagnostics: DiagnosticsRecord::default(),
+        });
+
+        let fanout = FanoutAnalysis::compute(&report);
+
+        // crate_util should have bin-app as a dependent (but not bin-other since it was a hit)
+        assert!(fanout.has_fanout("crate_util"));
+        let dependents = fanout.get_dependents("crate_util");
+        assert_eq!(dependents.len(), 1);
+        assert_eq!(dependents[0], "bin-app");
+    }
+
+    #[test]
+    fn test_observed_reason_unknown() {
+        // Test case where there's a miss but no observable changes (potential bug)
+        let prev_node = NodeReport {
+            node_id: "test-node".to_string(),
+            kind: "rust.compile_bin".to_string(),
+            cache_key: "abc123".to_string(),
+            cache: CacheOutcome::Hit {
+                manifest: "manifest".to_string(),
+            },
+            timing: NodeTiming::default(),
+            inputs: vec![InputRecord {
+                label: "src".to_string(),
+                value: "hash_same".to_string(),
+            }],
+            deps: vec![],
+            outputs: vec![],
+            invocation: None,
+            diagnostics: DiagnosticsRecord::default(),
+        };
+
+        let current_node = NodeReport {
+            cache: CacheOutcome::Miss {
+                reason: MissReason::KeyNotFound,
+            },
+            ..prev_node.clone()
+        };
+
+        let explanation = NodeRebuildExplanation::compute(&current_node, Some(&prev_node)).unwrap();
+
+        // No inputs or deps changed, but it's a miss - should be Unknown
+        assert!(matches!(
+            explanation.observed_reason,
+            ObservedReason::Unknown
+        ));
     }
 }
