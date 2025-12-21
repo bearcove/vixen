@@ -13,3 +13,6 @@ tokio = { workspace = true }
 
 vx-daemon = { workspace = true }
 vx-daemon-proto = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

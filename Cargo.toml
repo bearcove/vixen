@@ -49,6 +49,9 @@ jiff = "0.2"
 # paths
 camino = "1"
 
+# testing
+tempfile = "3"
+
 [patch.crates-io]
 facet = { git = "https://github.com/facet-rs/facet" }
 facet-core = { git = "https://github.com/facet-rs/facet" }

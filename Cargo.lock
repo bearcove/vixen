@@ -266,7 +266,7 @@ dependencies = [
 [[package]]
 name = "facet"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
 dependencies = [
  "autocfg",
  "facet-core",
@@ -291,7 +291,7 @@ dependencies = [
 [[package]]
 name = "facet-core"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
 dependencies = [
  "autocfg",
  "bytes",
@@ -363,7 +363,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-parse"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
 dependencies = [
  "facet-macro-types",
  "proc-macro2",
@@ -373,7 +373,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-types"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -383,7 +383,7 @@ dependencies = [
 [[package]]
 name = "facet-macros"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
 dependencies = [
  "facet-macros-impl",
 ]
@@ -391,7 +391,7 @@ dependencies = [
 [[package]]
 name = "facet-macros-impl"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
 dependencies = [
  "facet-macro-parse",
  "facet-macro-types",
@@ -425,7 +425,7 @@ dependencies = [
 [[package]]
 name = "facet-reflect"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
 dependencies = [
  "facet-core",
  "miette",
@@ -462,6 +462,12 @@ name = "fast-srgb8"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd2e7510819d6fbf51a5545c8f922716ecfb14df168a3242f7d33e0239efe6a1"
+
+[[package]]
+name = "fastrand"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "find-msvc-tools"
@@ -1679,6 +1685,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempfile"
+version = "3.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d31c77bdf42a745371d260a26ca7163f1e0924b64afa0b688e61b5a9fa02f16"
+dependencies = [
+ "fastrand",
+ "getrandom",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "terminal_size"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1959,6 +1978,7 @@ dependencies = [
  "facet",
  "facet-args",
  "owo-colors",
+ "tempfile",
  "tokio",
  "vx-daemon",
  "vx-daemon-proto",
