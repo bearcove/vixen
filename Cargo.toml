@@ -23,11 +23,11 @@ vx-toolchain = { path = "crates/vx-toolchain" }
 vx-toolchain-proto = { path = "crates/vx-toolchain-proto" }
 
 # facet ecosystem
-facet = { git = "https://github.com/facet-rs/facet" }
-facet-args = { git = "https://github.com/facet-rs/facet" }
-facet-json = { git = "https://github.com/facet-rs/facet" }
-facet-toml = { git = "https://github.com/facet-rs/facet" }
-facet-value = { git = "https://github.com/facet-rs/facet" }
+facet = { path = "../../../../bearcove/facet/facet" }
+facet-args = { path = "../../../../bearcove/facet/facet-args" }
+facet-json = { path = "../../../../bearcove/facet/facet-json" }
+facet-toml = { path = "../../../../bearcove/facet/facet-toml" }
+facet-value = { path = "../../../../bearcove/facet/facet-value" }
 
 # incremental computation
 picante = { path = "../picante/crates/picante", features = ["macros"] }
@@ -74,15 +74,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opt-level = 2
 
 [patch.crates-io]
-facet = { git = "https://github.com/facet-rs/facet" }
-facet-core = { git = "https://github.com/facet-rs/facet" }
-facet-macros = { git = "https://github.com/facet-rs/facet" }
-facet-macros-impl = { git = "https://github.com/facet-rs/facet" }
-facet-macro-parse = { git = "https://github.com/facet-rs/facet" }
-facet-macro-types = { git = "https://github.com/facet-rs/facet" }
-facet-reflect = { git = "https://github.com/facet-rs/facet" }
-facet-json = { git = "https://github.com/facet-rs/facet" }
-facet-toml = { git = "https://github.com/facet-rs/facet" }
-facet-args = { git = "https://github.com/facet-rs/facet" }
-facet-postcard = { git = "https://github.com/facet-rs/facet" }
-facet-value = { git = "https://github.com/facet-rs/facet" }
+facet = { path = "../../../../bearcove/facet/facet" }
+facet-core = { path = "../../../../bearcove/facet/facet-core" }
+facet-macros = { path = "../../../../bearcove/facet/facet-macros" }
+facet-macros-impl = { path = "../../../../bearcove/facet/facet-macros-impl" }
+facet-macro-parse = { path = "../../../../bearcove/facet/facet-macro-parse" }
+facet-macro-types = { path = "../../../../bearcove/facet/facet-macro-types" }
+facet-reflect = { path = "../../../../bearcove/facet/facet-reflect" }
+facet-json = { path = "../../../../bearcove/facet/facet-json" }
+facet-toml = { path = "../../../../bearcove/facet/facet-toml" }
+facet-args = { path = "../../../../bearcove/facet/facet-args" }
+facet-postcard = { path = "../../../../bearcove/facet/facet-postcard" }
+facet-value = { path = "../../../../bearcove/facet/facet-value" }
