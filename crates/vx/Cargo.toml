@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 vx-daemon = { workspace = true }
 vx-daemon-proto = { workspace = true }
 vx-report = { workspace = true }
+miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

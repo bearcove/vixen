@@ -51,9 +51,9 @@ enum CliCommand {
         #[facet(args::named, args::short = 'v')]
         verbose: bool,
 
-        /// Explain only this specific node ID
-        #[facet(args::named)]
-        node: Option<String>,
+        /// Explain only this specific node ID (empty string means all)
+        #[facet(args::named, default)]
+        node: String,
 
         /// Show only fanout analysis
         #[facet(args::named)]
@@ -70,6 +70,14 @@ enum CliCommand {
         /// Output in JSON format
         #[facet(args::named)]
         json: bool,
+
+        /// Compare last two builds and show what changed
+        #[facet(args::named)]
+        diff: bool,
+
+        /// Show details of the last cache miss
+        #[facet(args::named)]
+        last_miss: bool,
     },
 }
 
@@ -81,7 +89,16 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let cli: Cli = args::from_std_args()?;
+    // Install Miette's graphical error handler for nice CLI diagnostics
+    miette::set_hook(Box::new(|_| {
+        Box::new(miette::MietteHandlerOpts::new().build())
+    }))
+    .ok();
+
+    let cli: Cli = args::from_std_args().unwrap_or_else(|e| {
+        eprintln!("{:?}", miette::Report::new(e));
+        std::process::exit(1);
+    });
 
     if cli.version {
         println!("vx {}", env!("CARGO_PKG_VERSION"));
@@ -100,7 +117,22 @@ async fn main() -> Result<()> {
             inputs,
             deps,
             json,
-        } => cmd_explain(all, verbose, node, fanout, inputs, deps, json),
+            diff,
+            last_miss,
+        } => {
+            let node_filter = if node.is_empty() { None } else { Some(node) };
+            cmd_explain(
+                all,
+                verbose,
+                node_filter,
+                fanout,
+                inputs,
+                deps,
+                json,
+                diff,
+                last_miss,
+            )
+        }
     }
 }
 
@@ -200,6 +232,8 @@ fn cmd_explain(
     show_inputs: bool,
     show_deps: bool,
     output_json: bool,
+    show_diff: bool,
+    show_last_miss: bool,
 ) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
     let store = ReportStore::new(&cwd);
@@ -213,6 +247,24 @@ fn cmd_explain(
         );
         return Ok(());
     };
+
+    // Handle --diff: compare last two builds
+    if show_diff {
+        let Some(prev_report) = store.load_previous()? else {
+            println!(
+                "{} Need at least two builds to show diff. Run {} again.",
+                "Error:".red().bold(),
+                "vx build".cyan()
+            );
+            return Ok(());
+        };
+        return cmd_explain_diff(&prev_report, &report);
+    }
+
+    // Handle --last-miss: show details of the last cache miss
+    if show_last_miss {
+        return cmd_explain_last_miss(&report);
+    }
 
     // Load previous report for diffing deps
     let prev_report = store.load_previous().ok().flatten();
@@ -255,7 +307,12 @@ fn cmd_explain_report(
     };
 
     let duration_s = report.duration_ms() as f64 / 1000.0;
-    println!("{} {} in {:.2}s", "Build:".bold(), status, duration_s.to_string().dimmed());
+    println!(
+        "{} {} in {:.2}s",
+        "Build:".bold(),
+        status,
+        duration_s.to_string().dimmed()
+    );
 
     println!("  {} {}", "Workspace:".dimmed(), report.workspace_root);
     println!("  {} {}", "Profile:".dimmed(), report.profile);
@@ -305,7 +362,12 @@ fn cmd_explain_report(
 
         match &node.cache {
             CacheOutcome::Miss { .. } => {
-                if node.invocation.as_ref().map(|i| i.exit_code != 0).unwrap_or(false) {
+                if node
+                    .invocation
+                    .as_ref()
+                    .map(|i| i.exit_code != 0)
+                    .unwrap_or(false)
+                {
                     failures.push(node);
                 } else {
                     misses.push(node);
@@ -358,7 +420,11 @@ fn cmd_explain_report(
             println!("  {}", line);
         }
         if error.lines().count() > 10 {
-            println!("  {} ({} more lines)", "...".dimmed(), error.lines().count() - 10);
+            println!(
+                "  {} ({} more lines)",
+                "...".dimmed(),
+                error.lines().count() - 10
+            );
         }
     }
 
@@ -431,7 +497,10 @@ fn print_node_explanation(
             let crate_id_short = short_hex(&change.crate_id, verbose);
 
             match &change.change {
-                DepChangeKind::Added { rlib_hash, manifest_hash } => {
+                DepChangeKind::Added {
+                    rlib_hash,
+                    manifest_hash,
+                } => {
                     let rlib_short = short_hex(rlib_hash, verbose);
                     let manifest_short = short_hex(manifest_hash, verbose);
                     println!(
@@ -442,7 +511,10 @@ fn print_node_explanation(
                         manifest_short.dimmed()
                     );
                 }
-                DepChangeKind::Removed { rlib_hash, manifest_hash } => {
+                DepChangeKind::Removed {
+                    rlib_hash,
+                    manifest_hash,
+                } => {
                     let rlib_short = short_hex(rlib_hash, verbose);
                     let manifest_short = short_hex(manifest_hash, verbose);
                     println!(
@@ -530,7 +602,12 @@ fn print_node(
         format!("{}ms", duration_ms)
     };
 
-    println!("  {} {:<15} {}", node.node_id, outcome_str, duration_str.dimmed());
+    println!(
+        "  {} {:<15} {}",
+        node.node_id,
+        outcome_str,
+        duration_str.dimmed()
+    );
 
     if verbose {
         let cache_key_short = short_hex(&node.cache_key, verbose);
@@ -593,21 +670,9 @@ fn cmd_explain_summary(report: &vx_report::BuildReport) -> Result<()> {
         status,
         duration_str.dimmed()
     );
-    println!(
-        "  {} {}",
-        "Run ID:".dimmed(),
-        report.run_id
-    );
-    println!(
-        "  {} {}",
-        "Profile:".dimmed(),
-        report.profile
-    );
-    println!(
-        "  {} {}",
-        "Target:".dimmed(),
-        report.target_triple
-    );
+    println!("  {} {}", "Run ID:".dimmed(), report.run_id);
+    println!("  {} {}", "Profile:".dimmed(), report.profile);
+    println!("  {} {}", "Target:".dimmed(), report.target_triple);
 
     if let Some(rust) = &report.toolchains.rust {
         if let Some(version) = &rust.version {
@@ -679,7 +744,11 @@ fn cmd_explain_summary(report: &vx_report::BuildReport) -> Result<()> {
             println!("  {}", line);
         }
         if error.lines().count() > 10 {
-            println!("  {} ({} more lines)", "...".dimmed(), error.lines().count() - 10);
+            println!(
+                "  {} ({} more lines)",
+                "...".dimmed(),
+                error.lines().count() - 10
+            );
         }
     }
 
@@ -688,13 +757,13 @@ fn cmd_explain_summary(report: &vx_report::BuildReport) -> Result<()> {
 
 fn cmd_explain_last_miss(report: &vx_report::BuildReport) -> Result<()> {
     // Find the first miss
-    let miss = report.nodes.iter().find(|n| matches!(n.cache, CacheOutcome::Miss { .. }));
+    let miss = report
+        .nodes
+        .iter()
+        .find(|n| matches!(n.cache, CacheOutcome::Miss { .. }));
 
     let Some(node) = miss else {
-        println!(
-            "{} All nodes hit cache!",
-            "Note:".green().bold()
-        );
+        println!("{} All nodes hit cache!", "Note:".green().bold());
         return Ok(());
     };
 
@@ -797,12 +866,12 @@ fn cmd_explain_diff(before: &vx_report::BuildReport, after: &vx_report::BuildRep
     }
 
     // Summary
-    if diff.flipped_to_miss.is_empty() && diff.flipped_to_hit.is_empty() && diff.toolchain_changes.is_empty() {
+    if diff.flipped_to_miss.is_empty()
+        && diff.flipped_to_hit.is_empty()
+        && diff.toolchain_changes.is_empty()
+    {
         println!();
-        println!(
-            "{} No significant changes between runs.",
-            "Note:".dimmed()
-        );
+        println!("{} No significant changes between runs.", "Note:".dimmed());
     }
 
     Ok(())
@@ -872,12 +941,18 @@ fn cmd_explain_json(
                 use vx_report::DepChangeKind;
 
                 let change_json = match &change.change {
-                    DepChangeKind::Added { rlib_hash, manifest_hash } => json!({
+                    DepChangeKind::Added {
+                        rlib_hash,
+                        manifest_hash,
+                    } => json!({
                         "kind": "added",
                         "rlib_hash": rlib_hash,
                         "manifest_hash": manifest_hash,
                     }),
-                    DepChangeKind::Removed { rlib_hash, manifest_hash } => json!({
+                    DepChangeKind::Removed {
+                        rlib_hash,
+                        manifest_hash,
+                    } => json!({
                         "kind": "removed",
                         "rlib_hash": rlib_hash,
                         "manifest_hash": manifest_hash,
@@ -930,10 +1005,7 @@ fn cmd_explain_json(
     let fanout = FanoutAnalysis::compute(report);
     let mut fanout_json = serde_json::Map::new();
     for (crate_id, dependents) in &fanout.fanout_map {
-        fanout_json.insert(
-            crate_id.clone(),
-            json!(dependents),
-        );
+        fanout_json.insert(crate_id.clone(), json!(dependents));
     }
 
     let output = json!({

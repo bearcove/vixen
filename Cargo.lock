@@ -2745,6 +2745,7 @@ dependencies = [
  "eyre",
  "facet",
  "facet-args",
+ "miette",
  "owo-colors",
  "serde_json",
  "tempfile",
