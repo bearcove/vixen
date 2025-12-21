@@ -441,6 +441,95 @@ impl std::fmt::Display for RustToolchainId {
     }
 }
 
+// =============================================================================
+// TOOLCHAIN CAS MANIFEST (per spec: "Toolchains are CAS artifacts")
+// =============================================================================
+
+/// Toolchain kind
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+#[repr(u8)]
+pub enum ToolchainKind {
+    Rust = 0,
+    Zig = 1,
+}
+
+/// CAS-resident toolchain manifest.
+///
+/// This is the canonical record of a toolchain stored in CAS.
+/// The manifest hash serves as the `ToolchainManifestHash` for provenance.
+#[derive(Debug, Clone, Facet)]
+pub struct ToolchainManifest {
+    /// Kind of toolchain
+    pub kind: ToolchainKind,
+    /// vx identity for this toolchain (derived from publisher hashes + triples)
+    pub toolchain_id: Blake3Hash,
+    /// Request that produced this toolchain
+    pub spec: ToolchainSpecRecord,
+    /// Publisher information
+    pub publisher: PublisherRecord,
+    /// Components stored in CAS
+    pub components: Vec<ToolchainComponent>,
+    /// When this manifest was created (RFC3339)
+    pub created_at: String,
+    /// Schema version for format changes
+    pub schema_version: u32,
+}
+
+/// Current schema version for toolchain manifests
+pub const TOOLCHAIN_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+/// Toolchain specification as stored in manifest
+#[derive(Debug, Clone, Facet)]
+pub struct ToolchainSpecRecord {
+    // Rust fields
+    /// Channel (stable/beta/nightly-YYYY-MM-DD)
+    pub channel: Option<String>,
+    /// Host triple (e.g., aarch64-apple-darwin)
+    pub host: Option<String>,
+    /// Effective target triple for rust-std
+    pub target: Option<String>,
+    // Zig fields
+    /// Zig version
+    pub zig_version: Option<String>,
+    /// Zig platform used for download URL
+    pub zig_platform: Option<String>,
+}
+
+/// Publisher information for provenance
+#[derive(Debug, Clone, Facet)]
+pub struct PublisherRecord {
+    /// Base URL (e.g., static.rust-lang.org, ziglang.org)
+    pub base_url: String,
+    /// Manifest reference (e.g., channel-rust-stable.toml URL + date)
+    pub manifest_ref: Option<String>,
+}
+
+/// A component stored in CAS
+#[derive(Debug, Clone, Facet)]
+pub struct ToolchainComponent {
+    /// Component name ("rustc", "rust-std", "zig")
+    pub name: String,
+    /// Target triple (for rust-std)
+    pub target_triple: Option<String>,
+    /// Exact download URL used
+    pub url: String,
+    /// Publisher SHA256 checksum (the truth for identity)
+    pub sha256_hex: String,
+    /// CAS blob hash for the downloaded tarball
+    pub blob: Blake3Hash,
+    /// Size in bytes
+    pub size_bytes: u64,
+}
+
+/// Result of acquiring a toolchain to CAS
+#[derive(Debug, Clone)]
+pub struct AcquireResult {
+    /// Toolchain identity
+    pub toolchain_id: Blake3Hash,
+    /// CAS blob hash of the ToolchainManifest (serialized as JSON)
+    pub toolchain_manifest_hash: Blake3Hash,
+}
+
 /// Result of acquiring a Rust toolchain (before CAS storage)
 pub struct AcquiredRustToolchain {
     /// Unique toolchain identifier (derived from manifest SHA256s)
@@ -576,6 +665,93 @@ pub async fn acquire_rust_toolchain(
         rust_std_tarball,
         rust_std_manifest_sha256,
         manifest_date: manifest.date,
+    })
+}
+
+/// Acquire a Rust toolchain and store it in CAS.
+///
+/// This is the main entry point for hermetic toolchain acquisition.
+/// It downloads components, verifies checksums, stores blobs in CAS,
+/// and creates a ToolchainManifest for provenance.
+///
+/// Returns the toolchain ID and manifest hash for use in builds.
+pub async fn acquire_rust_toolchain_to_cas<C: vx_cas_proto::Cas>(
+    cas: &C,
+    spec: &RustToolchainSpec,
+) -> Result<AcquireResult, ToolchainError> {
+    // First acquire the toolchain (downloads and verifies)
+    let acquired = acquire_rust_toolchain(spec).await?;
+
+    // Store component tarballs as blobs in CAS
+    let rustc_blob = cas.put_blob(acquired.rustc_tarball.clone()).await;
+    let rust_std_blob = cas.put_blob(acquired.rust_std_tarball.clone()).await;
+
+    tracing::debug!(
+        rustc_blob = %rustc_blob.to_hex(),
+        rust_std_blob = %rust_std_blob.to_hex(),
+        "stored toolchain components in CAS"
+    );
+
+    // Build the toolchain manifest
+    let channel_str = match &spec.channel {
+        Channel::Stable => "stable".to_string(),
+        Channel::Beta => "beta".to_string(),
+        Channel::Nightly { date } => format!("nightly-{}", date),
+    };
+
+    let manifest = ToolchainManifest {
+        kind: ToolchainKind::Rust,
+        toolchain_id: acquired.id.0.clone(),
+        spec: ToolchainSpecRecord {
+            channel: Some(channel_str),
+            host: Some(spec.host.clone()),
+            target: Some(spec.effective_target().to_string()),
+            zig_version: None,
+            zig_platform: None,
+        },
+        publisher: PublisherRecord {
+            base_url: "https://static.rust-lang.org".to_string(),
+            manifest_ref: Some(format!(
+                "{} ({})",
+                spec.channel.manifest_url(),
+                acquired.manifest_date
+            )),
+        },
+        components: vec![
+            ToolchainComponent {
+                name: "rustc".to_string(),
+                target_triple: Some(spec.host.clone()),
+                url: spec.channel.manifest_url(), // We don't store exact component URL, but could
+                sha256_hex: acquired.rustc_manifest_sha256.clone(),
+                blob: rustc_blob,
+                size_bytes: acquired.rustc_tarball.len() as u64,
+            },
+            ToolchainComponent {
+                name: "rust-std".to_string(),
+                target_triple: Some(spec.effective_target().to_string()),
+                url: spec.channel.manifest_url(),
+                sha256_hex: acquired.rust_std_manifest_sha256.clone(),
+                blob: rust_std_blob,
+                size_bytes: acquired.rust_std_tarball.len() as u64,
+            },
+        ],
+        created_at: chrono::Utc::now().to_rfc3339(),
+        schema_version: TOOLCHAIN_MANIFEST_SCHEMA_VERSION,
+    };
+
+    // Serialize manifest to JSON and store as blob
+    let manifest_json = facet_json::to_string(&manifest);
+    let manifest_hash = cas.put_blob(manifest_json.into_bytes()).await;
+
+    tracing::info!(
+        toolchain_id = %acquired.id,
+        manifest_hash = %manifest_hash.to_hex(),
+        "stored Rust toolchain in CAS"
+    );
+
+    Ok(AcquireResult {
+        toolchain_id: acquired.id.0,
+        toolchain_manifest_hash: manifest_hash,
     })
 }
 
