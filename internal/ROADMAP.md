@@ -21,7 +21,18 @@ This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the n
 - [x] `SourceFile` (path + content hash)
 - [x] `CargoToml` (hash + name + edition + bin_path)
 - [x] `BuildConfig` (profile + target + workspace)
-- [ ] `RustcToolchain` (rustc path + version string)
+- [ ] `RustcToolchain` — proper toolchain management (see below)
+
+### Toolchain Management
+
+Current: honor `RUSTC` env var or find `rustc` in PATH, use `rustc -vV` for cache key.
+
+Goal: vx owns the toolchain completely:
+- [ ] Read `rust-toolchain.toml` or default to a pinned version
+- [ ] Download toolchain from rustup if not present
+- [ ] Store toolchain in CAS (it's just bytes)
+- [ ] Toolchain hash becomes part of cache key
+- [ ] No dependency on system rustc
 
 ### Picante Queries
 
@@ -77,6 +88,21 @@ This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the n
 - [ ] Fail on proc-macros
 - [ ] Fail on tests/benches/examples
 - [ ] Fail on multiple targets
+
+### Testing
+
+Current state: 3 unit tests in vx-manifest. Nothing else.
+
+- [ ] Unit tests for CAS operations (put/get blob, manifest storage)
+- [ ] Unit tests for cache key computation (determinism, correct invalidation)
+- [ ] Integration tests for full build flow:
+  - [ ] Fresh build produces correct output
+  - [ ] Second build is cache hit (zero rustc invocations)
+  - [ ] Source change triggers rebuild
+  - [ ] Profile change triggers rebuild
+  - [ ] Edition change triggers rebuild
+- [ ] Test fixtures: minimal single-crate projects
+- [ ] CI: run tests on push
 
 ---
 
