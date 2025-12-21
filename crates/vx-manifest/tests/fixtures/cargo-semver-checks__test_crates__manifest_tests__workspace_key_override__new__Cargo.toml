@@ -1,8 +1,0 @@
-[workspace]
-resolver = "2"
-members = ["metadata_true", "cargo_true", "both_missing"]
-
-[workspace.metadata.cargo-semver-checks.lints]
-struct_missing = { level = "allow" }
-
-[workspace.lints]

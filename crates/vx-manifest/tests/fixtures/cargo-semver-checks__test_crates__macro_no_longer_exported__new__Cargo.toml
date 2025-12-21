@@ -1,7 +1,0 @@
-[package]
-publish = false
-name = "macro_no_longer_exported"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]

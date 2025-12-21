@@ -1,7 +1,0 @@
-[package]
-publish = false
-name = "trait_unsafe_added"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]

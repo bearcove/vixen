@@ -1,6 +1,0 @@
-[workspace]
-members = ["lib_crate", "non_lib_crate"]
-
-[workspace.package]
-version = "0.1.0"
-edition = "2024"

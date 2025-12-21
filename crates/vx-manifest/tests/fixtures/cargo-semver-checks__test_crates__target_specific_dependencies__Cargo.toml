@@ -1,8 +1,0 @@
-[package]
-publish = false
-name = "target_specific_dependencies"
-version = "0.1.0"
-edition = "2021"
-
-[target.none.dependencies]
-async-std = { version = "1.6.2", optional = true }

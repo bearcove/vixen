@@ -1,7 +1,0 @@
-[package]
-publish = false
-name = "switch_away_from_reexport_as_underscore"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]

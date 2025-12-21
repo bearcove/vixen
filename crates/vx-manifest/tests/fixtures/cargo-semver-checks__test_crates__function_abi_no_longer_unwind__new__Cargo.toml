@@ -1,7 +1,0 @@
-[package]
-publish = false
-name = "function_abi_no_longer_unwind"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]

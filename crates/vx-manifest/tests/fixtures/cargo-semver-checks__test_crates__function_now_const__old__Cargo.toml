@@ -1,7 +1,0 @@
-[package]
-publish = false
-name = "function_now_const"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]

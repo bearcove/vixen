@@ -1,6 +1,0 @@
-[workspace]
-resolver = "2"
-members = ["pkg"]
-
-# [workspace.metadata.cargo-semver-checks] should only be read from the
-# current Cargo.toml (this is the baseline)

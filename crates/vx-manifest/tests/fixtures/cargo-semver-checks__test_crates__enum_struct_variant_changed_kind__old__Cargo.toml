@@ -1,7 +1,0 @@
-[package]
-publish = false
-name = "enum_struct_variant_changed_kind"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]

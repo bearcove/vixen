@@ -1,7 +1,0 @@
-[package]
-publish = false
-name = "type_marked_deprecated"
-version = "1.0.0"
-edition = "2021"
-
-[dependencies]

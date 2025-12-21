@@ -8,7 +8,13 @@ use vx_manifest::full::CargoManifest;
 
 /// Test function that parses a single Cargo.toml file
 fn parse_manifest(path: &Path) -> datatest_stable::Result<()> {
-    let manifest = CargoManifest::from_path(path)?;
+    let manifest = match CargoManifest::from_path(path) {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            eprintln!("{e}");
+            return Err(e);
+        },
+    };
 
     // Print some basic info about what we parsed
     if let Some(package) = &manifest.package {
