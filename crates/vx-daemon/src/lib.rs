@@ -16,13 +16,13 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, CacheKey, Cas, NodeId, NodeManifest, OutputEntry};
 use vx_casd::CasService;
+use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
+use vx_exec_proto::{ExpectedOutput, RustcInvocation};
+use vx_manifest::{Edition, Manifest};
 use vx_report::{
     BuildReport, CacheOutcome, DiagnosticsRecord, InputRecord, InvocationRecord, MissReason,
     NodeReport, NodeTiming, OutputRecord, ReportStore, ToolchainRef, ToolchainsUsed,
 };
-use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
-use vx_exec_proto::{ExpectedOutput, RustcInvocation};
-use vx_manifest::{Edition, Manifest};
 use vx_rs::ModuleError;
 
 // =============================================================================
@@ -40,6 +40,58 @@ pub struct SourceClosure {
     pub closure_hash: Blake3Hash,
     /// Workspace-relative paths of all source files in the closure (sorted).
     pub paths: Vec<String>,
+}
+
+// =============================================================================
+// MULTI-CRATE RUST INPUTS
+// =============================================================================
+
+/// A Rust crate in the dependency graph (keyed by CrateId hex string).
+///
+/// This input represents a single crate with its metadata and source closure.
+/// Used for multi-crate builds where we need to track each crate separately.
+#[picante::input]
+pub struct RustCrate {
+    /// Unique crate identifier (CrateId hex string)
+    #[key]
+    pub crate_id: String,
+    /// Crate name (with hyphens converted to underscores)
+    pub crate_name: String,
+    /// Rust edition ("2015", "2018", "2021", "2024")
+    pub edition: String,
+    /// Crate type: "lib" or "bin"
+    pub crate_type: String,
+    /// Crate root file path, workspace-relative (e.g., "util/src/lib.rs")
+    pub crate_root_rel: String,
+    /// Blake3 hash of the source closure (paths + contents)
+    pub source_closure_hash: Blake3Hash,
+}
+
+/// Output from compiling a library crate.
+///
+/// This input is set AFTER a lib crate is successfully compiled.
+/// Bin crates explicitly depend on these outputs via their cache key.
+#[picante::input]
+pub struct RlibOutput {
+    /// CrateId of the lib crate
+    #[key]
+    pub crate_id: String,
+    /// Blake3 hash of the rlib file content
+    pub rlib_hash: Blake3Hash,
+    /// Workspace-relative path to the materialized rlib
+    pub rlib_path: String,
+}
+
+/// A dependency edge for bin crate cache key computation.
+///
+/// This is used to explicitly pass dep outputs to the bin cache key query.
+/// Sorted by extern_name for determinism.
+#[derive(Debug, Clone)]
+pub struct DepOutput {
+    /// Extern crate name (used in --extern)
+    pub extern_name: String,
+    /// Blake3 hash of the dependency's rlib
+    pub rlib_hash: Blake3Hash,
 }
 
 /// The parsed Cargo.toml manifest (singleton)
@@ -225,6 +277,291 @@ pub async fn node_id_compile_bin<DB: Db>(db: &DB) -> PicanteResult<NodeId> {
     Ok(NodeId(format!(
         "compile-bin:{}:{}:{}",
         cargo.name, config.target_triple, config.profile
+    )))
+}
+
+// =============================================================================
+// MULTI-CRATE RUST TRACKED QUERIES
+// =============================================================================
+
+/// Compute the cache key for compiling a library crate (rlib).
+///
+/// The cache key includes:
+/// - Toolchain (rustc version)
+/// - Target triple and profile
+/// - Crate metadata (name, edition)
+/// - Source closure hash
+///
+/// Note: Lib crates don't depend on other crates in v0.3 (no transitive deps).
+#[picante::tracked]
+pub async fn cache_key_compile_rlib<DB: Db>(
+    db: &DB,
+    crate_info: RustCrate,
+) -> PicanteResult<CacheKey> {
+    debug!("cache_key_compile_rlib: COMPUTING (not memoized)");
+
+    let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+
+    let crate_name = crate_info.crate_name(db)?;
+    let edition = crate_info.edition(db)?;
+    let closure_hash = crate_info.source_closure_hash(db)?;
+
+    let mut hasher = blake3::Hasher::new();
+
+    hasher.update(b"vx-rlib-cache-key-v");
+    hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"rustc:");
+    hasher.update(rustc.version_string.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"target:");
+    hasher.update(config.target_triple.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"profile:");
+    hasher.update(config.profile.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"crate_name:");
+    hasher.update(crate_name.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"edition:");
+    hasher.update(edition.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"crate_type:lib\n");
+
+    hasher.update(b"source_closure:");
+    hasher.update(&closure_hash.0);
+    hasher.update(b"\n");
+
+    Ok(Blake3Hash(*hasher.finalize().as_bytes()))
+}
+
+/// Plan a rustc invocation for compiling a library crate to rlib.
+///
+/// All paths are workspace-relative. rustc is invoked with cwd = workspace_root.
+#[picante::tracked]
+pub async fn plan_compile_rlib<DB: Db>(
+    db: &DB,
+    crate_info: RustCrate,
+) -> PicanteResult<RustcInvocation> {
+    debug!("plan_compile_rlib: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+
+    let crate_id = crate_info.crate_id(db)?;
+    let crate_name = crate_info.crate_name(db)?;
+    let edition = crate_info.edition(db)?;
+    let crate_root = crate_info.crate_root_rel(db)?;
+
+    // Output path: .vx/build/{triple}/{profile}/deps/{crate_id}/lib{name}.rlib
+    let output_dir = format!(
+        ".vx/build/{}/{}/deps/{}",
+        &*config.target_triple, &*config.profile, &*crate_id
+    );
+    let rlib_filename = format!("lib{}.rlib", &*crate_name);
+    let output_path = format!("{}/{}", output_dir, rlib_filename);
+
+    let mut args = vec![
+        "--crate-name".to_string(),
+        crate_name.to_string(),
+        "--crate-type".to_string(),
+        "lib".to_string(),
+        "--edition".to_string(),
+        edition.to_string(),
+        format!(
+            "--remap-path-prefix={}=/vx-workspace",
+            &*config.workspace_root
+        ),
+        crate_root.to_string(),
+        "-o".to_string(),
+        output_path.clone(),
+    ];
+
+    if &*config.profile == "release" {
+        args.push("-C".to_string());
+        args.push("opt-level=3".to_string());
+    }
+
+    let expected_outputs = vec![ExpectedOutput {
+        logical: "rlib".to_string(),
+        path: output_path,
+        executable: false,
+    }];
+
+    Ok(RustcInvocation {
+        program: "rustc".to_string(),
+        args,
+        env: vec![],
+        cwd: config.workspace_root.to_string(),
+        expected_outputs,
+    })
+}
+
+/// Generate a human-readable node ID for a compile-rlib node.
+#[picante::tracked]
+pub async fn node_id_compile_rlib<DB: Db>(db: &DB, crate_info: RustCrate) -> PicanteResult<NodeId> {
+    debug!("node_id_compile_rlib: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+    let crate_name = crate_info.crate_name(db)?;
+
+    Ok(NodeId(format!(
+        "compile-rlib:{}:{}:{}",
+        &*crate_name, &*config.target_triple, &*config.profile
+    )))
+}
+
+/// Compute the cache key for compiling a binary crate with dependencies.
+///
+/// CRITICAL: The cache key explicitly includes dep_outputs (sorted by extern_name).
+/// This ensures that changes to dependencies invalidate the bin cache key.
+///
+/// The dep_outputs parameter must be passed explicitly - NOT looked up implicitly.
+/// This makes the dependency explicit in the picante query graph.
+#[picante::tracked]
+pub async fn cache_key_compile_bin_with_deps<DB: Db>(
+    db: &DB,
+    crate_info: RustCrate,
+    dep_rlib_hashes: Vec<(String, Blake3Hash)>, // (extern_name, rlib_hash) sorted
+) -> PicanteResult<CacheKey> {
+    debug!("cache_key_compile_bin_with_deps: COMPUTING (not memoized)");
+
+    let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+
+    let crate_name = crate_info.crate_name(db)?;
+    let edition = crate_info.edition(db)?;
+    let closure_hash = crate_info.source_closure_hash(db)?;
+
+    let mut hasher = blake3::Hasher::new();
+
+    hasher.update(b"vx-bin-deps-cache-key-v");
+    hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"rustc:");
+    hasher.update(rustc.version_string.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"target:");
+    hasher.update(config.target_triple.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"profile:");
+    hasher.update(config.profile.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"crate_name:");
+    hasher.update(crate_name.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"edition:");
+    hasher.update(edition.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"crate_type:bin\n");
+
+    hasher.update(b"source_closure:");
+    hasher.update(&closure_hash.0);
+    hasher.update(b"\n");
+
+    // CRITICAL: Hash all dependency outputs (sorted by extern_name)
+    hasher.update(b"deps:");
+    for (extern_name, rlib_hash) in &dep_rlib_hashes {
+        hasher.update(extern_name.as_bytes());
+        hasher.update(b"=");
+        hasher.update(&rlib_hash.0);
+        hasher.update(b";");
+    }
+    hasher.update(b"\n");
+
+    Ok(Blake3Hash(*hasher.finalize().as_bytes()))
+}
+
+/// Plan a rustc invocation for compiling a binary crate with dependencies.
+///
+/// All paths are workspace-relative. rustc is invoked with cwd = workspace_root.
+/// Dependency rlibs are passed via --extern flags.
+#[picante::tracked]
+pub async fn plan_compile_bin_with_deps<DB: Db>(
+    db: &DB,
+    crate_info: RustCrate,
+    dep_extern_paths: Vec<(String, String)>, // (extern_name, workspace-rel rlib path) sorted
+) -> PicanteResult<RustcInvocation> {
+    debug!("plan_compile_bin_with_deps: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+
+    let crate_name = crate_info.crate_name(db)?;
+    let edition = crate_info.edition(db)?;
+    let crate_root = crate_info.crate_root_rel(db)?;
+
+    // Output path: .vx/build/{triple}/{profile}/{bin_name}
+    let output_dir = format!(".vx/build/{}/{}", &*config.target_triple, &*config.profile);
+    let output_path = format!("{}/{}", output_dir, &*crate_name);
+
+    let mut args = vec![
+        "--crate-name".to_string(),
+        crate_name.to_string(),
+        "--crate-type".to_string(),
+        "bin".to_string(),
+        "--edition".to_string(),
+        edition.to_string(),
+        format!(
+            "--remap-path-prefix={}=/vx-workspace",
+            &*config.workspace_root
+        ),
+        crate_root.to_string(),
+        "-o".to_string(),
+        output_path.clone(),
+    ];
+
+    // Add --extern flags for dependencies (sorted for determinism)
+    for (extern_name, rlib_path) in &dep_extern_paths {
+        args.push("--extern".to_string());
+        args.push(format!("{}={}", extern_name, rlib_path));
+    }
+
+    if &*config.profile == "release" {
+        args.push("-C".to_string());
+        args.push("opt-level=3".to_string());
+    }
+
+    let expected_outputs = vec![ExpectedOutput {
+        logical: "bin".to_string(),
+        path: output_path,
+        executable: true,
+    }];
+
+    Ok(RustcInvocation {
+        program: "rustc".to_string(),
+        args,
+        env: vec![],
+        cwd: config.workspace_root.to_string(),
+        expected_outputs,
+    })
+}
+
+/// Generate a human-readable node ID for a compile-bin-with-deps node.
+#[picante::tracked]
+pub async fn node_id_compile_bin_with_deps<DB: Db>(
+    db: &DB,
+    crate_info: RustCrate,
+) -> PicanteResult<NodeId> {
+    debug!("node_id_compile_bin_with_deps: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+    let crate_name = crate_info.crate_name(db)?;
+
+    Ok(NodeId(format!(
+        "compile-bin:{}:{}:{}",
+        &*crate_name, &*config.target_triple, &*config.profile
     )))
 }
 
@@ -547,15 +884,28 @@ pub async fn node_id_cc_link<DB: Db>(db: &DB, target: CTarget) -> PicanteResult<
         CargoToml,
         RustcVersion,
         BuildConfig,
+        // Multi-crate Rust inputs
+        RustCrate,
+        RlibOutput,
+        // C/C++ inputs
         CSourceFile,
         DiscoveredDeps,
         ZigToolchainConfig,
         CTarget,
     ),
     tracked(
+        // Single-crate Rust (legacy, for backward compat)
         cache_key_compile_bin,
         plan_compile_bin,
         node_id_compile_bin,
+        // Multi-crate Rust
+        cache_key_compile_rlib,
+        plan_compile_rlib,
+        node_id_compile_rlib,
+        cache_key_compile_bin_with_deps,
+        plan_compile_bin_with_deps,
+        node_id_compile_bin_with_deps,
+        // C/C++
         cache_key_cc_compile,
         plan_cc_compile,
         node_id_cc_compile,
@@ -680,15 +1030,19 @@ impl DaemonService {
             zig: None, // Not used for Rust builds
         };
 
+        // Get the binary target (required for single-crate builds)
+        let bin_target = manifest.bin.as_ref().ok_or_else(|| {
+            "no binary target found (this build path requires a bin crate)".to_string()
+        })?;
+
         // Compute source closure (all .rs files in the crate)
-        let crate_root = Utf8Path::new("src/main.rs"); // TODO: use manifest.bin.path properly
-        let closure_paths = vx_rs::rust_source_closure(crate_root, project_path)
-            .map_err(|e| {
-                let error_msg = format_module_error(&e);
-                build_report.finalize(false, Some(error_msg.clone()));
-                self.save_report(project_path, &build_report);
-                error_msg
-            })?;
+        let crate_root = &bin_target.path;
+        let closure_paths = vx_rs::rust_source_closure(crate_root, project_path).map_err(|e| {
+            let error_msg = format_module_error(&e);
+            build_report.finalize(false, Some(error_msg.clone()));
+            self.save_report(project_path, &build_report);
+            error_msg
+        })?;
 
         // Hash the closure (paths + contents)
         let closure_hash = vx_rs::hash_source_closure(&closure_paths, project_path)
@@ -714,7 +1068,7 @@ impl DaemonService {
             cargo_toml_hash.clone(),
             manifest.name.clone(),
             manifest.edition,
-            manifest.bin.path.to_string(),
+            bin_target.path.to_string(),
         )
         .map_err(|e| format!("picante error: {}", e))?;
 
@@ -923,7 +1277,10 @@ impl DaemonService {
         let manifest_hash = self.cas.put_manifest(node_manifest).await;
 
         // Publish to cache
-        let publish_result = self.cas.publish(cache_key.clone(), manifest_hash.clone()).await;
+        let publish_result = self
+            .cas
+            .publish(cache_key.clone(), manifest_hash.clone())
+            .await;
         if !publish_result.success {
             return Err(format!(
                 "failed to publish cache entry: {:?}",
