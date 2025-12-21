@@ -141,13 +141,12 @@ fn unescape_path(s: &str) -> String {
     let mut chars = s.chars().peekable();
 
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                if next == ' ' || next == '#' || next == '\\' {
-                    result.push(chars.next().unwrap());
-                    continue;
-                }
-            }
+        if c == '\\'
+            && let Some(&next) = chars.peek()
+            && (next == ' ' || next == '#' || next == '\\')
+        {
+            result.push(chars.next().unwrap());
+            continue;
         }
         result.push(c);
     }

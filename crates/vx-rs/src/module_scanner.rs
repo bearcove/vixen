@@ -1,0 +1,1185 @@
+//! Module scanner for Rust source files
+//!
+//! Parses Rust source files to extract `mod` declarations for computing
+//! the source closure of a crate. Uses rustc_lexer for accurate tokenization
+//! that correctly handles comments, strings, and raw strings.
+//!
+//! ## Supported syntax (v0.2)
+//!
+//! - `mod foo;` at module scope
+//! - `pub mod foo;` at module scope
+//!
+//! ## Rejected syntax (with clear errors)
+//!
+//! - `#[path = "..."] mod foo;` - custom paths
+//! - `#[cfg(...)] mod foo;` - conditional compilation
+//! - `mod foo { ... }` - inline modules (for now)
+//! - Any other attributes on mod items
+
+use camino::{Utf8Path, Utf8PathBuf};
+use ra_ap_rustc_lexer::{FrontmatterAllowed, TokenKind, tokenize};
+use thiserror::Error;
+
+/// Errors during module scanning
+#[derive(Debug, Error)]
+pub enum ModuleError {
+    #[error("failed to read source file: {path}: {source}")]
+    IoError {
+        path: Utf8PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("inline modules are not supported yet: `mod {name} {{...}}` at {file}:{line}")]
+    InlineModule {
+        name: String,
+        file: Utf8PathBuf,
+        line: usize,
+    },
+
+    #[error("attributes on `mod` are not supported yet: found on `mod {name}` at {file}:{line}")]
+    AttributeOnMod {
+        name: String,
+        file: Utf8PathBuf,
+        line: usize,
+    },
+
+    #[error("module file not found: expected {expected:?} for `mod {name}` at {file}:{line}")]
+    ModuleNotFound {
+        name: String,
+        expected: Vec<Utf8PathBuf>,
+        file: Utf8PathBuf,
+        line: usize,
+    },
+
+    #[error("ambiguous module: both {path1} and {path2} exist for `mod {name}`")]
+    AmbiguousModule {
+        name: String,
+        path1: Utf8PathBuf,
+        path2: Utf8PathBuf,
+    },
+}
+
+/// A discovered `mod` declaration
+#[derive(Debug, Clone)]
+pub struct ModDecl {
+    /// Module name (e.g., "foo" from `mod foo;`)
+    pub name: String,
+    /// Byte offset where `mod` keyword starts
+    pub span_lo: usize,
+    /// Byte offset after the semicolon or opening brace
+    pub span_hi: usize,
+    /// Line number (1-indexed) for error messages
+    pub line: usize,
+    /// Whether any #[...] attributes preceded this mod
+    pub has_attrs: bool,
+    /// Whether this is `pub mod`
+    pub is_pub: bool,
+    /// Whether this is `mod foo { ... }` (inline)
+    pub is_inline: bool,
+}
+
+/// State machine states for parsing
+#[derive(Debug, Clone)]
+enum State {
+    /// Waiting for something interesting
+    Idle,
+    /// Saw `#` at module scope, expecting `[`
+    AttrStart,
+    /// Inside an attribute #[...], tracking bracket depth
+    AttrBody { depth: u32 },
+    /// Saw `pub` at module scope
+    SawPub,
+    /// Saw `mod` keyword, waiting for identifier
+    SawMod {
+        is_pub: bool,
+        has_attrs: bool,
+        mod_lo: usize,
+        line: usize,
+    },
+    /// Saw `mod name`, waiting for `;` or `{`
+    SawModName {
+        is_pub: bool,
+        has_attrs: bool,
+        mod_lo: usize,
+        line: usize,
+        name: String,
+    },
+}
+
+/// Normalize a module name by stripping raw identifier prefix.
+///
+/// Rust allows `mod r#type;` where `type` is a keyword. The filesystem
+/// module is `type.rs`, not `r#type.rs`.
+fn normalize_mod_name(name: &str) -> &str {
+    name.strip_prefix("r#").unwrap_or(name)
+}
+
+/// Scan a Rust source file for `mod` declarations at module scope.
+///
+/// This uses rustc_lexer to tokenize the source, then runs a state machine
+/// to find `mod foo;` and `pub mod foo;` declarations at brace depth 0.
+///
+/// Returns all mod declarations found, including inline modules.
+/// Use [`validate_mod_decls`] to enforce policy (reject inline, attrs, etc.).
+pub fn scan_mod_decls(source: &str) -> Vec<ModDecl> {
+    let mut out = Vec::new();
+    let mut state = State::Idle;
+
+    // Track brace depth to know when we're at module scope
+    let mut brace_depth: i32 = 0;
+
+    // Track if we've seen attributes that apply to the next item
+    let mut pending_attrs = false;
+
+    // Track current line number for error messages
+    let mut current_line: usize = 1;
+
+    let mut offset: usize = 0;
+
+    for token in tokenize(source, FrontmatterAllowed::No) {
+        let lo = offset;
+        let hi = offset + token.len as usize;
+        let text = &source[lo..hi];
+        offset = hi;
+
+        // Count newlines in this token for line tracking
+        let newlines_in_token = text.chars().filter(|&c| c == '\n').count();
+
+        // Update brace depth for real braces (not in comments/strings - tokenizer handles this)
+        match token.kind {
+            TokenKind::OpenBrace => brace_depth += 1,
+            TokenKind::CloseBrace => brace_depth -= 1,
+            _ => {}
+        }
+
+        let at_module_scope = brace_depth == 0;
+
+        // Handle attribute states first (these can span multiple tokens)
+        match &state {
+            State::AttrStart => {
+                if token.kind == TokenKind::OpenBracket {
+                    // `#[` - enter attribute body
+                    state = State::AttrBody { depth: 1 };
+                } else if matches!(token.kind, TokenKind::Whitespace) {
+                    // Whitespace between # and [ is allowed
+                } else {
+                    // `#` not followed by `[` - not an outer attribute
+                    // Could be `#!` (inner attr) or just `#` in a macro context
+                    state = State::Idle;
+                }
+                current_line += newlines_in_token;
+                continue;
+            }
+            State::AttrBody { depth } => {
+                let mut depth = *depth;
+                match token.kind {
+                    TokenKind::OpenBracket => depth += 1,
+                    TokenKind::CloseBracket => {
+                        depth -= 1;
+                        if depth == 0 {
+                            // Finished one #[...]
+                            pending_attrs = true;
+                            state = State::Idle;
+                            current_line += newlines_in_token;
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+                state = State::AttrBody { depth };
+                current_line += newlines_in_token;
+                continue;
+            }
+            _ => {}
+        }
+
+        // If not at module scope, handle specially
+        if !at_module_scope {
+            // If we were in the middle of parsing a mod and hit `{`, it's inline
+            if let State::SawModName {
+                is_pub,
+                has_attrs,
+                mod_lo,
+                line,
+                name,
+            } = &state
+            {
+                if token.kind == TokenKind::OpenBrace {
+                    out.push(ModDecl {
+                        name: normalize_mod_name(name).to_string(),
+                        span_lo: *mod_lo,
+                        span_hi: hi,
+                        line: *line,
+                        has_attrs: *has_attrs,
+                        is_pub: *is_pub,
+                        is_inline: true,
+                    });
+                    pending_attrs = false;
+                }
+            }
+            state = State::Idle;
+            current_line += newlines_in_token;
+            continue;
+        }
+
+        // At module scope: process based on current state
+        match &state {
+            State::Idle => {
+                match token.kind {
+                    TokenKind::Pound => {
+                        // Start of attribute
+                        state = State::AttrStart;
+                    }
+                    TokenKind::Ident => {
+                        match text {
+                            "pub" => state = State::SawPub,
+                            "mod" => {
+                                state = State::SawMod {
+                                    is_pub: false,
+                                    has_attrs: pending_attrs,
+                                    mod_lo: lo,
+                                    line: current_line,
+                                };
+                            }
+                            _ => {
+                                // Some other item starts, attrs consumed
+                                pending_attrs = false;
+                            }
+                        }
+                    }
+                    TokenKind::Whitespace
+                    | TokenKind::LineComment { .. }
+                    | TokenKind::BlockComment { .. } => {
+                        // Ignore whitespace and comments
+                    }
+                    _ => {
+                        // Any other token resets pending attrs
+                        pending_attrs = false;
+                    }
+                }
+            }
+
+            State::SawPub => {
+                match token.kind {
+                    TokenKind::Ident if text == "mod" => {
+                        state = State::SawMod {
+                            is_pub: true,
+                            has_attrs: pending_attrs,
+                            mod_lo: lo,
+                            line: current_line,
+                        };
+                    }
+                    TokenKind::Whitespace => {
+                        // Keep waiting for `mod` after `pub`
+                    }
+                    TokenKind::OpenParen => {
+                        // `pub(crate)` etc - for simplicity, go back to idle
+                        // The next `mod` will be caught
+                        state = State::Idle;
+                    }
+                    _ => {
+                        // `pub` followed by something other than `mod`
+                        pending_attrs = false;
+                        state = State::Idle;
+                    }
+                }
+            }
+
+            State::SawMod {
+                is_pub,
+                has_attrs,
+                mod_lo,
+                line,
+            } => {
+                match token.kind {
+                    TokenKind::Ident | TokenKind::RawIdent => {
+                        // This is the module name
+                        state = State::SawModName {
+                            is_pub: *is_pub,
+                            has_attrs: *has_attrs,
+                            mod_lo: *mod_lo,
+                            line: *line,
+                            name: text.to_string(),
+                        };
+                    }
+                    TokenKind::Whitespace => {
+                        // Keep waiting
+                    }
+                    _ => {
+                        // Unexpected token after `mod`
+                        pending_attrs = false;
+                        state = State::Idle;
+                    }
+                }
+            }
+
+            State::SawModName {
+                is_pub,
+                has_attrs,
+                mod_lo,
+                line,
+                name,
+            } => {
+                match token.kind {
+                    TokenKind::Semi => {
+                        // `mod foo;` - external module
+                        out.push(ModDecl {
+                            name: normalize_mod_name(name).to_string(),
+                            span_lo: *mod_lo,
+                            span_hi: hi,
+                            line: *line,
+                            has_attrs: *has_attrs,
+                            is_pub: *is_pub,
+                            is_inline: false,
+                        });
+                        pending_attrs = false;
+                        state = State::Idle;
+                    }
+                    TokenKind::OpenBrace => {
+                        // `mod foo {` - inline module
+                        // Note: brace_depth was already incremented, so we're
+                        // no longer at module scope. This case is handled in
+                        // the !at_module_scope block above.
+                        // If we get here, something is off, but let's handle it.
+                        out.push(ModDecl {
+                            name: normalize_mod_name(name).to_string(),
+                            span_lo: *mod_lo,
+                            span_hi: hi,
+                            line: *line,
+                            has_attrs: *has_attrs,
+                            is_pub: *is_pub,
+                            is_inline: true,
+                        });
+                        pending_attrs = false;
+                        state = State::Idle;
+                    }
+                    TokenKind::Whitespace => {
+                        // Keep waiting
+                    }
+                    _ => {
+                        // Unexpected
+                        pending_attrs = false;
+                        state = State::Idle;
+                    }
+                }
+            }
+
+            // AttrStart and AttrBody handled above
+            State::AttrStart | State::AttrBody { .. } => unreachable!(),
+        }
+
+        current_line += newlines_in_token;
+    }
+
+    out
+}
+
+/// Validate mod declarations according to vx v0.2 policy.
+///
+/// This rejects:
+/// - Inline modules (`mod foo { ... }`)
+/// - Any attributes on mod items (including #[cfg], #[path], etc.)
+pub fn validate_mod_decls(mods: &[ModDecl], file: &Utf8Path) -> Result<(), ModuleError> {
+    for m in mods {
+        if m.is_inline {
+            return Err(ModuleError::InlineModule {
+                name: m.name.clone(),
+                file: file.to_owned(),
+                line: m.line,
+            });
+        }
+        if m.has_attrs {
+            return Err(ModuleError::AttributeOnMod {
+                name: m.name.clone(),
+                file: file.to_owned(),
+                line: m.line,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the file path for a module declaration.
+///
+/// For `mod foo;` in file X:
+/// - If X is the crate root (lib.rs or main.rs): try `foo.rs` or `foo/mod.rs`
+/// - If X is `bar.rs`: try `bar/foo.rs` or `bar/foo/mod.rs`
+/// - If X is `bar/mod.rs`: try `bar/foo.rs` or `bar/foo/mod.rs`
+///
+/// Returns the resolved path if exactly one candidate exists.
+pub fn resolve_mod_path(
+    mod_name: &str,
+    source_file: &Utf8Path,
+    source_dir: &Utf8Path,
+) -> Result<Utf8PathBuf, ModuleError> {
+    // Determine the directory for child modules
+    let mod_dir = if is_crate_root(source_file) {
+        // Crate root: modules are siblings in src/
+        source_dir.to_owned()
+    } else if source_file.file_name() == Some("mod.rs") {
+        // mod.rs: modules are siblings in the same directory
+        source_dir.to_owned()
+    } else {
+        // foo.rs: modules are in foo/ subdirectory
+        let stem = source_file
+            .file_stem()
+            .expect("source file should have a stem");
+        source_dir.join(stem)
+    };
+
+    // Two candidates: foo.rs and foo/mod.rs
+    let candidate_rs = mod_dir.join(format!("{}.rs", mod_name));
+    let candidate_mod = mod_dir.join(mod_name).join("mod.rs");
+
+    let rs_exists = candidate_rs.exists();
+    let mod_exists = candidate_mod.exists();
+
+    match (rs_exists, mod_exists) {
+        (true, true) => Err(ModuleError::AmbiguousModule {
+            name: mod_name.to_string(),
+            path1: candidate_rs,
+            path2: candidate_mod,
+        }),
+        (true, false) => Ok(candidate_rs),
+        (false, true) => Ok(candidate_mod),
+        (false, false) => Err(ModuleError::ModuleNotFound {
+            name: mod_name.to_string(),
+            expected: vec![candidate_rs, candidate_mod],
+            file: source_file.to_owned(),
+            line: 0, // Caller should fill this in
+        }),
+    }
+}
+
+/// Check if a source file is a crate root (lib.rs or main.rs).
+fn is_crate_root(path: &Utf8Path) -> bool {
+    matches!(path.file_name(), Some("lib.rs") | Some("main.rs"))
+}
+
+/// Compute the complete source closure for a Rust crate.
+///
+/// Starting from the crate root, recursively discovers all source files
+/// by parsing `mod` declarations. Returns a sorted, deduplicated list of
+/// workspace-relative paths for all source files that make up the crate.
+///
+/// # Arguments
+///
+/// * `crate_root` - Path to the crate root (e.g., `src/lib.rs` or `src/main.rs`)
+/// * `workspace_root` - Path to the workspace root for computing relative paths
+///
+/// # Returns
+///
+/// A sorted list of workspace-relative paths for all source files in the crate.
+pub fn rust_source_closure(
+    crate_root: &Utf8Path,
+    workspace_root: &Utf8Path,
+) -> Result<Vec<Utf8PathBuf>, ModuleError> {
+    let mut visited = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+
+    // Canonicalize both paths for reliable prefix stripping
+    let workspace_root = workspace_root
+        .canonicalize_utf8()
+        .map_err(|e| ModuleError::IoError {
+            path: workspace_root.to_owned(),
+            source: e,
+        })?;
+
+    let crate_root_abs = crate_root
+        .canonicalize_utf8()
+        .map_err(|e| ModuleError::IoError {
+            path: crate_root.to_owned(),
+            source: e,
+        })?;
+
+    queue.push_back(crate_root_abs.clone());
+
+    while let Some(current_abs) = queue.pop_front() {
+        // Skip if already visited
+        if visited.contains(&current_abs) {
+            continue;
+        }
+        visited.insert(current_abs.clone());
+
+        // Convert to workspace-relative path for the result
+        let relative = current_abs
+            .strip_prefix(&workspace_root)
+            .map(|p| Utf8PathBuf::from(p))
+            .unwrap_or_else(|_| current_abs.clone());
+        result.push(relative);
+
+        // Read and parse the file
+        let source = std::fs::read_to_string(&current_abs).map_err(|e| ModuleError::IoError {
+            path: current_abs.clone(),
+            source: e,
+        })?;
+
+        let mods = scan_mod_decls(&source);
+
+        // Validate against our policy
+        validate_mod_decls(&mods, &current_abs)?;
+
+        // Resolve each mod declaration and add to queue
+        let source_dir = current_abs.parent().unwrap_or(Utf8Path::new("."));
+        for decl in mods {
+            let mod_path = resolve_mod_path(&decl.name, &current_abs, source_dir).map_err(|e| {
+                // Enrich the error with line info if it's a ModuleNotFound
+                if let ModuleError::ModuleNotFound {
+                    name,
+                    expected,
+                    file,
+                    ..
+                } = e
+                {
+                    ModuleError::ModuleNotFound {
+                        name,
+                        expected,
+                        file,
+                        line: decl.line,
+                    }
+                } else {
+                    e
+                }
+            })?;
+
+            if !visited.contains(&mod_path) {
+                queue.push_back(mod_path);
+            }
+        }
+    }
+
+    // Sort for determinism
+    result.sort();
+
+    Ok(result)
+}
+
+/// Hash the contents of source files for cache key computation.
+///
+/// This hashes both the paths (for structural changes) and the file contents
+/// (for content changes). The paths should be workspace-relative for
+/// checkout-path independence.
+pub fn hash_source_closure(
+    paths: &[Utf8PathBuf],
+    workspace_root: &Utf8Path,
+) -> std::io::Result<vx_cas_proto::Blake3Hash> {
+    let mut hasher = blake3::Hasher::new();
+
+    // Hash paths for structural changes (sorted order matters)
+    hasher.update(b"paths:");
+    for path in paths {
+        hasher.update(path.as_str().as_bytes());
+        hasher.update(b"\0");
+    }
+
+    // Hash file contents
+    hasher.update(b"contents:");
+    for path in paths {
+        let full_path = workspace_root.join(path);
+        let content = std::fs::read(&full_path)?;
+        hasher.update(&(content.len() as u64).to_le_bytes());
+        hasher.update(&content);
+    }
+
+    Ok(vx_cas_proto::Blake3Hash(*hasher.finalize().as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scan_simple_mod() {
+        let source = "mod foo;";
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "foo");
+        assert!(!mods[0].is_pub);
+        assert!(!mods[0].is_inline);
+        assert!(!mods[0].has_attrs);
+    }
+
+    #[test]
+    fn test_scan_pub_mod() {
+        let source = "pub mod bar;";
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "bar");
+        assert!(mods[0].is_pub);
+        assert!(!mods[0].is_inline);
+    }
+
+    #[test]
+    fn test_scan_multiple_mods() {
+        let source = r#"
+mod alpha;
+pub mod beta;
+mod gamma;
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 3);
+        assert_eq!(mods[0].name, "alpha");
+        assert_eq!(mods[1].name, "beta");
+        assert!(mods[1].is_pub);
+        assert_eq!(mods[2].name, "gamma");
+    }
+
+    #[test]
+    fn test_scan_ignores_mods_in_functions() {
+        let source = r#"
+mod top;
+
+fn example() {
+    mod inner; // Should be ignored (not at module scope)
+}
+
+mod bottom;
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].name, "top");
+        assert_eq!(mods[1].name, "bottom");
+    }
+
+    #[test]
+    fn test_scan_ignores_mods_in_impl() {
+        let source = r#"
+mod outside;
+
+impl Foo {
+    fn bar() {
+        mod nested; // Should be ignored
+    }
+}
+
+mod after_impl;
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].name, "outside");
+        assert_eq!(mods[1].name, "after_impl");
+    }
+
+    #[test]
+    fn test_scan_ignores_mod_in_string() {
+        let source = r#"
+mod real;
+
+let s = "mod fake;";
+
+mod also_real;
+"#;
+        let mods = scan_mod_decls(source);
+
+        // rustc_lexer will tokenize the string as a single Literal token,
+        // so "mod fake;" inside the string won't be parsed
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].name, "real");
+        assert_eq!(mods[1].name, "also_real");
+    }
+
+    #[test]
+    fn test_scan_ignores_mod_in_comment() {
+        let source = r#"
+mod real;
+
+// mod commented_out;
+
+/* mod block_commented; */
+
+mod also_real;
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].name, "real");
+        assert_eq!(mods[1].name, "also_real");
+    }
+
+    #[test]
+    fn test_scan_inline_module() {
+        let source = r#"
+mod inline {
+    fn inner() {}
+}
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "inline");
+        assert!(mods[0].is_inline);
+    }
+
+    #[test]
+    fn test_scan_attributed_mod() {
+        let source = r#"
+#[cfg(test)]
+mod tests;
+
+mod normal;
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].name, "tests");
+        assert!(mods[0].has_attrs, "tests module should have has_attrs=true");
+        assert_eq!(mods[1].name, "normal");
+        assert!(!mods[1].has_attrs);
+    }
+
+    #[test]
+    fn test_scan_path_attribute() {
+        let source = r#"
+#[path = "my/custom/path.rs"]
+mod custom;
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "custom");
+        assert!(
+            mods[0].has_attrs,
+            "custom module should have has_attrs=true due to #[path]"
+        );
+    }
+
+    #[test]
+    fn test_scan_multiple_attributes() {
+        let source = r#"
+#[cfg(feature = "foo")]
+#[doc(hidden)]
+mod hidden;
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "hidden");
+        assert!(mods[0].has_attrs);
+    }
+
+    #[test]
+    fn test_scan_nested_brackets_in_attr() {
+        let source = r#"
+#[cfg(all(feature = "a", feature = "b"))]
+mod complex;
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "complex");
+        assert!(mods[0].has_attrs);
+    }
+
+    #[test]
+    fn test_scan_raw_identifier() {
+        let source = "mod r#type;";
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 1);
+        // Name should be normalized (r# stripped)
+        assert_eq!(mods[0].name, "type");
+    }
+
+    #[test]
+    fn test_scan_raw_identifier_keyword() {
+        let source = "mod r#async;";
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 1);
+        assert_eq!(mods[0].name, "async");
+    }
+
+    #[test]
+    fn test_validate_rejects_inline() {
+        let mods = vec![ModDecl {
+            name: "inline".to_string(),
+            span_lo: 0,
+            span_hi: 10,
+            line: 1,
+            has_attrs: false,
+            is_pub: false,
+            is_inline: true,
+        }];
+
+        let err = validate_mod_decls(&mods, Utf8Path::new("src/lib.rs")).unwrap_err();
+        assert!(matches!(err, ModuleError::InlineModule { .. }));
+    }
+
+    #[test]
+    fn test_validate_rejects_attrs() {
+        let mods = vec![ModDecl {
+            name: "configured".to_string(),
+            span_lo: 0,
+            span_hi: 10,
+            line: 1,
+            has_attrs: true,
+            is_pub: false,
+            is_inline: false,
+        }];
+
+        let err = validate_mod_decls(&mods, Utf8Path::new("src/lib.rs")).unwrap_err();
+        assert!(matches!(err, ModuleError::AttributeOnMod { .. }));
+    }
+
+    #[test]
+    fn test_validate_accepts_simple_mods() {
+        let mods = vec![
+            ModDecl {
+                name: "foo".to_string(),
+                span_lo: 0,
+                span_hi: 8,
+                line: 1,
+                has_attrs: false,
+                is_pub: false,
+                is_inline: false,
+            },
+            ModDecl {
+                name: "bar".to_string(),
+                span_lo: 10,
+                span_hi: 22,
+                line: 2,
+                has_attrs: false,
+                is_pub: true,
+                is_inline: false,
+            },
+        ];
+
+        validate_mod_decls(&mods, Utf8Path::new("src/lib.rs")).unwrap();
+    }
+
+    #[test]
+    fn test_line_tracking() {
+        let source = r#"// line 1
+// line 2
+mod foo; // line 3
+
+// line 5
+mod bar; // line 6
+"#;
+        let mods = scan_mod_decls(source);
+
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0].name, "foo");
+        assert_eq!(mods[0].line, 3);
+        assert_eq!(mods[1].name, "bar");
+        assert_eq!(mods[1].line, 6);
+    }
+
+    #[test]
+    fn test_is_crate_root() {
+        assert!(is_crate_root(Utf8Path::new("src/lib.rs")));
+        assert!(is_crate_root(Utf8Path::new("src/main.rs")));
+        assert!(is_crate_root(Utf8Path::new("lib.rs")));
+        assert!(is_crate_root(Utf8Path::new("main.rs")));
+        assert!(!is_crate_root(Utf8Path::new("src/foo.rs")));
+        assert!(!is_crate_root(Utf8Path::new("src/foo/mod.rs")));
+    }
+
+    #[test]
+    fn test_normalize_mod_name() {
+        assert_eq!(normalize_mod_name("foo"), "foo");
+        assert_eq!(normalize_mod_name("r#type"), "type");
+        assert_eq!(normalize_mod_name("r#async"), "async");
+        assert_eq!(normalize_mod_name("r#mod"), "mod");
+    }
+
+    // =========================================================================
+    // Integration tests for rust_source_closure
+    // =========================================================================
+
+    /// Helper to create a temp directory with source files
+    fn setup_test_crate(files: &[(&str, &str)]) -> (tempfile::TempDir, Utf8PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
+
+        for (path, content) in files {
+            let full_path = base.join(path);
+            if let Some(parent) = full_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&full_path, content).unwrap();
+        }
+
+        (dir, base)
+    }
+
+    #[test]
+    fn test_source_closure_single_file() {
+        let (_dir, base) = setup_test_crate(&[("src/main.rs", "fn main() {}")]);
+
+        let closure = rust_source_closure(&base.join("src/main.rs"), &base).unwrap();
+
+        assert_eq!(closure.len(), 1);
+        assert_eq!(closure[0], Utf8PathBuf::from("src/main.rs"));
+    }
+
+    #[test]
+    fn test_source_closure_with_modules() {
+        let (_dir, base) = setup_test_crate(&[
+            ("src/lib.rs", "mod foo;\nmod bar;"),
+            ("src/foo.rs", "pub fn hello() {}"),
+            ("src/bar.rs", "pub fn world() {}"),
+        ]);
+
+        let closure = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+
+        assert_eq!(closure.len(), 3);
+        // Results are sorted
+        assert_eq!(closure[0], Utf8PathBuf::from("src/bar.rs"));
+        assert_eq!(closure[1], Utf8PathBuf::from("src/foo.rs"));
+        assert_eq!(closure[2], Utf8PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_source_closure_nested_modules() {
+        let (_dir, base) = setup_test_crate(&[
+            ("src/lib.rs", "mod outer;"),
+            ("src/outer.rs", "mod inner;"),
+            ("src/outer/inner.rs", "pub fn deep() {}"),
+        ]);
+
+        let closure = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+
+        assert_eq!(closure.len(), 3);
+        assert!(closure.contains(&Utf8PathBuf::from("src/lib.rs")));
+        assert!(closure.contains(&Utf8PathBuf::from("src/outer.rs")));
+        assert!(closure.contains(&Utf8PathBuf::from("src/outer/inner.rs")));
+    }
+
+    #[test]
+    fn test_source_closure_mod_rs_style() {
+        let (_dir, base) = setup_test_crate(&[
+            ("src/lib.rs", "mod utils;"),
+            ("src/utils/mod.rs", "mod helper;"),
+            ("src/utils/helper.rs", "pub fn help() {}"),
+        ]);
+
+        let closure = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+
+        assert_eq!(closure.len(), 3);
+        assert!(closure.contains(&Utf8PathBuf::from("src/lib.rs")));
+        assert!(closure.contains(&Utf8PathBuf::from("src/utils/mod.rs")));
+        assert!(closure.contains(&Utf8PathBuf::from("src/utils/helper.rs")));
+    }
+
+    #[test]
+    fn test_source_closure_missing_module_error() {
+        let (_dir, base) = setup_test_crate(&[("src/lib.rs", "mod nonexistent;")]);
+
+        let err = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap_err();
+        assert!(matches!(err, ModuleError::ModuleNotFound { name, .. } if name == "nonexistent"));
+    }
+
+    #[test]
+    fn test_source_closure_rejects_inline_module() {
+        let (_dir, base) = setup_test_crate(&[("src/lib.rs", "mod inline { fn inner() {} }")]);
+
+        let err = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap_err();
+        assert!(matches!(err, ModuleError::InlineModule { name, .. } if name == "inline"));
+    }
+
+    #[test]
+    fn test_source_closure_rejects_attributed_module() {
+        let (_dir, base) = setup_test_crate(&[
+            ("src/lib.rs", "#[cfg(test)]\nmod tests;"),
+            ("src/tests.rs", ""),
+        ]);
+
+        let err = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap_err();
+        assert!(matches!(err, ModuleError::AttributeOnMod { name, .. } if name == "tests"));
+    }
+
+    #[test]
+    fn test_source_closure_deterministic_order() {
+        // Create same structure twice and verify order is consistent
+        let (_dir, base) = setup_test_crate(&[
+            ("src/lib.rs", "mod z;\nmod a;\nmod m;"),
+            ("src/z.rs", ""),
+            ("src/a.rs", ""),
+            ("src/m.rs", ""),
+        ]);
+
+        let closure1 = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+        let closure2 = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+
+        assert_eq!(closure1, closure2);
+        // And they're sorted
+        assert_eq!(closure1[0], Utf8PathBuf::from("src/a.rs"));
+        assert_eq!(closure1[1], Utf8PathBuf::from("src/lib.rs"));
+        assert_eq!(closure1[2], Utf8PathBuf::from("src/m.rs"));
+        assert_eq!(closure1[3], Utf8PathBuf::from("src/z.rs"));
+    }
+
+    #[test]
+    fn test_source_closure_deep_nesting() {
+        let (_dir, base) = setup_test_crate(&[
+            ("src/lib.rs", "mod a;"),
+            ("src/a.rs", "mod b;"),
+            ("src/a/b.rs", "mod c;"),
+            ("src/a/b/c.rs", "mod d;"),
+            ("src/a/b/c/d.rs", "pub fn leaf() {}"),
+        ]);
+
+        let closure = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+
+        assert_eq!(closure.len(), 5);
+    }
+
+    #[test]
+    fn test_source_closure_returns_relative_paths() {
+        let (_dir, base) = setup_test_crate(&[("src/lib.rs", "mod foo;"), ("src/foo.rs", "")]);
+
+        let closure = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+
+        // All paths should be workspace-relative, not absolute
+        for path in &closure {
+            assert!(
+                !path.as_str().starts_with('/'),
+                "path should be relative: {}",
+                path
+            );
+            assert!(
+                !path.as_str().contains("var") && !path.as_str().contains("tmp"),
+                "path should not contain temp dir components: {}",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_mod_path_from_crate_root() {
+        let (_dir, base) = setup_test_crate(&[("src/lib.rs", ""), ("src/foo.rs", "")]);
+
+        let lib_rs = base.join("src/lib.rs");
+        let src_dir = base.join("src");
+
+        let resolved = resolve_mod_path("foo", &lib_rs, &src_dir).unwrap();
+        assert!(resolved.ends_with("foo.rs"));
+    }
+
+    #[test]
+    fn test_resolve_mod_path_prefers_rs_file() {
+        // When only foo.rs exists (no foo/mod.rs), use it
+        let (_dir, base) = setup_test_crate(&[("src/lib.rs", ""), ("src/foo.rs", "")]);
+
+        let lib_rs = base.join("src/lib.rs");
+        let src_dir = base.join("src");
+
+        let resolved = resolve_mod_path("foo", &lib_rs, &src_dir).unwrap();
+        assert!(resolved.ends_with("foo.rs"));
+        assert!(!resolved.to_string().contains("mod.rs"));
+    }
+
+    #[test]
+    fn test_resolve_mod_path_uses_mod_rs() {
+        // When only foo/mod.rs exists (no foo.rs), use it
+        let (_dir, base) = setup_test_crate(&[("src/lib.rs", ""), ("src/foo/mod.rs", "")]);
+
+        let lib_rs = base.join("src/lib.rs");
+        let src_dir = base.join("src");
+
+        let resolved = resolve_mod_path("foo", &lib_rs, &src_dir).unwrap();
+        assert!(resolved.ends_with("foo/mod.rs"));
+    }
+
+    #[test]
+    fn test_resolve_mod_path_ambiguous_error() {
+        // When both foo.rs and foo/mod.rs exist, error
+        let (_dir, base) = setup_test_crate(&[
+            ("src/lib.rs", ""),
+            ("src/foo.rs", ""),
+            ("src/foo/mod.rs", ""),
+        ]);
+
+        let lib_rs = base.join("src/lib.rs");
+        let src_dir = base.join("src");
+
+        let err = resolve_mod_path("foo", &lib_rs, &src_dir).unwrap_err();
+        assert!(matches!(err, ModuleError::AmbiguousModule { name, .. } if name == "foo"));
+    }
+
+    // =========================================================================
+    // Cache key safety acceptance tests
+    // =========================================================================
+
+    #[test]
+    fn test_hash_different_checkout_paths_same_content() {
+        // Two identical crates in different temp directories should hash the same
+        let (_dir1, base1) = setup_test_crate(&[
+            ("src/lib.rs", "mod foo;"),
+            ("src/foo.rs", "pub fn hello() {}"),
+        ]);
+
+        let (_dir2, base2) = setup_test_crate(&[
+            ("src/lib.rs", "mod foo;"),
+            ("src/foo.rs", "pub fn hello() {}"),
+        ]);
+
+        let closure1 = rust_source_closure(&base1.join("src/lib.rs"), &base1).unwrap();
+        let closure2 = rust_source_closure(&base2.join("src/lib.rs"), &base2).unwrap();
+
+        // Paths should be identical (both workspace-relative)
+        assert_eq!(closure1, closure2);
+
+        // Hashes should be identical
+        let hash1 = hash_source_closure(&closure1, &base1).unwrap();
+        let hash2 = hash_source_closure(&closure2, &base2).unwrap();
+        assert_eq!(
+            hash1, hash2,
+            "identical content in different paths should hash the same"
+        );
+    }
+
+    #[test]
+    fn test_hash_different_content_same_paths() {
+        let (_dir1, base1) = setup_test_crate(&[
+            ("src/lib.rs", "mod foo;"),
+            ("src/foo.rs", "pub fn hello() {}"),
+        ]);
+
+        let (_dir2, base2) = setup_test_crate(&[
+            ("src/lib.rs", "mod foo;"),
+            ("src/foo.rs", "pub fn goodbye() {}"), // Different content!
+        ]);
+
+        let closure1 = rust_source_closure(&base1.join("src/lib.rs"), &base1).unwrap();
+        let closure2 = rust_source_closure(&base2.join("src/lib.rs"), &base2).unwrap();
+
+        // Paths are the same
+        assert_eq!(closure1, closure2);
+
+        // But hashes differ because content differs
+        let hash1 = hash_source_closure(&closure1, &base1).unwrap();
+        let hash2 = hash_source_closure(&closure2, &base2).unwrap();
+        assert_ne!(hash1, hash2, "different content should hash differently");
+    }
+
+    #[test]
+    fn test_hash_structural_change() {
+        let (_dir1, base1) = setup_test_crate(&[("src/lib.rs", "mod foo;"), ("src/foo.rs", "")]);
+
+        let (_dir2, base2) = setup_test_crate(&[
+            ("src/lib.rs", "mod foo;\nmod bar;"),
+            ("src/foo.rs", ""),
+            ("src/bar.rs", ""), // Added module!
+        ]);
+
+        let closure1 = rust_source_closure(&base1.join("src/lib.rs"), &base1).unwrap();
+        let closure2 = rust_source_closure(&base2.join("src/lib.rs"), &base2).unwrap();
+
+        // Different structure
+        assert_ne!(closure1.len(), closure2.len());
+
+        // Different hashes
+        let hash1 = hash_source_closure(&closure1, &base1).unwrap();
+        let hash2 = hash_source_closure(&closure2, &base2).unwrap();
+        assert_ne!(hash1, hash2, "structural changes should hash differently");
+    }
+}

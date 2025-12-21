@@ -33,13 +33,14 @@ pub enum ManifestError {
 }
 
 /// Edition of Rust to use
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Facet)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Facet)]
 #[repr(u8)]
 pub enum Edition {
     #[facet(rename = "2015")]
     E2015,
     #[facet(rename = "2018")]
     E2018,
+    #[default]
     #[facet(rename = "2021")]
     E2021,
     #[facet(rename = "2024")]
@@ -54,12 +55,6 @@ impl Edition {
             Edition::E2021 => "2021",
             Edition::E2024 => "2024",
         }
-    }
-}
-
-impl Default for Edition {
-    fn default() -> Self {
-        Edition::E2021
     }
 }
 
@@ -185,49 +180,49 @@ impl Manifest {
         }
 
         // Check for proc-macro crates
-        if let Some(ref lib) = raw.lib {
-            if lib.proc_macro == Some(true) {
-                return Err(ManifestError::Unsupported {
-                    feature: "proc-macro crates",
-                    details: "[lib] proc-macro = true is not supported yet".into(),
-                });
-            }
+        if let Some(ref lib) = raw.lib
+            && lib.proc_macro == Some(true)
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "proc-macro crates",
+                details: "[lib] proc-macro = true is not supported yet".into(),
+            });
         }
 
         // Check for test/bench/example targets
-        if let Some(ref tests) = raw.test {
-            if !tests.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[[test]] targets",
-                    details: "test targets are not supported yet".into(),
-                });
-            }
+        if let Some(ref tests) = raw.test
+            && !tests.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[[test]] targets",
+                details: "test targets are not supported yet".into(),
+            });
         }
-        if let Some(ref benches) = raw.bench {
-            if !benches.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[[bench]] targets",
-                    details: "bench targets are not supported yet".into(),
-                });
-            }
+        if let Some(ref benches) = raw.bench
+            && !benches.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[[bench]] targets",
+                details: "bench targets are not supported yet".into(),
+            });
         }
-        if let Some(ref examples) = raw.example {
-            if !examples.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[[example]] targets",
-                    details: "example targets are not supported yet".into(),
-                });
-            }
+        if let Some(ref examples) = raw.example
+            && !examples.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[[example]] targets",
+                details: "example targets are not supported yet".into(),
+            });
         }
 
         // Check for multiple binary targets
-        if let Some(ref bins) = raw.bin {
-            if bins.len() > 1 {
-                return Err(ManifestError::Unsupported {
-                    feature: "multiple [[bin]] targets",
-                    details: format!("found {} binary targets, only 1 is supported", bins.len()),
-                });
-            }
+        if let Some(ref bins) = raw.bin
+            && bins.len() > 1
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "multiple [[bin]] targets",
+                details: format!("found {} binary targets, only 1 is supported", bins.len()),
+            });
         }
 
         let package = raw.package.ok_or(ManifestError::MissingField("name"))?;
@@ -254,7 +249,7 @@ impl Manifest {
         // The executor will fail with a clear error if it doesn't
         let bin = BinTarget {
             name: name.clone(),
-            path: Utf8PathBuf::from("src/main.rs"),
+            path: main_path,
         };
 
         Ok(Manifest { name, edition, bin })

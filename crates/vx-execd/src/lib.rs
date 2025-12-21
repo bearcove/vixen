@@ -126,18 +126,18 @@ impl<C: Cas + Send + Sync> Exec for ExecService<C> {
         // Ensure output directories exist
         for expected in &invocation.expected_outputs {
             let full_path = Utf8PathBuf::from(&invocation.cwd).join(&expected.path);
-            if let Some(parent) = full_path.parent() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    return CcExecuteResult {
-                        exit_code: -1,
-                        stdout: String::new(),
-                        stderr: format!("failed to create output directory {}: {}", parent, e),
-                        duration_ms: start.elapsed().as_millis() as u64,
-                        outputs: vec![],
-                        discovered_deps: vec![],
-                        manifest_hash: None,
-                    };
-                }
+            if let Some(parent) = full_path.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                return CcExecuteResult {
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: format!("failed to create output directory {}: {}", parent, e),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    outputs: vec![],
+                    discovered_deps: vec![],
+                    manifest_hash: None,
+                };
             }
         }
 
