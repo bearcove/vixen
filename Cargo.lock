@@ -2606,6 +2606,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vx-cc"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "thiserror",
+ "vx-cas-proto",
+]
+
+[[package]]
 name = "vx-daemon"
 version = "0.1.0"
 dependencies = [
