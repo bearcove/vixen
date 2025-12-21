@@ -78,8 +78,8 @@ pub struct CargoManifest {
 pub struct Package {
     pub name: Option<String>,
     pub version: Option<StringOrWorkspace>,
-    pub authors: Option<Vec<String>>,
-    pub edition: Option<Edition>,
+    pub authors: Option<VecOrWorkspace>,
+    pub edition: Option<EditionOrWorkspace>,
     pub rust_version: Option<StringOrWorkspace>,
     pub description: Option<StringOrWorkspace>,
     pub documentation: Option<StringOrWorkspace>,
@@ -88,8 +88,8 @@ pub struct Package {
     pub repository: Option<StringOrWorkspace>,
     pub license: Option<StringOrWorkspace>,
     pub license_file: Option<StringOrWorkspace>,
-    pub keywords: Option<Vec<String>>,
-    pub categories: Option<Vec<String>>,
+    pub keywords: Option<VecOrWorkspace>,
+    pub categories: Option<VecOrWorkspace>,
     pub workspace: Option<StringOrWorkspace>,
     pub build: Option<StringOrBool>,
     pub links: Option<String>,
@@ -120,6 +120,15 @@ pub enum EditionOrWorkspace {
 #[facet(untagged)]
 pub enum StringOrWorkspace {
     String(String),
+    Workspace(WorkspaceRef),
+}
+
+/// Vec<String> field that can inherit from workspace
+#[derive(Facet, Debug, Clone)]
+#[repr(u8)]
+#[facet(untagged)]
+pub enum VecOrWorkspace {
+    Vec(Vec<String>),
     Workspace(WorkspaceRef),
 }
 
@@ -236,7 +245,7 @@ pub enum Dependency {
 }
 
 #[derive(Facet, Debug, Clone, Default)]
-#[facet(rename_all = "kebab-case")]
+#[facet(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct DependencyDetail {
     /// Version requirement
     pub version: Option<String>,
