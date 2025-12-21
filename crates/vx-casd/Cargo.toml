@@ -11,5 +11,12 @@ tokio = { workspace = true }
 blake3 = { workspace = true }
 camino = { workspace = true }
 eyre = { workspace = true }
+tracing = { workspace = true }
+xz2 = "0.1"
+tar = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+tokio-stream = "0.1"
 
 vx-cas-proto = { workspace = true }
+vx-toolchain-proto = { workspace = true }
+vx-toolchain = { workspace = true }

@@ -26,6 +26,7 @@ use vx_report::{
     NodeReport, NodeTiming, OutputRecord, ReportStore, ToolchainRef, ToolchainsUsed,
 };
 use vx_rs::{CrateGraph, CrateId, CrateType, ModuleError};
+use vx_toolchain_proto::{CasToolchain, RustChannel, RustComponent, RustToolchainSpec};
 
 // =============================================================================
 // INPUTS
@@ -138,17 +139,14 @@ pub struct RustToolchain {
     pub target: String,
 }
 
-/// Materialized Rust toolchain paths (runtime state, NOT part of cache key)
+/// Hermetic Rust toolchain manifest reference (singleton)
 ///
-/// These paths are machine-specific and derived from toolchain materialization.
-/// They are stored separately from RustToolchain identity to ensure cache keys
-/// only depend on content identity, not local filesystem layout.
+/// This is the manifest hash for the toolchain stored in CAS.
+/// Execd will fetch the manifest and materialize the toolchain on-demand.
 #[picante::input]
-pub struct RustToolchainPaths {
-    /// Path to the materialized rustc binary
-    pub rustc_path: String,
-    /// Path to the sysroot directory
-    pub sysroot_path: String,
+pub struct RustToolchainManifest {
+    /// Hash of the ToolchainManifest in CAS
+    pub manifest_hash: Blake3Hash,
 }
 
 /// Zig toolchain identity (singleton)
@@ -280,9 +278,9 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
     let cargo = CargoToml::get(db)?.expect("CargoToml not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
-    // Hermetic toolchain paths are required
-    let paths = RustToolchainPaths::get(db)?
-        .expect("RustToolchainPaths not set - hermetic toolchain required");
+    // Hermetic toolchain manifest is required
+    let toolchain_manifest = RustToolchainManifest::get(db)?
+        .expect("RustToolchainManifest not set - hermetic toolchain required");
 
     let output_dir = format!(".vx/build/{}/{}", config.target_triple, config.profile);
     let output_path = format!("{}/{}", output_dir, cargo.name);
@@ -316,9 +314,7 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
         args.push("opt-level=3".to_string());
     }
 
-    // Add sysroot for hermetic toolchain
-    args.push("--sysroot".to_string());
-    args.push(paths.sysroot_path.clone());
+    // NOTE: --sysroot will be added by execd during materialization
 
     let expected_outputs = vec![ExpectedOutput {
         logical: "bin".to_string(),
@@ -327,7 +323,7 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
     }];
 
     Ok(RustcInvocation {
-        program: paths.rustc_path.clone(),
+        toolchain_manifest: toolchain_manifest.manifest_hash,
         args,
         env: vec![],
         cwd: config.workspace_root.clone(),
@@ -425,9 +421,9 @@ pub async fn plan_compile_rlib<DB: Db>(
 
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
-    // Hermetic toolchain paths are required
-    let paths = RustToolchainPaths::get(db)?
-        .expect("RustToolchainPaths not set - hermetic toolchain required");
+    // Hermetic toolchain manifest is required
+    let toolchain_manifest = RustToolchainManifest::get(db)?
+        .expect("RustToolchainManifest not set - hermetic toolchain required");
 
     let crate_id = crate_info.crate_id(db)?;
     let crate_name = crate_info.crate_name(db)?;
@@ -456,9 +452,9 @@ pub async fn plan_compile_rlib<DB: Db>(
         crate_root.to_string(),
         "-o".to_string(),
         output_path.clone(),
-        "--sysroot".to_string(),
-        paths.sysroot_path.to_string(),
     ];
+
+    // NOTE: --sysroot will be added by execd during materialization
 
     if &*config.profile == "release" {
         args.push("-C".to_string());
@@ -472,7 +468,7 @@ pub async fn plan_compile_rlib<DB: Db>(
     }];
 
     Ok(RustcInvocation {
-        program: paths.rustc_path.to_string(),
+        toolchain_manifest: toolchain_manifest.manifest_hash,
         args,
         env: vec![],
         cwd: config.workspace_root.to_string(),
@@ -572,9 +568,9 @@ pub async fn plan_compile_rlib_with_deps<DB: Db>(
 
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
-    // Hermetic toolchain paths are required
-    let paths = RustToolchainPaths::get(db)?
-        .expect("RustToolchainPaths not set - hermetic toolchain required");
+    // Hermetic toolchain manifest is required
+    let toolchain_manifest = RustToolchainManifest::get(db)?
+        .expect("RustToolchainManifest not set - hermetic toolchain required");
 
     let crate_id = crate_info.crate_id(db)?;
     let crate_name = crate_info.crate_name(db)?;
@@ -603,9 +599,9 @@ pub async fn plan_compile_rlib_with_deps<DB: Db>(
         crate_root.to_string(),
         "-o".to_string(),
         output_path.clone(),
-        "--sysroot".to_string(),
-        paths.sysroot_path.to_string(),
     ];
+
+    // NOTE: --sysroot will be added by execd during materialization
 
     // Add --extern flags for dependencies
     for (extern_name, rlib_path) in &dep_extern_paths {
@@ -625,7 +621,7 @@ pub async fn plan_compile_rlib_with_deps<DB: Db>(
     }];
 
     Ok(RustcInvocation {
-        program: paths.rustc_path.to_string(),
+        toolchain_manifest: toolchain_manifest.manifest_hash,
         args,
         env: vec![],
         cwd: config.workspace_root.to_string(),
@@ -716,9 +712,9 @@ pub async fn plan_compile_bin_with_deps<DB: Db>(
 
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
-    // Hermetic toolchain paths are required
-    let paths = RustToolchainPaths::get(db)?
-        .expect("RustToolchainPaths not set - hermetic toolchain required");
+    // Hermetic toolchain manifest is required
+    let toolchain_manifest = RustToolchainManifest::get(db)?
+        .expect("RustToolchainManifest not set - hermetic toolchain required");
 
     let crate_name = crate_info.crate_name(db)?;
     let edition = crate_info.edition(db)?;
@@ -742,9 +738,9 @@ pub async fn plan_compile_bin_with_deps<DB: Db>(
         crate_root.to_string(),
         "-o".to_string(),
         output_path.clone(),
-        "--sysroot".to_string(),
-        paths.sysroot_path.to_string(),
     ];
+
+    // NOTE: --sysroot will be added by execd during materialization
 
     // Add --extern flags for dependencies (sorted for determinism)
     for (extern_name, rlib_path) in &dep_extern_paths {
@@ -764,7 +760,7 @@ pub async fn plan_compile_bin_with_deps<DB: Db>(
     }];
 
     Ok(RustcInvocation {
-        program: paths.rustc_path.to_string(),
+        toolchain_manifest: toolchain_manifest.manifest_hash,
         args,
         env: vec![],
         cwd: config.workspace_root.to_string(),
@@ -1109,7 +1105,7 @@ pub async fn node_id_cc_link<DB: Db>(db: &DB, target: CTarget) -> PicanteResult<
         BuildConfig,
         // Hermetic toolchain inputs (per "Toolchains are CAS artifacts" spec)
         RustToolchain,
-        RustToolchainPaths,
+        RustToolchainManifest,
         ZigToolchain,
         // Multi-crate Rust inputs
         RustCrate,
@@ -1150,36 +1146,24 @@ pub struct Database {}
 // DAEMON SERVICE
 // =============================================================================
 
-/// Materialized toolchain paths
-pub struct MaterializedToolchains {
+/// Toolchain information (manifest-only, no materialization)
+pub struct ToolchainInfo {
+    /// Hash of the ToolchainManifest in CAS
+    pub manifest_hash: Blake3Hash,
+    /// Content-derived toolchain ID (from manifest)
+    pub toolchain_id: Blake3Hash,
+    /// Rustc version string (for reports)
+    pub version: Option<String>,
+    /// Manifest date (for reports)
+    pub manifest_date: Option<String>,
+}
+
+/// Acquired toolchains (manifest references only)
+pub struct AcquiredToolchains {
     /// Rust toolchain (if acquired)
-    pub rust: Option<MaterializedRust>,
+    pub rust: Option<ToolchainInfo>,
     /// Zig toolchain (if acquired)
-    pub zig: Option<MaterializedZig>,
-}
-
-/// Materialized Rust toolchain info
-pub struct MaterializedRust {
-    /// Content-derived toolchain ID
-    pub id: vx_toolchain::RustToolchainId,
-    /// Rustc version string
-    pub version: String,
-    /// Manifest date
-    pub manifest_date: String,
-    /// Path to rustc binary
-    pub rustc_path: Utf8PathBuf,
-    /// Path to sysroot
-    pub sysroot_path: Utf8PathBuf,
-}
-
-/// Materialized Zig toolchain info
-pub struct MaterializedZig {
-    /// Content-derived toolchain ID
-    pub id: vx_toolchain::zig::ToolchainId,
-    /// Zig version string
-    pub version: String,
-    /// Path to zig binary
-    pub zig_path: Utf8PathBuf,
+    pub zig: Option<ToolchainInfo>,
 }
 
 /// The daemon service implementation
@@ -1192,8 +1176,8 @@ pub struct DaemonService {
     cache_path: Utf8PathBuf,
     /// VX_HOME directory
     vx_home: Utf8PathBuf,
-    /// Materialized toolchains (hermetic - the only option)
-    toolchains: Arc<Mutex<MaterializedToolchains>>,
+    /// Acquired toolchains (manifest references only, no materialization)
+    toolchains: Arc<Mutex<AcquiredToolchains>>,
 }
 
 impl DaemonService {
@@ -1211,158 +1195,98 @@ impl DaemonService {
             db: Arc::new(Mutex::new(db)),
             cache_path,
             vx_home,
-            toolchains: Arc::new(Mutex::new(MaterializedToolchains {
+            toolchains: Arc::new(Mutex::new(AcquiredToolchains {
                 rust: None,
                 zig: None,
             })),
         })
     }
 
-    /// Get the toolchains directory
-    fn toolchains_dir(&self) -> Utf8PathBuf {
-        self.vx_home.join("toolchains")
-    }
-
-    /// Ensure the Rust toolchain is acquired and materialized
-    ///
-    /// Returns the toolchain info, acquiring it if necessary.
+    /// Ensure Rust toolchain exists in CAS. Returns info for cache keys.
+    /// Does NOT materialize - that's execd's job.
     pub async fn ensure_rust_toolchain(
         &self,
         channel: vx_toolchain::Channel,
-    ) -> Result<MaterializedRust, String> {
+    ) -> Result<ToolchainInfo, String> {
         // Check if already acquired
         {
             let toolchains = self.toolchains.lock().await;
             if let Some(ref rust) = toolchains.rust {
-                return Ok(MaterializedRust {
-                    id: rust.id.clone(),
+                return Ok(ToolchainInfo {
+                    manifest_hash: rust.manifest_hash,
+                    toolchain_id: rust.toolchain_id,
                     version: rust.version.clone(),
                     manifest_date: rust.manifest_date.clone(),
-                    rustc_path: rust.rustc_path.clone(),
-                    sysroot_path: rust.sysroot_path.clone(),
                 });
             }
         }
 
-        // Acquire the toolchain
-        info!("acquiring Rust toolchain...");
+        // Detect host triple
+        let host = vx_toolchain::detect_host_triple()
+            .map_err(|e| format!("failed to detect host: {}", e))?;
 
-        let spec = vx_toolchain::RustToolchainSpec::native(channel)
-            .map_err(|e| format!("failed to create toolchain spec: {}", e))?;
+        // Build RustToolchainSpec for CAS
+        let spec = RustToolchainSpec {
+            channel: match channel {
+                vx_toolchain::Channel::Stable => RustChannel::Stable,
+                vx_toolchain::Channel::Beta => RustChannel::Beta,
+                vx_toolchain::Channel::Nightly { date } => RustChannel::Nightly { date },
+            },
+            host: host.clone(),
+            target: host.clone(),
+            components: vec![RustComponent::Rustc, RustComponent::RustStd],
+        };
 
-        let acquired = vx_toolchain::acquire_rust_toolchain(&spec)
+        // Ensure toolchain exists in CAS (downloads if needed)
+        let result = self.cas.ensure_rust_toolchain(spec).await;
+
+        if result.status == vx_toolchain_proto::EnsureStatus::Failed {
+            return Err(result.error.unwrap_or_else(|| "unknown error".into()));
+        }
+
+        let manifest_hash = result
+            .manifest_hash
+            .ok_or("ensure succeeded but no manifest_hash")?;
+
+        // Get manifest to extract version info for reports
+        let manifest = self
+            .cas
+            .get_toolchain_manifest(manifest_hash)
             .await
-            .map_err(|e| format!("failed to acquire Rust toolchain: {}", e))?;
+            .ok_or("failed to get toolchain manifest")?;
 
-        // Materialize to toolchains directory
-        let toolchain_dir = self
-            .toolchains_dir()
-            .join("rust")
-            .join(acquired.id.short_hex());
-
-        let materialized = vx_toolchain::materialize_rust_toolchain(
-            &acquired.rustc_tarball,
-            &acquired.rust_std_tarball,
-            &toolchain_dir,
-        )
-        .map_err(|e| format!("failed to materialize Rust toolchain: {}", e))?;
-
-        let rust = MaterializedRust {
-            id: acquired.id,
-            version: acquired.rustc_version,
-            manifest_date: acquired.manifest_date,
-            rustc_path: materialized.rustc,
-            sysroot_path: materialized.sysroot,
+        let toolchain_info = ToolchainInfo {
+            manifest_hash,
+            toolchain_id: manifest.toolchain_id,
+            version: manifest.rust_version.clone(),
+            manifest_date: manifest.rust_manifest_date.clone(),
         };
 
         info!(
-            toolchain_id = %rust.id,
-            version = %rust.version,
-            rustc = %rust.rustc_path,
-            "Rust toolchain ready"
+            toolchain_id = %toolchain_info.toolchain_id.short_hex(),
+            manifest_hash = %toolchain_info.manifest_hash.short_hex(),
+            version = ?toolchain_info.version,
+            "Rust toolchain ready in CAS"
         );
 
         // Store it
         {
             let mut toolchains = self.toolchains.lock().await;
-            toolchains.rust = Some(MaterializedRust {
-                id: rust.id.clone(),
-                version: rust.version.clone(),
-                manifest_date: rust.manifest_date.clone(),
-                rustc_path: rust.rustc_path.clone(),
-                sysroot_path: rust.sysroot_path.clone(),
+            toolchains.rust = Some(ToolchainInfo {
+                manifest_hash: toolchain_info.manifest_hash,
+                toolchain_id: toolchain_info.toolchain_id,
+                version: toolchain_info.version.clone(),
+                manifest_date: toolchain_info.manifest_date.clone(),
             });
         }
 
-        Ok(rust)
+        Ok(toolchain_info)
     }
 
-    /// Ensure the Zig toolchain is acquired and materialized
-    pub async fn ensure_zig_toolchain(&self, version: &str) -> Result<MaterializedZig, String> {
-        // Check if already acquired
-        {
-            let toolchains = self.toolchains.lock().await;
-            if let Some(ref zig) = toolchains.zig {
-                return Ok(MaterializedZig {
-                    id: zig.id.clone(),
-                    version: zig.version.clone(),
-                    zig_path: zig.zig_path.clone(),
-                });
-            }
-        }
-
-        // Acquire the toolchain
-        info!(version = %version, "acquiring Zig toolchain...");
-
-        let zig_version = vx_toolchain::zig::ZigVersion::new(version);
-        let platform = vx_toolchain::zig::HostPlatform::detect()
-            .map_err(|e| format!("failed to detect host platform: {}", e))?;
-
-        let temp_dir = self.toolchains_dir().join("zig-temp");
-        let acquired = vx_toolchain::zig::acquire_zig_toolchain(&zig_version, &platform, &temp_dir)
-            .await
-            .map_err(|e| format!("failed to acquire Zig toolchain: {}", e))?;
-
-        // Materialize to toolchains directory
-        let toolchain_dir = self
-            .toolchains_dir()
-            .join("zig")
-            .join(&acquired.id.0.short_hex());
-
-        let materialized = vx_toolchain::zig::materialize_toolchain(
-            &acquired.zig_exe_contents,
-            &acquired.lib_tarball,
-            &toolchain_dir,
-        )
-        .map_err(|e| format!("failed to materialize Zig toolchain: {}", e))?;
-
-        // Cleanup temp dir
-        let _ = acquired.cleanup();
-
-        let zig = MaterializedZig {
-            id: acquired.id,
-            version: zig_version.version,
-            zig_path: materialized.zig_path,
-        };
-
-        info!(
-            toolchain_id = %zig.id,
-            version = %zig.version,
-            zig = %zig.zig_path,
-            "Zig toolchain ready"
-        );
-
-        // Store it
-        {
-            let mut toolchains = self.toolchains.lock().await;
-            toolchains.zig = Some(MaterializedZig {
-                id: zig.id.clone(),
-                version: zig.version.clone(),
-                zig_path: zig.zig_path.clone(),
-            });
-        }
-
-        Ok(zig)
+    /// Ensure Zig toolchain exists in CAS (NOT YET IMPLEMENTED)
+    /// TODO: Implement Phase 7 - Zig toolchain via CAS
+    pub async fn ensure_zig_toolchain(&self, _version: &str) -> Result<ToolchainInfo, String> {
+        Err("Zig toolchain acquisition via CAS not yet implemented (Phase 7)".to_string())
     }
 
     /// Load picante cache from disk (call once at startup)
@@ -1437,7 +1361,7 @@ impl DaemonService {
         info!(
             workspace_root = %graph.workspace_root,
             crate_count = graph.nodes.len(),
-            toolchain_id = %rust_toolchain.id,
+            toolchain_id = %rust_toolchain.toolchain_id.short_hex(),
             "resolved crate graph"
         );
 
@@ -1452,8 +1376,8 @@ impl DaemonService {
 
         build_report.toolchains = ToolchainsUsed {
             rust: Some(ToolchainRef {
-                id: rust_toolchain.id.0.to_hex(),
-                version: Some(rust_toolchain.version.clone()),
+                id: rust_toolchain.toolchain_id.to_hex(),
+                version: rust_toolchain.version.clone(),
             }),
             zig: None,
         };
@@ -1464,20 +1388,16 @@ impl DaemonService {
         // Set hermetic toolchain identity (for cache keys)
         RustToolchain::set(
             &*db,
-            rust_toolchain.id.0,
-            Blake3Hash::from_bytes(&[0u8; 32]), // TODO: manifest hash from CAS acquisition
+            rust_toolchain.toolchain_id,
+            rust_toolchain.manifest_hash,
             target_triple.clone(),
             target_triple.clone(),
         )
         .map_err(|e| format!("picante error: {}", e))?;
 
-        // Set hermetic toolchain paths (for plan queries)
-        RustToolchainPaths::set(
-            &*db,
-            rust_toolchain.rustc_path.to_string(),
-            rust_toolchain.sysroot_path.to_string(),
-        )
-        .map_err(|e| format!("picante error: {}", e))?;
+        // Set hermetic toolchain manifest (for plan queries)
+        RustToolchainManifest::set(&*db, rust_toolchain.manifest_hash)
+            .map_err(|e| format!("picante error: {}", e))?;
 
         BuildConfig::set(
             &*db,
@@ -1827,7 +1747,7 @@ impl DaemonService {
         };
 
         let start = std::time::Instant::now();
-        let output = Command::new(&invocation.program)
+        let output = Command::new("rustc")
             .args(&invocation.args)
             .current_dir(&invocation.cwd)
             .output()
@@ -1881,7 +1801,7 @@ impl DaemonService {
                 path: Some(rlib_path.clone()),
             }],
             invocation: Some(InvocationRecord {
-                program: invocation.program,
+                program: "rustc".to_string(),
                 args: invocation.args,
                 cwd: invocation.cwd,
                 exit_code: 0,
@@ -2017,7 +1937,7 @@ impl DaemonService {
             .map_err(|e| format!("failed to plan bin build: {}", e))?;
 
         let start = std::time::Instant::now();
-        let output = Command::new(&invocation.program)
+        let output = Command::new("rustc")
             .args(&invocation.args)
             .current_dir(&invocation.cwd)
             .output()
@@ -2070,7 +1990,7 @@ impl DaemonService {
                 path: Some(output_path.to_string()),
             }],
             invocation: Some(InvocationRecord {
-                program: invocation.program,
+                program: "rustc".to_string(),
                 args: invocation.args,
                 cwd: invocation.cwd,
                 exit_code: 0,

@@ -8,6 +8,7 @@ use facet::Facet;
 use facet_args as args;
 use owo_colors::OwoColorize;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 use vx_daemon::DaemonService;
 use vx_daemon_proto::{BuildRequest, Daemon};
@@ -81,13 +82,27 @@ enum CliCommand {
     },
 }
 
+fn init_tracing() {
+    // Default to info for vx crates, warn for everything else
+    // Can be overridden with RUST_LOG env var
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("warn,vx=info,vx_daemon=info,vx_casd=info,vx_toolchain=info,vx_execd=info")
+    });
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .with_thread_ids(false)
+        // Show span close events with duration - critical for toolchain downloads
+        .with_span_events(FmtSpan::CLOSE)
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing from RUST_LOG env var (e.g., RUST_LOG=vx_daemon=debug)
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
-        .init();
+    // Initialize tracing with sensible defaults and span events for performance monitoring
+    init_tracing();
 
     // Install Miette's graphical error handler for nice CLI diagnostics
     miette::set_hook(Box::new(|_| {

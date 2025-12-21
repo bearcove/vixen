@@ -8,8 +8,8 @@ use vx_cas_proto::{BlobHash, ManifestHash};
 /// Structured rustc invocation (not a shell string!)
 #[derive(Debug, Clone, Facet)]
 pub struct RustcInvocation {
-    /// Program to run ("rustc")
-    pub program: String,
+    /// Toolchain manifest hash (execd fetches manifest, materializes, runs)
+    pub toolchain_manifest: ManifestHash,
     /// Command line arguments
     pub args: Vec<String>,
     /// Environment variables (explicit, minimal)
@@ -23,8 +23,8 @@ pub struct RustcInvocation {
 /// Structured zig cc invocation for C/C++ compilation
 #[derive(Debug, Clone, Facet)]
 pub struct CcInvocation {
-    /// Path to zig executable (from materialized toolchain)
-    pub zig_path: String,
+    /// Toolchain manifest hash (execd fetches manifest, materializes, runs)
+    pub toolchain_manifest: ManifestHash,
     /// Command line arguments (["cc", "-c", "main.c", "-o", "main.o", ...])
     pub args: Vec<String>,
     /// Environment variables (minimal, controlled)

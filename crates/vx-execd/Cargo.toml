@@ -11,7 +11,14 @@ camino = { workspace = true }
 eyre = { workspace = true }
 jiff = { workspace = true }
 tracing = { workspace = true }
+blake3 = { workspace = true }
+futures-util = { workspace = true }
 
 vx-cas-proto = { workspace = true }
 vx-cc = { workspace = true }
 vx-exec-proto = { workspace = true }
+vx-toolchain-proto = { workspace = true }
+
+# For tar.xz streaming extraction
+tar = "0.4"
+xz2 = "0.1"
