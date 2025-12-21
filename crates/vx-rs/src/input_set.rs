@@ -22,6 +22,41 @@ use camino::{Utf8Path, Utf8PathBuf};
 use facet::Facet;
 use std::collections::HashSet;
 
+/// Input tracking for a Rust compilation node
+///
+/// This tracks both the snapshot we send to execd and the observed inputs
+/// that rustc actually used (from dep-info).
+#[derive(Debug, Clone, PartialEq, Eq, Facet)]
+pub struct InputRecords {
+    /// Snapshot inputs: the maximalist superset we sent to execd
+    /// This is intentionally over-inclusive to avoid missing files.
+    pub snapshot_inputs: InputSet,
+
+    /// Observed inputs: what dep-info says rustc actually read
+    /// This is authoritative and used for cache keys.
+    /// None until we've parsed dep-info.
+    pub observed_inputs: Option<InputSet>,
+}
+
+impl InputRecords {
+    pub fn new(snapshot: InputSet) -> Self {
+        Self {
+            snapshot_inputs: snapshot,
+            observed_inputs: None,
+        }
+    }
+
+    /// Set the observed inputs from parsed dep-info
+    pub fn set_observed(&mut self, observed: InputSet) {
+        self.observed_inputs = Some(observed);
+    }
+
+    /// Check if observed inputs are available
+    pub fn has_observed(&self) -> bool {
+        self.observed_inputs.is_some()
+    }
+}
+
 /// A set of input files for a Rust compilation node
 #[derive(Debug, Clone, PartialEq, Eq, Facet)]
 pub struct InputSet {
@@ -148,7 +183,41 @@ pub enum PathClassification {
     External(String),
 }
 
-/// Build a FinalInputSet from rustc dep-info output
+/// Validation error for inputs outside workspace
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutsideWorkspaceError {
+    /// A dependency was found outside workspace and not in any allowlist
+    UnallowedExternalDep {
+        path: String,
+        /// Suggested fix: add to toolchain allowlist, generated roots, or explicit contract
+        suggestion: String,
+    },
+}
+
+/// Validate that all external deps are either toolchain or explicitly allowed
+///
+/// This enforces hermetic builds: only files in workspace, toolchain, or
+/// explicitly declared locations are permitted.
+pub fn validate_external_deps(
+    input_set: &InputSet,
+    _toolchain_roots: &[Utf8PathBuf],
+) -> Result<(), OutsideWorkspaceError> {
+    // For now, we classify external deps optimistically during build_input_set_from_depinfo
+    // Any path that wasn't workspace/toolchain/generated went into declared_external
+    // In the future, we'd check here that declared_external paths were actually
+    // pre-declared via contract, and reject if not.
+
+    // V1: Accept all external deps but track them
+    // V2 (future): Require explicit declaration
+    if !input_set.declared_external.is_empty() {
+        // Log/warn that external deps exist
+        // For now, this is informational only
+    }
+
+    Ok(())
+}
+
+/// Build an InputSet from rustc dep-info output
 ///
 /// Takes the parsed dependency paths from a dep-info file and classifies
 /// them into the appropriate InputSet categories.

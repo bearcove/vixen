@@ -6,15 +6,20 @@
 
 pub mod crate_graph;
 pub mod depfile;
+pub mod exec_action;
 pub mod input_set;
 pub mod module_scanner;
 pub mod snapshot;
 
 pub use crate_graph::{CrateGraph, CrateGraphError, CrateId, CrateNode, CrateType, DepEdge};
 pub use depfile::{normalize_dep_path, DepfileError, parse_depfile, parse_depfile_content};
+pub use exec_action::{
+    CompilationOutput, OrchestrationDoc, RustDepInfoAction, RustDepInfoResult,
+};
 pub use input_set::{
-    build_input_set_from_depinfo, classify_path, DeclaredExternal, GeneratedFile, InputSet,
-    PathClassification, ToolchainFile, WorkspaceFile,
+    build_input_set_from_depinfo, classify_path, DeclaredExternal, GeneratedFile, InputRecords,
+    InputSet, OutsideWorkspaceError, PathClassification, ToolchainFile, WorkspaceFile,
+    validate_external_deps,
 };
 pub use module_scanner::{
     ModDecl, ModuleError, hash_source_closure, resolve_mod_path, rust_source_closure,
