@@ -133,9 +133,9 @@ pub trait Daemon {
 
 **Filesystem access:**
 - Reads: `Cargo.toml`, `src/main.rs` (to compute hashes)
-- Writes: `.vx/build/<triple>/<profile>/<name>` (materialized output)
+- Writes: `<project>/.vx/build/<triple>/<profile>/<name>` (materialized output)
 
-**Key principle:** All CAS operations go through rapace RPC. Daemon never writes to `.vx/cas/` directly.
+**Key principle:** All CAS operations go through rapace RPC. Daemon never writes to `~/.vx/` directly.
 
 **Dependencies:**
 - `vx-daemon-proto` — its own trait
@@ -208,9 +208,9 @@ pub trait Cas {
 
 **Responsibility:** Store and retrieve blobs, manifests, and cache mappings. Runs as a separate process, accepts connections over rapace.
 
-**Storage layout:**
+**Storage layout (global CAS at `~/.vx/`):**
 ```
-.vx/cas/
+~/.vx/
   blobs/<hh>/<hash>           # raw bytes
   manifests/<hh>/<hash>.json  # JSON-encoded NodeManifest
   cache/<hh>/<cachekey>       # contains manifest hash hex
@@ -220,11 +220,10 @@ pub trait Cas {
 **Invariants:**
 - All writes are atomic (write to `tmp/`, then rename)
 - Blobs are immutable once written
-- `publish()` fails if manifest doesn't exist
-- First writer wins on cache key conflicts
+- `publish()` returns conflict if key maps to different manifest (see DESIGN.md)
 - Sharding by first 2 hex chars of hash
 
-**Filesystem access:** Full control of `.vx/cas/` directory. Only process that writes here.
+**Filesystem access:** Full control of `~/.vx/` directory. Only process that writes here.
 
 **Dependencies:**
 - `vx-cas-proto` — trait it implements

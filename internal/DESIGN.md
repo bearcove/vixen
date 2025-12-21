@@ -83,12 +83,18 @@ vx ──rapace──► vx-daemon ─────┤ vx-casd  │
 
 Rapace handles transport — SHM for local, network for remote.
 
-**Service endpoints are configured:**
-- CLI knows daemon endpoint (env var or default socket)
-- Daemon knows CAS endpoint and Exec endpoint
-- Execd knows CAS endpoint (configured at startup)
+**Service endpoints are configured (precedence: CLI flags > env vars > defaults):**
+- CLI knows daemon endpoint (`--daemon` / `$VX_DAEMON` / default SHM socket)
+- Daemon knows CAS endpoint (`$VX_CAS` / default SHM socket)
+- Daemon knows Exec endpoint (`$VX_EXEC` / default SHM socket)
+- Execd knows CAS endpoint (`$VX_CAS` / default SHM socket)
 
-**v0 deployment:** All four run as separate processes on localhost using SHM transport. The CLI can auto-spawn them if not running.
+**v0 deployment:** All four run as separate processes on localhost using SHM transport.
+
+**Process lifecycle:**
+- `vx build` auto-spawns daemon if not running; daemon auto-spawns casd and execd
+- `vx kill` sends shutdown to daemon, which cascades to execd (casd keeps running for other projects)
+- Daemon is the supervisor for execd; casd is independent (shared resource)
 
 ---
 
@@ -111,6 +117,11 @@ This avoids awkward "read file over RPC" shims while maintaining the core invari
 **Staged capability for execd:**
 - v0: execd reads sources directly from the local workspace (simplest)
 - Later: execd can fetch source blobs from CAS, enabling remote execution
+
+**v0 execd contract:**
+- Execd runs on the same host as the workspace path provided by daemon
+- Workspace path is passed to execd; execd treats it as read-only
+- This assumption is explicitly scoped to v0; remote execution will use CAS-fetched sources
 
 ---
 
@@ -397,6 +408,10 @@ Stop the daemon and remove the entire `.vx/` directory.
 ### `vx explain`
 
 Print details about the last build (cache hits, timings, invocations).
+
+### `vx cache prune` (future)
+
+Garbage-collect the global CAS. Out of scope for v0.
 
 ---
 
