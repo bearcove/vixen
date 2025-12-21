@@ -1,6 +1,6 @@
 # Component Architecture
 
-This document describes how vx crates relate to each other, their responsibilities, assumptions, and filesystem isolation.
+This document describes how vertex crates relate to each other, their responsibilities, assumptions, and filesystem isolation.
 
 ---
 
@@ -137,7 +137,7 @@ pub trait Daemon {
 
 **Key principle:** All CAS operations go through rapace RPC. Daemon never writes to `~/.vx/` directly (except for picante cache).
 
-**Picante persistence:**
+**picante persistence:**
 - Stores shared `Database` across builds (not per-request)
 - Loads `$VX_HOME/picante.cache` on startup via `load_cache()`
 - Saves cache after each successful build via `save_cache()`

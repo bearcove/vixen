@@ -1,4 +1,8 @@
-# Project Goal
+# vertex
+
+vertex is a native Rust build engine. The CLI binary is named `vx`.
+
+## Project Goal
 
 Build a native Rust build engine that:
 
@@ -232,17 +236,17 @@ Conflicts should never happen with correct cache keys. If they do, it indicates 
 
 ---
 
-## Picante Database
+## picante Database
 
 The daemon uses picante for incremental computation.
 
-**Key principle:** Picante determines *when* the cache key must be recomputed; vx defines *what* the cache key is.
+**Key principle:** picante determines *when* the cache key must be recomputed; vertex defines *what* the cache key is.
 
 The `CacheKey` is an explicit blake3 hash computed by the `cache_key_compile_bin` query. This keeps CacheKey stable across picante internal changes.
 
 ### Persistence
 
-Picante's incremental database is persisted to `~/.vx/picante.cache` (or `$VX_HOME/picante.cache`):
+picante's incremental database is persisted to `~/.vx/picante.cache` (or `$VX_HOME/picante.cache`):
 - **On startup:** `load_cache()` restores memoized query results from disk
 - **After each build:** `save_cache()` persists the database
 
@@ -458,7 +462,7 @@ These are non-negotiable:
 
 ## Closing Principle
 
-vx is a replacement for `cargo build`, not a wrapper around it.
+vertex is a replacement for `cargo build`, not a wrapper around it.
 
 It targets the same problem space, but with different priorities:
 determinism, correct caching, explicit inputs, and service-oriented execution.

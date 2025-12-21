@@ -1,4 +1,4 @@
-# vx Roadmap
+# vertex Roadmap
 
 This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the normative specification.
 
@@ -16,14 +16,14 @@ This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the n
 - [ ] CAS manifest storage
 - [ ] Cache key → manifest index
 
-### Picante Inputs
+### picante Inputs
 
 - [x] `SourceFile` (path + content hash)
 - [x] `CargoToml` (hash + name + edition + bin_path)
 - [x] `BuildConfig` (profile + target + workspace)
 - [ ] `RustcToolchain` (rustc path + `rustc -vV` output)
 
-### Picante Queries
+### picante Queries
 
 - [x] `cache_key_compile_bin` — explicit blake3 cache key
 - [x] `plan_compile_bin` — rustc invocation builder
@@ -50,7 +50,7 @@ This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the n
 - [x] Edition change = cache miss
 - [x] Different checkout path = still cache hit (--remap-path-prefix)
 - [x] Cross-session cache persistence (CAS + picante persistence)
-- [x] Picante query memoization persists across sessions
+- [x] picante query memoization persists across sessions
 - [ ] Toolchain change = cache miss (needs RustcToolchain input)
 
 ### Service Separation
@@ -92,7 +92,7 @@ This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the n
   - [x] Edition change triggers rebuild
   - [x] Different checkout path is cache hit
   - [x] Cache persists across sessions
-  - [x] Picante memoization verified (query traces)
+  - [x] picante memoization verified (query traces)
 - [x] Error handling tests (reject deps, features, workspaces, etc.)
 - [ ] Unit tests for CAS operations (put/get blob, manifest storage)
 - [ ] Unit tests for cache key computation (determinism, correct invalidation)

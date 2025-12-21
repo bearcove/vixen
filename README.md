@@ -1,11 +1,44 @@
 # vertex
 
-It's really hard to stop cargo from rebuilding too much in CI, even with
+A Rust build engine with correct caching. The CLI is `vx`.
 
-  * Timestamp restoration with [timelord-cli](https://github.com/fasterthanlime/timelord)
-  * Cache save/restore with [ctree](https://crates.io/crates/ctree) and [cargo-sweep](https://github.com/holmgr/cargo-sweep)
-  * `-Z mtime-on-use` for trimming, `-Z checksum-freshness`, etc.
-  
-[buck2](https://buck2.build/) is great but a lot of effort.
+## What it does today
 
-Is there a middle ground? Let's find out.
+Builds single-crate Rust projects with no dependencies:
+
+```bash
+vx build           # debug build
+vx build --release # release build
+vx clean           # remove .vx/ directory
+```
+
+Outputs go to `.vx/build/` (not `target/`).
+
+## Caching
+
+vertex uses content-addressed storage and picante (incremental queries) to cache builds correctly:
+
+- Second build with unchanged inputs = instant (zero rustc invocations)
+- Change source, edition, or profile = rebuild
+- Different checkout path = still a cache hit (`--remap-path-prefix`)
+- Cache persists across sessions
+
+Global cache lives at `~/.vx/` (or `$VX_HOME`).
+
+## Limitations (v0)
+
+vertex explicitly rejects (with clear errors):
+
+- Workspaces
+- Dependencies
+- Features
+- Build scripts (`build.rs`)
+- Proc macros
+- Tests / benches / examples
+- Multiple binary targets
+
+## Debug logging
+
+```bash
+RUST_LOG=vx_daemon=debug vx build
+```
