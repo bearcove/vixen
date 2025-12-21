@@ -341,5 +341,436 @@ fn compute_sha256(data: &[u8]) -> String {
     hex::encode(result)
 }
 
+// =============================================================================
+// RUST TOOLCHAIN ACQUISITION
+// =============================================================================
+
+use camino::{Utf8Path, Utf8PathBuf};
+use vx_cas_proto::Blake3Hash;
+
+/// Rust toolchain specification
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RustToolchainSpec {
+    /// Channel (stable, beta, or pinned nightly)
+    pub channel: Channel,
+    /// Host triple (e.g., "aarch64-apple-darwin")
+    pub host: String,
+    /// Target triple for cross-compilation (defaults to host if not set)
+    pub target: Option<String>,
+}
+
+impl RustToolchainSpec {
+    /// Create a spec for native compilation on the current host
+    pub fn native(channel: Channel) -> Result<Self, ToolchainError> {
+        let host = detect_host_triple()?;
+        Ok(Self {
+            channel,
+            host,
+            target: None,
+        })
+    }
+
+    /// Create a spec for cross-compilation
+    pub fn cross(channel: Channel, host: String, target: String) -> Self {
+        Self {
+            channel,
+            host,
+            target: Some(target),
+        }
+    }
+
+    /// Get the effective target triple
+    pub fn effective_target(&self) -> &str {
+        self.target.as_deref().unwrap_or(&self.host)
+    }
+}
+
+/// Unique identifier for a Rust toolchain, derived from manifest SHA256 checksums.
+///
+/// The toolchain ID is deterministic and derived from the *manifest-declared*
+/// SHA256 hashes, NOT from the downloaded bytes. This means:
+/// - Identity is defined by what Rust publishes (the manifest)
+/// - Verification happens separately (downloaded bytes must match manifest SHA256)
+/// - A corrupted download fails verification, it doesn't silently become a different toolchain
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RustToolchainId(pub Blake3Hash);
+
+impl RustToolchainId {
+    /// Create from manifest SHA256 hashes (not downloaded byte hashes!)
+    ///
+    /// Both hashes are the SHA256 hex strings from the channel manifest.
+    pub fn from_manifest_sha256s(rustc_sha256: &str, rust_std_sha256: &str) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"rust-toolchain-v1\n");
+        hasher.update(b"rustc_sha256:");
+        hasher.update(rustc_sha256.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(b"rust_std_sha256:");
+        hasher.update(rust_std_sha256.as_bytes());
+        hasher.update(b"\n");
+        Self(Blake3Hash(*hasher.finalize().as_bytes()))
+    }
+
+    /// Get the hex representation
+    pub fn to_hex(&self) -> String {
+        self.0.to_hex()
+    }
+
+    /// Get a short hex prefix (for display)
+    pub fn short_hex(&self) -> String {
+        self.0.short_hex()
+    }
+}
+
+impl std::fmt::Display for RustToolchainId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rust:{}", self.short_hex())
+    }
+}
+
+/// Result of acquiring a Rust toolchain (before CAS storage)
+pub struct AcquiredRustToolchain {
+    /// Unique toolchain identifier (derived from manifest SHA256s)
+    pub id: RustToolchainId,
+    /// Toolchain specification
+    pub spec: RustToolchainSpec,
+    /// Rustc version string
+    pub rustc_version: String,
+    /// Rustc component tarball (xz compressed)
+    pub rustc_tarball: Vec<u8>,
+    /// Rustc manifest SHA256 (hex string, used for identity)
+    pub rustc_manifest_sha256: String,
+    /// Rust-std component tarball (xz compressed)
+    pub rust_std_tarball: Vec<u8>,
+    /// Rust-std manifest SHA256 (hex string, used for identity)
+    pub rust_std_manifest_sha256: String,
+    /// Channel manifest date
+    pub manifest_date: String,
+}
+
+/// A materialized Rust toolchain ready for use
+pub struct MaterializedRustToolchain {
+    /// Root directory of the toolchain
+    pub root: Utf8PathBuf,
+    /// Path to the rustc binary
+    pub rustc: Utf8PathBuf,
+    /// Sysroot path (for --sysroot flag)
+    pub sysroot: Utf8PathBuf,
+}
+
+impl MaterializedRustToolchain {
+    /// Get rustc command arguments for using this toolchain
+    pub fn rustc_args(&self) -> Vec<String> {
+        vec![format!("--sysroot={}", self.sysroot)]
+    }
+}
+
+/// Detect the host triple using rustc (fallback if no hermetic toolchain yet)
+pub fn detect_host_triple() -> Result<String, ToolchainError> {
+    use std::process::Command;
+
+    let output =
+        Command::new("rustc")
+            .arg("-vV")
+            .output()
+            .map_err(|e| ToolchainError::FetchError {
+                url: "rustc -vV".to_string(),
+                source: Box::new(e),
+            })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(host) = line.strip_prefix("host: ") {
+            return Ok(host.to_string());
+        }
+    }
+
+    Err(ToolchainError::FetchError {
+        url: "rustc -vV".to_string(),
+        source: "could not determine host triple".into(),
+    })
+}
+
+/// Acquire a Rust toolchain: download components, verify checksums, compute ID
+///
+/// The toolchain ID is derived from the manifest SHA256 hashes (what Rust publishes),
+/// not from the downloaded bytes. Verification ensures downloaded bytes match the
+/// manifest - a mismatch fails loudly rather than creating a different toolchain ID.
+pub async fn acquire_rust_toolchain(
+    spec: &RustToolchainSpec,
+) -> Result<AcquiredRustToolchain, ToolchainError> {
+    tracing::info!(
+        channel = ?spec.channel,
+        host = %spec.host,
+        target = ?spec.target,
+        "acquiring Rust toolchain"
+    );
+
+    // Fetch the channel manifest
+    let manifest = fetch_channel_manifest(&spec.channel).await?;
+
+    tracing::debug!(
+        date = %manifest.date,
+        rustc_version = %manifest.rustc.version,
+        "fetched channel manifest"
+    );
+
+    // Get manifest SHA256s - these define toolchain identity
+    let rustc_target = manifest.rustc_for_target(&spec.host)?;
+    let rustc_manifest_sha256 = rustc_target.hash.clone();
+
+    let target = spec.effective_target();
+    let rust_std_target = manifest.rust_std_for_target(target)?;
+    let rust_std_manifest_sha256 = rust_std_target.hash.clone();
+
+    // Compute toolchain ID from manifest SHA256s (before downloading)
+    // This ensures ID is stable and defined by what Rust publishes
+    let id =
+        RustToolchainId::from_manifest_sha256s(&rustc_manifest_sha256, &rust_std_manifest_sha256);
+
+    tracing::info!(
+        toolchain_id = %id,
+        rustc_version = %manifest.rustc.version,
+        rustc_sha256 = %rustc_manifest_sha256,
+        rust_std_sha256 = %rust_std_manifest_sha256,
+        "toolchain identity computed from manifest"
+    );
+
+    // Download and verify components (verification happens inside download_component)
+    // If verification fails, we get an error - not a different ID
+    let rustc_tarball = download_component(&rustc_target.url, &rustc_manifest_sha256).await?;
+    let rust_std_tarball =
+        download_component(&rust_std_target.url, &rust_std_manifest_sha256).await?;
+
+    tracing::info!(
+        toolchain_id = %id,
+        rustc_version = %manifest.rustc.version,
+        "acquired Rust toolchain"
+    );
+
+    Ok(AcquiredRustToolchain {
+        id,
+        spec: spec.clone(),
+        rustc_version: manifest.rustc.version,
+        rustc_tarball,
+        rustc_manifest_sha256,
+        rust_std_tarball,
+        rust_std_manifest_sha256,
+        manifest_date: manifest.date,
+    })
+}
+
+/// Extract and materialize a Rust toolchain to a directory
+///
+/// This unpacks the rustc and rust-std tarballs and sets up the sysroot
+/// by directly copying files - NO install.sh execution for hermeticity.
+///
+/// Rust component tarballs have a known structure:
+/// ```text
+/// rustc-{version}-{target}/
+///   rustc/
+///     bin/rustc, bin/rustdoc, ...
+///     lib/rustlib/{target}/...
+///   ...
+/// rust-std-{version}-{target}/
+///   rust-std-{target}/
+///     lib/rustlib/{target}/lib/...
+/// ```
+///
+/// We copy the contents directly into a sysroot layout.
+pub fn materialize_rust_toolchain(
+    rustc_tarball: &[u8],
+    rust_std_tarball: &[u8],
+    target_dir: &Utf8Path,
+) -> Result<MaterializedRustToolchain, ToolchainError> {
+    use std::fs;
+
+    tracing::debug!(target_dir = %target_dir, "materializing Rust toolchain");
+
+    // Create target directory and sysroot
+    let sysroot = target_dir.join("sysroot");
+    fs::create_dir_all(&sysroot).map_err(ToolchainError::IoError)?;
+
+    // Extract and install rustc component
+    extract_and_install_component(rustc_tarball, "rustc", target_dir, &sysroot)?;
+
+    // Extract and install rust-std component
+    extract_and_install_component(rust_std_tarball, "rust-std", target_dir, &sysroot)?;
+
+    // Find rustc binary
+    let rustc = sysroot.join("bin/rustc");
+    if !rustc.exists() {
+        return Err(ToolchainError::FetchError {
+            url: "rustc".to_string(),
+            source: format!("rustc binary not found at {}", rustc).into(),
+        });
+    }
+
+    // Make rustc executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&rustc)
+            .map_err(ToolchainError::IoError)?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&rustc, perms).map_err(ToolchainError::IoError)?;
+    }
+
+    tracing::debug!(
+        rustc = %rustc,
+        sysroot = %sysroot,
+        "materialized Rust toolchain"
+    );
+
+    Ok(MaterializedRustToolchain {
+        root: target_dir.to_owned(),
+        rustc,
+        sysroot,
+    })
+}
+
+/// Extract a component tarball and copy its contents to the sysroot.
+///
+/// This replaces install.sh execution with direct file copying for hermeticity.
+fn extract_and_install_component(
+    tarball: &[u8],
+    component_name: &str,
+    extract_dir: &Utf8Path,
+    sysroot: &Utf8Path,
+) -> Result<(), ToolchainError> {
+    use std::fs;
+    use std::io::Read;
+    use xz2::read::XzDecoder;
+
+    // Decompress xz
+    let mut decoder = XzDecoder::new(tarball);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .map_err(|e| ToolchainError::FetchError {
+            url: format!("{} tarball", component_name),
+            source: format!("xz decompression failed: {}", e).into(),
+        })?;
+
+    // Extract tar to temporary location
+    let mut archive = tar::Archive::new(decompressed.as_slice());
+    archive
+        .unpack(extract_dir)
+        .map_err(|e| ToolchainError::FetchError {
+            url: format!("{} tarball", component_name),
+            source: format!("tar extraction failed: {}", e).into(),
+        })?;
+
+    // Find the extracted component directory and copy its contents to sysroot
+    // Rust tarballs extract to: {component}-{version}-{target}/{subcomponent}/
+    for entry in fs::read_dir(extract_dir).map_err(ToolchainError::IoError)? {
+        let entry = entry.map_err(ToolchainError::IoError)?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // Match directories like "rustc-1.76.0-aarch64-apple-darwin" or "rust-std-1.76.0-aarch64-apple-darwin"
+        if name_str.starts_with(component_name) && entry.path().is_dir() {
+            let component_root =
+                Utf8PathBuf::try_from(entry.path()).map_err(|e| ToolchainError::FetchError {
+                    url: component_name.to_string(),
+                    source: format!("invalid path: {}", e).into(),
+                })?;
+
+            // Copy contents from each subdirectory (rustc/, rust-std-{target}/, etc.)
+            install_component_contents(&component_root, sysroot)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Copy component contents to sysroot, preserving directory structure.
+///
+/// Each component tarball contains subdirectories with the actual files:
+/// - rustc tarball has: rustc/ (with bin/, lib/, etc.)
+/// - rust-std tarball has: rust-std-{target}/ (with lib/rustlib/{target}/lib/)
+fn install_component_contents(
+    component_root: &Utf8Path,
+    sysroot: &Utf8Path,
+) -> Result<(), ToolchainError> {
+    use std::fs;
+
+    for entry in fs::read_dir(component_root).map_err(ToolchainError::IoError)? {
+        let entry = entry.map_err(ToolchainError::IoError)?;
+        let path = entry.path();
+
+        // Skip non-directories and special files (install.sh, manifest.in, etc.)
+        if !path.is_dir() {
+            continue;
+        }
+
+        let subdir_name = entry.file_name();
+        let subdir_name_str = subdir_name.to_string_lossy();
+
+        // Skip directories that aren't component content
+        if subdir_name_str == "." || subdir_name_str == ".." {
+            continue;
+        }
+
+        let src = Utf8PathBuf::try_from(path).map_err(|e| ToolchainError::FetchError {
+            url: component_root.to_string(),
+            source: format!("invalid path: {}", e).into(),
+        })?;
+
+        // Copy the directory contents recursively to sysroot
+        copy_dir_recursive(&src, sysroot)?;
+    }
+
+    Ok(())
+}
+
+/// Recursively copy a directory's contents to a destination, merging with existing.
+fn copy_dir_recursive(src: &Utf8Path, dst: &Utf8Path) -> Result<(), ToolchainError> {
+    use std::fs;
+
+    for entry in fs::read_dir(src).map_err(ToolchainError::IoError)? {
+        let entry = entry.map_err(ToolchainError::IoError)?;
+        let src_path =
+            Utf8PathBuf::try_from(entry.path()).map_err(|e| ToolchainError::FetchError {
+                url: src.to_string(),
+                source: format!("invalid path: {}", e).into(),
+            })?;
+        let file_name = src_path
+            .file_name()
+            .ok_or_else(|| ToolchainError::FetchError {
+                url: src_path.to_string(),
+                source: "path has no filename".into(),
+            })?;
+        let dst_path = dst.join(file_name);
+
+        if src_path.is_dir() {
+            fs::create_dir_all(&dst_path).map_err(ToolchainError::IoError)?;
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            // Copy file, preserving permissions
+            fs::copy(&src_path, &dst_path).map_err(ToolchainError::IoError)?;
+
+            // Preserve executable bit on unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let src_meta = fs::metadata(&src_path).map_err(ToolchainError::IoError)?;
+                let src_mode = src_meta.permissions().mode();
+                if src_mode & 0o111 != 0 {
+                    // Source is executable, make dest executable too
+                    let mut perms = fs::metadata(&dst_path)
+                        .map_err(ToolchainError::IoError)?
+                        .permissions();
+                    perms.set_mode(src_mode);
+                    fs::set_permissions(&dst_path, perms).map_err(ToolchainError::IoError)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

@@ -96,3 +96,113 @@ async fn fetch_stable_manifest() {
     assert!(!rustc_target.url.is_empty());
     assert!(!rustc_target.hash.is_empty());
 }
+
+// =============================================================================
+// RUST TOOLCHAIN SPEC TESTS
+// =============================================================================
+
+#[test]
+fn rust_toolchain_spec_effective_target() {
+    let spec = RustToolchainSpec {
+        channel: Channel::Stable,
+        host: "x86_64-unknown-linux-gnu".to_string(),
+        target: None,
+    };
+    assert_eq!(spec.effective_target(), "x86_64-unknown-linux-gnu");
+
+    let cross_spec = RustToolchainSpec {
+        channel: Channel::Stable,
+        host: "x86_64-unknown-linux-gnu".to_string(),
+        target: Some("aarch64-unknown-linux-gnu".to_string()),
+    };
+    assert_eq!(cross_spec.effective_target(), "aarch64-unknown-linux-gnu");
+}
+
+#[test]
+fn rust_toolchain_id_deterministic() {
+    // Toolchain ID is derived from manifest SHA256 hashes (hex strings)
+    let rustc_sha256 = "abc123def456";
+    let std_sha256 = "789xyz000111";
+
+    let id1 = RustToolchainId::from_manifest_sha256s(rustc_sha256, std_sha256);
+    let id2 = RustToolchainId::from_manifest_sha256s(rustc_sha256, std_sha256);
+
+    assert_eq!(id1, id2);
+    assert_eq!(id1.to_hex(), id2.to_hex());
+
+    // Different manifest hash = different ID
+    let std_sha256_different = "different_hash";
+    let id3 = RustToolchainId::from_manifest_sha256s(rustc_sha256, std_sha256_different);
+    assert_ne!(id1, id3);
+}
+
+#[test]
+fn rust_toolchain_id_display() {
+    let rustc_sha256 = "abc123";
+    let std_sha256 = "def456";
+
+    let id = RustToolchainId::from_manifest_sha256s(rustc_sha256, std_sha256);
+    let display = format!("{}", id);
+
+    assert!(display.starts_with("rust:"));
+    // Short hex is 16 chars
+    assert_eq!(display.len(), 5 + 16); // "rust:" + 16 hex chars
+}
+
+#[test]
+fn detect_host_triple_works() {
+    // This should work on any dev machine with rustc installed
+    let triple = detect_host_triple().unwrap();
+    assert!(!triple.is_empty());
+    // Should contain something like "linux", "darwin", "windows"
+    assert!(
+        triple.contains("linux") || triple.contains("darwin") || triple.contains("windows"),
+        "unexpected triple: {}",
+        triple
+    );
+}
+
+#[tokio::test]
+#[ignore] // Requires network access and takes a long time - run with --ignored
+async fn acquire_and_materialize_rust_toolchain() {
+    let host = detect_host_triple().unwrap();
+    let spec = RustToolchainSpec {
+        channel: Channel::Stable,
+        host,
+        target: None,
+    };
+
+    // Acquire toolchain
+    let acquired = acquire_rust_toolchain(&spec).await.unwrap();
+
+    println!("Toolchain ID: {}", acquired.id);
+    println!("Rustc version: {}", acquired.rustc_version);
+    println!("Manifest date: {}", acquired.manifest_date);
+
+    // Materialize it
+    let temp_dir = Utf8PathBuf::from("/tmp/vx-rust-toolchain-test");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    let materialized = materialize_rust_toolchain(
+        &acquired.rustc_tarball,
+        &acquired.rust_std_tarball,
+        &temp_dir,
+    )
+    .unwrap();
+
+    assert!(materialized.rustc.exists());
+    assert!(materialized.sysroot.exists());
+
+    // Test that rustc works
+    let output = std::process::Command::new(&materialized.rustc)
+        .arg("--version")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let version = String::from_utf8_lossy(&output.stdout);
+    println!("Installed rustc version: {}", version);
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

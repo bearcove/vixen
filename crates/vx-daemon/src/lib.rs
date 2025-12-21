@@ -109,11 +109,47 @@ pub struct CargoToml {
     pub bin_path: String,
 }
 
-/// The rustc version info (singleton)
+/// The rustc version info (singleton) - DEPRECATED, use RustToolchain instead
 #[picante::input]
 pub struct RustcVersion {
     /// Full `rustc -vV` output (includes version, commit, LLVM version, host)
     pub version_string: String,
+}
+
+// =============================================================================
+// HERMETIC TOOLCHAIN INPUTS
+// =============================================================================
+
+/// Rust toolchain identity (singleton)
+///
+/// This represents a hermetically acquired Rust toolchain from static.rust-lang.org.
+/// The toolchain_id is a content-derived hash of rustc + rust-std tarballs.
+#[picante::input]
+pub struct RustToolchain {
+    /// Content-derived toolchain identifier (hash of rustc + rust-std)
+    pub toolchain_id: Blake3Hash,
+    /// Rustc version string (e.g., "1.76.0")
+    pub rustc_version: String,
+    /// Channel manifest date
+    pub manifest_date: String,
+    /// Path to the materialized rustc binary
+    pub rustc_path: String,
+    /// Path to the sysroot directory
+    pub sysroot_path: String,
+}
+
+/// Zig toolchain identity (singleton)
+///
+/// This represents a hermetically acquired Zig toolchain for use as a linker.
+/// Using zig cc as the linker provides hermetic, reproducible linking.
+#[picante::input]
+pub struct ZigToolchain {
+    /// Content-derived toolchain identifier (hash of zig exe + lib)
+    pub toolchain_id: Blake3Hash,
+    /// Zig version string (e.g., "0.13.0")
+    pub zig_version: String,
+    /// Path to the materialized zig binary
+    pub zig_path: String,
 }
 
 /// Build configuration (singleton)
@@ -177,7 +213,6 @@ pub async fn cache_key_compile_bin<DB: Db>(db: &DB) -> PicanteResult<CacheKey> {
     debug!("cache_key_compile_bin: COMPUTING (not memoized)");
 
     let cargo = CargoToml::get(db)?.expect("CargoToml not set");
-    let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
     let closure = SourceClosure::get(db)?.expect("SourceClosure not set");
 
@@ -187,9 +222,17 @@ pub async fn cache_key_compile_bin<DB: Db>(db: &DB) -> PicanteResult<CacheKey> {
     hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
-    hasher.update(b"rustc:");
-    hasher.update(rustc.version_string.as_bytes());
-    hasher.update(b"\n");
+    // Use hermetic RustToolchain if available, otherwise fall back to RustcVersion
+    if let Some(toolchain) = RustToolchain::get(db)? {
+        hasher.update(b"rust_toolchain:");
+        hasher.update(&toolchain.toolchain_id.0);
+        hasher.update(b"\n");
+    } else {
+        let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
+        hasher.update(b"rustc:");
+        hasher.update(rustc.version_string.as_bytes());
+        hasher.update(b"\n");
+    }
 
     hasher.update(b"target:");
     hasher.update(config.target_triple.as_bytes());
@@ -229,6 +272,17 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
     let cargo = CargoToml::get(db)?.expect("CargoToml not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
+    // Determine rustc program and env based on hermetic toolchain availability
+    let (program, env) = if let Some(toolchain) = RustToolchain::get(db)? {
+        // Use hermetic rustc with explicit sysroot
+        (
+            toolchain.rustc_path.clone(),
+            vec![("RUSTC_SYSROOT".to_string(), toolchain.sysroot_path.clone())],
+        )
+    } else {
+        ("rustc".to_string(), vec![])
+    };
+
     let output_dir = format!(".vx/build/{}/{}", config.target_triple, config.profile);
     let output_path = format!("{}/{}", output_dir, cargo.name);
 
@@ -248,9 +302,23 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
         output_path.clone(),
     ];
 
+    // Use hermetic zig linker if available
+    if let Some(zig) = ZigToolchain::get(db)? {
+        args.push("-C".to_string());
+        args.push(format!("linker={}", zig.zig_path));
+        args.push("-C".to_string());
+        args.push("link-arg=cc".to_string());
+    }
+
     if config.profile == "release" {
         args.push("-C".to_string());
         args.push("opt-level=3".to_string());
+    }
+
+    // Add sysroot if using hermetic toolchain
+    if let Some(toolchain) = RustToolchain::get(db)? {
+        args.push("--sysroot".to_string());
+        args.push(toolchain.sysroot_path.clone());
     }
 
     let expected_outputs = vec![ExpectedOutput {
@@ -260,9 +328,9 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
     }];
 
     Ok(RustcInvocation {
-        program: "rustc".to_string(),
+        program,
         args,
-        env: vec![],
+        env,
         cwd: config.workspace_root.clone(),
         expected_outputs,
     })
@@ -302,7 +370,6 @@ pub async fn cache_key_compile_rlib<DB: Db>(
 ) -> PicanteResult<CacheKey> {
     debug!("cache_key_compile_rlib: COMPUTING (not memoized)");
 
-    let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
     let crate_name = crate_info.crate_name(db)?;
@@ -315,9 +382,17 @@ pub async fn cache_key_compile_rlib<DB: Db>(
     hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
-    hasher.update(b"rustc:");
-    hasher.update(rustc.version_string.as_bytes());
-    hasher.update(b"\n");
+    // Use hermetic RustToolchain if available, otherwise fall back to RustcVersion
+    if let Some(toolchain) = RustToolchain::get(db)? {
+        hasher.update(b"rust_toolchain:");
+        hasher.update(&toolchain.toolchain_id.0);
+        hasher.update(b"\n");
+    } else {
+        let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
+        hasher.update(b"rustc:");
+        hasher.update(rustc.version_string.as_bytes());
+        hasher.update(b"\n");
+    }
 
     hasher.update(b"target:");
     hasher.update(config.target_triple.as_bytes());
@@ -356,6 +431,16 @@ pub async fn plan_compile_rlib<DB: Db>(
 
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
+    // Determine rustc program and env based on hermetic toolchain availability
+    let (program, env) = if let Some(toolchain) = RustToolchain::get(db)? {
+        (
+            toolchain.rustc_path.clone(),
+            vec![("RUSTC_SYSROOT".to_string(), toolchain.sysroot_path.clone())],
+        )
+    } else {
+        ("rustc".to_string(), vec![])
+    };
+
     let crate_id = crate_info.crate_id(db)?;
     let crate_name = crate_info.crate_name(db)?;
     let edition = crate_info.edition(db)?;
@@ -390,6 +475,12 @@ pub async fn plan_compile_rlib<DB: Db>(
         args.push("opt-level=3".to_string());
     }
 
+    // Add sysroot if using hermetic toolchain
+    if let Some(toolchain) = RustToolchain::get(db)? {
+        args.push("--sysroot".to_string());
+        args.push(toolchain.sysroot_path.clone());
+    }
+
     let expected_outputs = vec![ExpectedOutput {
         logical: "rlib".to_string(),
         path: output_path,
@@ -397,9 +488,9 @@ pub async fn plan_compile_rlib<DB: Db>(
     }];
 
     Ok(RustcInvocation {
-        program: "rustc".to_string(),
+        program,
         args,
-        env: vec![],
+        env,
         cwd: config.workspace_root.to_string(),
         expected_outputs,
     })
@@ -431,7 +522,6 @@ pub async fn cache_key_compile_rlib_with_deps<DB: Db>(
 ) -> PicanteResult<CacheKey> {
     debug!("cache_key_compile_rlib_with_deps: COMPUTING (not memoized)");
 
-    let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
     let crate_name = crate_info.crate_name(db)?;
@@ -444,9 +534,17 @@ pub async fn cache_key_compile_rlib_with_deps<DB: Db>(
     hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
-    hasher.update(b"rustc:");
-    hasher.update(rustc.version_string.as_bytes());
-    hasher.update(b"\n");
+    // Use hermetic RustToolchain if available, otherwise fall back to RustcVersion
+    if let Some(toolchain) = RustToolchain::get(db)? {
+        hasher.update(b"rust_toolchain:");
+        hasher.update(&toolchain.toolchain_id.0);
+        hasher.update(b"\n");
+    } else {
+        let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
+        hasher.update(b"rustc:");
+        hasher.update(rustc.version_string.as_bytes());
+        hasher.update(b"\n");
+    }
 
     hasher.update(b"target:");
     hasher.update(config.target_triple.as_bytes());
@@ -565,7 +663,6 @@ pub async fn cache_key_compile_bin_with_deps<DB: Db>(
 ) -> PicanteResult<CacheKey> {
     debug!("cache_key_compile_bin_with_deps: COMPUTING (not memoized)");
 
-    let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
     let crate_name = crate_info.crate_name(db)?;
@@ -578,9 +675,17 @@ pub async fn cache_key_compile_bin_with_deps<DB: Db>(
     hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
-    hasher.update(b"rustc:");
-    hasher.update(rustc.version_string.as_bytes());
-    hasher.update(b"\n");
+    // Use hermetic RustToolchain if available, otherwise fall back to RustcVersion
+    if let Some(toolchain) = RustToolchain::get(db)? {
+        hasher.update(b"rust_toolchain:");
+        hasher.update(&toolchain.toolchain_id.0);
+        hasher.update(b"\n");
+    } else {
+        let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
+        hasher.update(b"rustc:");
+        hasher.update(rustc.version_string.as_bytes());
+        hasher.update(b"\n");
+    }
 
     hasher.update(b"target:");
     hasher.update(config.target_triple.as_bytes());
@@ -1017,6 +1122,9 @@ pub async fn node_id_cc_link<DB: Db>(db: &DB, target: CTarget) -> PicanteResult<
         CargoToml,
         RustcVersion,
         BuildConfig,
+        // Hermetic toolchain inputs
+        RustToolchain,
+        ZigToolchain,
         // Multi-crate Rust inputs
         RustCrate,
         RlibOutput,
@@ -1056,6 +1164,38 @@ pub struct Database {}
 // DAEMON SERVICE
 // =============================================================================
 
+/// Materialized toolchain paths
+pub struct MaterializedToolchains {
+    /// Rust toolchain (if acquired)
+    pub rust: Option<MaterializedRust>,
+    /// Zig toolchain (if acquired)
+    pub zig: Option<MaterializedZig>,
+}
+
+/// Materialized Rust toolchain info
+pub struct MaterializedRust {
+    /// Content-derived toolchain ID
+    pub id: vx_toolchain::RustToolchainId,
+    /// Rustc version string
+    pub version: String,
+    /// Manifest date
+    pub manifest_date: String,
+    /// Path to rustc binary
+    pub rustc_path: Utf8PathBuf,
+    /// Path to sysroot
+    pub sysroot_path: Utf8PathBuf,
+}
+
+/// Materialized Zig toolchain info
+pub struct MaterializedZig {
+    /// Content-derived toolchain ID
+    pub id: vx_toolchain::zig::ToolchainId,
+    /// Zig version string
+    pub version: String,
+    /// Path to zig binary
+    pub zig_path: Utf8PathBuf,
+}
+
 /// The daemon service implementation
 pub struct DaemonService {
     /// CAS service for content-addressed storage
@@ -1064,6 +1204,10 @@ pub struct DaemonService {
     db: Arc<Mutex<Database>>,
     /// Path to the picante cache file
     cache_path: Utf8PathBuf,
+    /// VX_HOME directory
+    vx_home: Utf8PathBuf,
+    /// Materialized toolchains (hermetic - the only option)
+    toolchains: Arc<Mutex<MaterializedToolchains>>,
 }
 
 impl DaemonService {
@@ -1080,7 +1224,159 @@ impl DaemonService {
             cas,
             db: Arc::new(Mutex::new(db)),
             cache_path,
+            vx_home,
+            toolchains: Arc::new(Mutex::new(MaterializedToolchains {
+                rust: None,
+                zig: None,
+            })),
         })
+    }
+
+    /// Get the toolchains directory
+    fn toolchains_dir(&self) -> Utf8PathBuf {
+        self.vx_home.join("toolchains")
+    }
+
+    /// Ensure the Rust toolchain is acquired and materialized
+    ///
+    /// Returns the toolchain info, acquiring it if necessary.
+    pub async fn ensure_rust_toolchain(
+        &self,
+        channel: vx_toolchain::Channel,
+    ) -> Result<MaterializedRust, String> {
+        // Check if already acquired
+        {
+            let toolchains = self.toolchains.lock().await;
+            if let Some(ref rust) = toolchains.rust {
+                return Ok(MaterializedRust {
+                    id: rust.id.clone(),
+                    version: rust.version.clone(),
+                    manifest_date: rust.manifest_date.clone(),
+                    rustc_path: rust.rustc_path.clone(),
+                    sysroot_path: rust.sysroot_path.clone(),
+                });
+            }
+        }
+
+        // Acquire the toolchain
+        info!("acquiring Rust toolchain...");
+
+        let spec = vx_toolchain::RustToolchainSpec::native(channel)
+            .map_err(|e| format!("failed to create toolchain spec: {}", e))?;
+
+        let acquired = vx_toolchain::acquire_rust_toolchain(&spec)
+            .await
+            .map_err(|e| format!("failed to acquire Rust toolchain: {}", e))?;
+
+        // Materialize to toolchains directory
+        let toolchain_dir = self
+            .toolchains_dir()
+            .join("rust")
+            .join(acquired.id.short_hex());
+
+        let materialized = vx_toolchain::materialize_rust_toolchain(
+            &acquired.rustc_tarball,
+            &acquired.rust_std_tarball,
+            &toolchain_dir,
+        )
+        .map_err(|e| format!("failed to materialize Rust toolchain: {}", e))?;
+
+        let rust = MaterializedRust {
+            id: acquired.id,
+            version: acquired.rustc_version,
+            manifest_date: acquired.manifest_date,
+            rustc_path: materialized.rustc,
+            sysroot_path: materialized.sysroot,
+        };
+
+        info!(
+            toolchain_id = %rust.id,
+            version = %rust.version,
+            rustc = %rust.rustc_path,
+            "Rust toolchain ready"
+        );
+
+        // Store it
+        {
+            let mut toolchains = self.toolchains.lock().await;
+            toolchains.rust = Some(MaterializedRust {
+                id: rust.id.clone(),
+                version: rust.version.clone(),
+                manifest_date: rust.manifest_date.clone(),
+                rustc_path: rust.rustc_path.clone(),
+                sysroot_path: rust.sysroot_path.clone(),
+            });
+        }
+
+        Ok(rust)
+    }
+
+    /// Ensure the Zig toolchain is acquired and materialized
+    pub async fn ensure_zig_toolchain(&self, version: &str) -> Result<MaterializedZig, String> {
+        // Check if already acquired
+        {
+            let toolchains = self.toolchains.lock().await;
+            if let Some(ref zig) = toolchains.zig {
+                return Ok(MaterializedZig {
+                    id: zig.id.clone(),
+                    version: zig.version.clone(),
+                    zig_path: zig.zig_path.clone(),
+                });
+            }
+        }
+
+        // Acquire the toolchain
+        info!(version = %version, "acquiring Zig toolchain...");
+
+        let zig_version = vx_toolchain::zig::ZigVersion::new(version);
+        let platform = vx_toolchain::zig::HostPlatform::detect()
+            .map_err(|e| format!("failed to detect host platform: {}", e))?;
+
+        let temp_dir = self.toolchains_dir().join("zig-temp");
+        let acquired = vx_toolchain::zig::acquire_zig_toolchain(&zig_version, &platform, &temp_dir)
+            .await
+            .map_err(|e| format!("failed to acquire Zig toolchain: {}", e))?;
+
+        // Materialize to toolchains directory
+        let toolchain_dir = self
+            .toolchains_dir()
+            .join("zig")
+            .join(&acquired.id.0.short_hex());
+
+        let materialized = vx_toolchain::zig::materialize_toolchain(
+            &acquired.zig_exe_contents,
+            &acquired.lib_tarball,
+            &toolchain_dir,
+        )
+        .map_err(|e| format!("failed to materialize Zig toolchain: {}", e))?;
+
+        // Cleanup temp dir
+        let _ = acquired.cleanup();
+
+        let zig = MaterializedZig {
+            id: acquired.id,
+            version: zig_version.version,
+            zig_path: materialized.zig_path,
+        };
+
+        info!(
+            toolchain_id = %zig.id,
+            version = %zig.version,
+            zig = %zig.zig_path,
+            "Zig toolchain ready"
+        );
+
+        // Store it
+        {
+            let mut toolchains = self.toolchains.lock().await;
+            toolchains.zig = Some(MaterializedZig {
+                id: zig.id.clone(),
+                version: zig.version.clone(),
+                zig_path: zig.zig_path.clone(),
+            });
+        }
+
+        Ok(zig)
     }
 
     /// Load picante cache from disk (call once at startup)
@@ -1142,6 +1438,10 @@ impl DaemonService {
         // Parse manifest
         let manifest = Manifest::from_path(&cargo_toml_path)
             .map_err(|e| format!("failed to parse Cargo.toml: {}", e))?;
+
+        // Reject ambient RUSTFLAGS - vx uses a clean environment for hermeticity.
+        // Users must configure flags through vx-specific config (future feature).
+        reject_ambient_rustflags()?;
 
         // Get rustc version and target triple
         let rustc_version = get_rustc_version().map_err(|e| e.to_string())?;
@@ -1489,6 +1789,9 @@ impl DaemonService {
     /// 4. Builds the root bin crate with --extern flags for deps
     async fn do_build_multi_crate(&self, request: BuildRequest) -> Result<BuildResult, String> {
         let project_path = &request.project_path;
+
+        // Reject ambient RUSTFLAGS - vx uses a clean environment for hermeticity.
+        reject_ambient_rustflags()?;
 
         // Build the crate graph (this parses all Cargo.toml files and computes LCA)
         let graph = CrateGraph::build(project_path)
@@ -2118,6 +2421,45 @@ impl Daemon for DaemonService {
 fn format_module_error(e: &ModuleError) -> String {
     // The error type already has good Display impl with file:line info
     e.to_string()
+}
+
+/// Reject ambient RUSTFLAGS environment variables.
+///
+/// vx runs rustc in a clean environment for hermeticity. If the user has set
+/// RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS, we reject loudly rather than silently
+/// ignoring them. This ensures users understand that vx does not inherit these
+/// environment variables.
+///
+/// In the future, vx may support explicit rustflags configuration through
+/// manifest or config files.
+fn reject_ambient_rustflags() -> Result<(), String> {
+    let rustflags = std::env::var("RUSTFLAGS").ok();
+    let cargo_rustflags = std::env::var("CARGO_ENCODED_RUSTFLAGS").ok();
+
+    match (rustflags, cargo_rustflags) {
+        (Some(rf), Some(crf)) => Err(format!(
+            "vx does not support ambient RUSTFLAGS for hermeticity.\n\
+             Found RUSTFLAGS={:?} and CARGO_ENCODED_RUSTFLAGS={:?}\n\
+             Please unset these environment variables.\n\
+             (Future: configure flags via vx manifest or config)",
+            rf, crf
+        )),
+        (Some(rf), None) => Err(format!(
+            "vx does not support ambient RUSTFLAGS for hermeticity.\n\
+             Found RUSTFLAGS={:?}\n\
+             Please unset this environment variable.\n\
+             (Future: configure flags via vx manifest or config)",
+            rf
+        )),
+        (None, Some(crf)) => Err(format!(
+            "vx does not support ambient CARGO_ENCODED_RUSTFLAGS for hermeticity.\n\
+             Found CARGO_ENCODED_RUSTFLAGS={:?}\n\
+             Please unset this environment variable.\n\
+             (Future: configure flags via vx manifest or config)",
+            crf
+        )),
+        (None, None) => Ok(()),
+    }
 }
 
 fn get_rustc_version() -> eyre::Result<String> {

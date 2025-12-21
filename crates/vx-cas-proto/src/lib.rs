@@ -27,6 +27,11 @@ impl Blake3Hash {
         self.0.iter().map(|b| format!("{:02x}", b)).collect()
     }
 
+    /// Get first 16 hex chars (8 bytes) for display
+    pub fn short_hex(&self) -> String {
+        self.0[..8].iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
     pub fn from_hex(s: &str) -> Option<Self> {
         if s.len() != 64 {
             return None;
