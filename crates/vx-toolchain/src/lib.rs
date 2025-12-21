@@ -27,6 +27,19 @@ pub enum ToolchainError {
 
     #[error("invalid channel specification: {0}")]
     InvalidChannel(String),
+
+    #[error("checksum mismatch for {url}: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        url: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("HTTP error: {0}")]
+    HttpError(#[from] reqwest::Error),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
 }
 
 /// Rust channel specification (what the user specifies)
@@ -131,15 +144,7 @@ pub struct TargetManifest {
 struct RawChannelManifest {
     manifest_version: Option<String>,
     date: Option<String>,
-    pkg: Option<RawPackages>,
-}
-
-/// Package table
-#[derive(Facet, Debug)]
-struct RawPackages {
-    rustc: Option<RawPackage>,
-    #[facet(rename = "rust-std")]
-    rust_std: Option<RawPackage>,
+    pkg: Option<Value>,
 }
 
 /// Individual package entry
@@ -158,6 +163,9 @@ struct RawTarget {
     hash: Option<String>,
     xz_url: Option<String>,
     xz_hash: Option<String>,
+    // Ignore components and extensions arrays (only present in some packages)
+    components: Option<Value>,
+    extensions: Option<Value>,
 }
 
 impl ChannelManifest {
@@ -170,17 +178,26 @@ impl ChannelManifest {
             .date
             .ok_or_else(|| ToolchainError::ParseError("missing 'date' field".into()))?;
 
-        let pkg = raw
+        let pkg_value = raw
             .pkg
             .ok_or_else(|| ToolchainError::ParseError("missing 'pkg' table".into()))?;
 
-        let rustc = pkg
-            .rustc
-            .ok_or_else(|| ToolchainError::ParseError("missing 'pkg.rustc'".into()))?;
+        // Extract rustc and rust-std from the pkg object
+        let pkg_obj = pkg_value
+            .as_object()
+            .ok_or_else(|| ToolchainError::ParseError("pkg is not an object".into()))?;
 
-        let rust_std = pkg
-            .rust_std
+        let rustc_value = pkg_obj
+            .get("rustc")
+            .ok_or_else(|| ToolchainError::ParseError("missing 'pkg.rustc'".into()))?;
+        let rustc: RawPackage = facet_value::from_value(rustc_value.clone())
+            .map_err(|e| ToolchainError::ParseError(format!("failed to parse rustc: {}", e)))?;
+
+        let rust_std_value = pkg_obj
+            .get("rust-std")
             .ok_or_else(|| ToolchainError::ParseError("missing 'pkg.rust-std'".into()))?;
+        let rust_std: RawPackage = facet_value::from_value(rust_std_value.clone())
+            .map_err(|e| ToolchainError::ParseError(format!("failed to parse rust-std: {}", e)))?;
 
         Ok(ChannelManifest {
             date,
@@ -331,4 +348,93 @@ xz_hash = "def456"
         assert!(rustc_target.available);
         assert!(rustc_target.url.contains("rustc-1.76.0"));
     }
+
+    #[tokio::test]
+    #[ignore] // Requires network access - run with --ignored
+    async fn fetch_stable_manifest() {
+        let channel = Channel::Stable;
+        let manifest = fetch_channel_manifest(&channel).await.unwrap();
+
+        // Stable should have a recent date
+        assert!(!manifest.date.is_empty());
+
+        // Should have rustc version
+        assert!(!manifest.rustc.version.is_empty());
+
+        // Should have x86_64-unknown-linux-gnu target
+        let rustc_target = manifest
+            .rustc_for_target("x86_64-unknown-linux-gnu")
+            .unwrap();
+        assert!(rustc_target.available);
+        assert!(!rustc_target.url.is_empty());
+        assert!(!rustc_target.hash.is_empty());
+    }
+}
+
+// =============================================================================
+// DOWNLOAD FUNCTIONS
+// =============================================================================
+
+/// Fetch a channel manifest from static.rust-lang.org
+pub async fn fetch_channel_manifest(channel: &Channel) -> Result<ChannelManifest, ToolchainError> {
+    let url = channel.manifest_url();
+
+    tracing::debug!(url = %url, "fetching channel manifest");
+
+    let response = reqwest::get(&url).await?;
+
+    if !response.status().is_success() {
+        return Err(ToolchainError::FetchError {
+            url: url.clone(),
+            source: format!("HTTP {}", response.status()).into(),
+        });
+    }
+
+    let content = response.text().await?;
+    ChannelManifest::from_str(&content)
+}
+
+/// Download a component tarball and verify its checksum
+pub async fn download_component(url: &str, expected_hash: &str) -> Result<Vec<u8>, ToolchainError> {
+    tracing::info!(url = %url, "downloading component");
+
+    let response = reqwest::get(url).await?;
+
+    if !response.status().is_success() {
+        return Err(ToolchainError::FetchError {
+            url: url.to_string(),
+            source: format!("HTTP {}", response.status()).into(),
+        });
+    }
+
+    let bytes = response.bytes().await?;
+
+    // Verify SHA256 checksum
+    let hash = compute_sha256(&bytes);
+    if hash != expected_hash {
+        return Err(ToolchainError::ChecksumMismatch {
+            url: url.to_string(),
+            expected: expected_hash.to_string(),
+            actual: hash,
+        });
+    }
+
+    tracing::debug!(
+        url = %url,
+        size = bytes.len(),
+        hash = %hash,
+        "component downloaded and verified"
+    );
+
+    Ok(bytes.to_vec())
+}
+
+/// Compute SHA256 hash of bytes and return as hex string
+fn compute_sha256(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    hex::encode(result)
 }
