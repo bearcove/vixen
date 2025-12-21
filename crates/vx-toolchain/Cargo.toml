@@ -13,12 +13,15 @@ facet = { workspace = true }
 facet-toml = { workspace = true }
 facet-value = { workspace = true }
 hex = "0.4"
+xz2 = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"
+tar = "0.4"
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["fs", "process"] }
 tracing = "0.1.41"
 vx-cas-proto = { path = "../vx-cas-proto" }
+walkdir = "2.5"
 
 [dev-dependencies]
 tokio = { version = "1.42.0", features = ["macros", "rt"] }

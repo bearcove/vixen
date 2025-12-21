@@ -1,8 +1,12 @@
-//! Rust toolchain management for vx
+//! Toolchain management for vx
 //!
-//! Downloads and manages Rust toolchains from static.rust-lang.org
-//! without depending on rustup. Toolchains are stored in CAS for
-//! deduplication and remote execution.
+//! Downloads and manages toolchains for hermetic builds:
+//! - Rust toolchains from static.rust-lang.org (without rustup)
+//! - Zig toolchains for C/C++ compilation (via `zig cc`)
+//!
+//! Toolchains are stored in CAS for deduplication and remote execution.
+
+pub mod zig;
 
 use std::collections::HashMap;
 

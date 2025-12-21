@@ -66,6 +66,46 @@ pub struct BuildConfig {
 }
 
 // =============================================================================
+// C/C++ INPUTS
+// =============================================================================
+
+/// A C/C++ source file with its content hash
+#[picante::input]
+pub struct CSourceFile {
+    /// Path relative to workspace root (e.g., "src/main.c")
+    #[key]
+    pub path: String,
+    /// Blake3 hash of the file content
+    pub content_hash: Blake3Hash,
+}
+
+/// Discovered dependencies for a translation unit (from depfile)
+///
+/// This is the keystone input for incremental C/C++ builds.
+/// On first compile, this is empty. After compile, we parse the depfile
+/// and update this input with the discovered headers.
+#[picante::input]
+pub struct DiscoveredDeps {
+    /// Translation unit key (target:source:profile:triple)
+    #[key]
+    pub tu_key: String,
+    /// Hash of all discovered dependency paths (sorted, deduped)
+    /// This is a hash of the *paths*, not the *contents*
+    pub deps_hash: Blake3Hash,
+    /// Workspace-relative paths of all dependencies
+    pub deps_paths: Vec<String>,
+}
+
+/// Zig toolchain configuration (singleton for now)
+#[picante::input]
+pub struct ZigToolchainConfig {
+    /// Zig version (e.g., "0.13.0")
+    pub version: String,
+    /// Toolchain ID (content hash of zig binary + lib)
+    pub toolchain_id: String,
+}
+
+// =============================================================================
 // TRACKED QUERIES
 // =============================================================================
 
@@ -180,12 +220,340 @@ pub async fn node_id_compile_bin<DB: Db>(db: &DB) -> PicanteResult<NodeId> {
 }
 
 // =============================================================================
+// C/C++ TRACKED QUERIES
+// =============================================================================
+
+/// Compute the cache key for compiling a C/C++ translation unit.
+///
+/// The cache key includes:
+/// - Toolchain ID (content-addressed zig binary + lib)
+/// - Source file hash
+/// - Discovered dependencies hash (from previous compile, or empty sentinel)
+/// - Compile flags hash
+/// - Target triple and profile
+#[picante::tracked]
+pub async fn cache_key_cc_compile<DB: Db>(db: &DB, source: CSourceFile) -> PicanteResult<CacheKey> {
+    debug!("cache_key_cc_compile: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+    let zig = ZigToolchainConfig::get(db)?.expect("ZigToolchainConfig not set");
+    let source_hash = source.content_hash(db)?;
+    let source_path = source.path(db)?;
+
+    // Build TU key for looking up discovered deps
+    let tu_key = format!(
+        "cc:{}:{}:{}",
+        &*source_path, &*config.profile, &*config.target_triple
+    );
+
+    // Get discovered deps (may not exist on first compile)
+    // First try to intern the key, then look up the data
+    let deps_hash = match db.discovered_deps_keys().intern(tu_key.clone()) {
+        Ok(intern_id) => {
+            // Key exists, look up the data
+            if let Some(data) = db.discovered_deps_data().get(db, &intern_id)? {
+                data.deps_hash.clone()
+            } else {
+                // Key interned but no data yet
+                Blake3Hash::from_bytes(b"no-deps-yet")
+            }
+        }
+        Err(_) => {
+            // First compile - use empty sentinel
+            Blake3Hash::from_bytes(b"no-deps-yet")
+        }
+    };
+
+    let mut hasher = blake3::Hasher::new();
+
+    hasher.update(b"vx-cc-cache-key-v");
+    hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"toolchain:");
+    hasher.update(zig.toolchain_id.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"target:");
+    hasher.update(config.target_triple.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"profile:");
+    hasher.update(config.profile.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"source:");
+    hasher.update(&source_hash.0);
+    hasher.update(b"\n");
+
+    hasher.update(b"deps:");
+    hasher.update(&deps_hash.0);
+    hasher.update(b"\n");
+
+    Ok(Blake3Hash(*hasher.finalize().as_bytes()))
+}
+
+/// Plan a C/C++ compile invocation.
+///
+/// Returns the command to run zig cc with appropriate flags.
+#[picante::tracked]
+pub async fn plan_cc_compile<DB: Db>(
+    db: &DB,
+    source: CSourceFile,
+) -> PicanteResult<vx_cc::CcCompileInvocation> {
+    debug!("plan_cc_compile: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+    let source_path = source.path(db)?;
+
+    // Derive output paths (dereference Arc<String> values)
+    let source_path_str: &str = &source_path;
+    let source_stem = Utf8PathBuf::from(source_path_str)
+        .file_stem()
+        .unwrap_or("out")
+        .to_string();
+    let output_dir = format!(
+        ".vx/build/cc/{}/{}",
+        &*config.target_triple, &*config.profile
+    );
+    let object_path = format!("{}/{}.o", output_dir, source_stem);
+    let depfile_path = format!("{}/{}.d", output_dir, source_stem);
+
+    // Build arguments
+    let mut args = vec![
+        "cc".to_string(),
+        "-target".to_string(),
+        config.target_triple.to_string(),
+        format!(
+            "-fdebug-prefix-map={}=/vx-workspace",
+            &*config.workspace_root
+        ),
+        "-MMD".to_string(),
+        "-MF".to_string(),
+        depfile_path.clone(),
+        "-c".to_string(),
+        source_path_str.to_string(),
+        "-o".to_string(),
+        object_path.clone(),
+    ];
+
+    // Profile-specific flags
+    if &*config.profile == "release" {
+        args.push("-O2".to_string());
+    } else {
+        args.push("-O0".to_string());
+        args.push("-g".to_string());
+    }
+
+    // Standard warnings
+    args.push("-Wall".to_string());
+    args.push("-Wextra".to_string());
+
+    let expected_outputs = vec![
+        vx_cc::ExpectedOutput {
+            logical: "obj".to_string(),
+            path: Utf8PathBuf::from(&object_path),
+            executable: false,
+        },
+        vx_cc::ExpectedOutput {
+            logical: "depfile".to_string(),
+            path: Utf8PathBuf::from(&depfile_path),
+            executable: false,
+        },
+    ];
+
+    Ok(vx_cc::CcCompileInvocation {
+        program: Utf8PathBuf::from("zig"), // Will be replaced with materialized path
+        args,
+        env: vec![],
+        cwd: Utf8PathBuf::from(&*config.workspace_root),
+        expected_outputs,
+        depfile: Some(Utf8PathBuf::from(depfile_path)),
+    })
+}
+
+/// Generate a human-readable node ID for a cc-compile node.
+#[picante::tracked]
+pub async fn node_id_cc_compile<DB: Db>(db: &DB, source: CSourceFile) -> PicanteResult<NodeId> {
+    debug!("node_id_cc_compile: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+    let source_path = source.path(db)?;
+
+    Ok(NodeId(format!(
+        "cc-compile:{}:{}:{}",
+        &*source_path, &*config.target_triple, &*config.profile
+    )))
+}
+
+// =============================================================================
+// C/C++ LINK TRACKED QUERIES
+// =============================================================================
+
+/// A C target to link (for keyed query)
+#[picante::input]
+pub struct CTarget {
+    /// Target name (e.g., "hello")
+    #[key]
+    pub name: String,
+    /// Object file hashes (sorted by source path for determinism)
+    pub object_hashes: Vec<Blake3Hash>,
+    /// Source files that produced these objects
+    pub source_paths: Vec<String>,
+}
+
+/// Compute the cache key for linking a C/C++ target.
+///
+/// The cache key includes:
+/// - Toolchain ID
+/// - All object file hashes (in deterministic order)
+/// - Link flags
+/// - Target triple and profile
+#[picante::tracked]
+pub async fn cache_key_cc_link<DB: Db>(db: &DB, target: CTarget) -> PicanteResult<CacheKey> {
+    debug!("cache_key_cc_link: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+    let zig = ZigToolchainConfig::get(db)?.expect("ZigToolchainConfig not set");
+    let object_hashes = target.object_hashes(db)?;
+
+    let mut hasher = blake3::Hasher::new();
+
+    hasher.update(b"vx-cc-link-cache-key-v");
+    hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"toolchain:");
+    hasher.update(zig.toolchain_id.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"target:");
+    hasher.update(config.target_triple.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"profile:");
+    hasher.update(config.profile.as_bytes());
+    hasher.update(b"\n");
+
+    // Hash all object files in order
+    hasher.update(b"objects:");
+    for obj_hash in object_hashes.iter() {
+        hasher.update(&obj_hash.0);
+    }
+    hasher.update(b"\n");
+
+    Ok(Blake3Hash(*hasher.finalize().as_bytes()))
+}
+
+/// Plan a C/C++ link invocation.
+///
+/// Returns the command to run zig cc for linking.
+#[picante::tracked]
+pub async fn plan_cc_link<DB: Db>(
+    db: &DB,
+    target: CTarget,
+) -> PicanteResult<vx_cc::CcLinkInvocation> {
+    debug!("plan_cc_link: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+    let target_name = target.name(db)?;
+    let source_paths = target.source_paths(db)?;
+
+    // Derive output paths
+    let output_dir = format!(
+        ".vx/build/cc/{}/{}",
+        &*config.target_triple, &*config.profile
+    );
+    let exe_path = format!("{}/{}", output_dir, &*target_name);
+
+    // Build object file paths from source paths
+    let object_paths: Vec<String> = source_paths
+        .iter()
+        .map(|src| {
+            let stem = Utf8PathBuf::from(src.as_str())
+                .file_stem()
+                .unwrap_or("out")
+                .to_string();
+            format!("{}/{}.o", output_dir, stem)
+        })
+        .collect();
+
+    // Build arguments
+    let mut args = vec![
+        "cc".to_string(),
+        "-target".to_string(),
+        config.target_triple.to_string(),
+    ];
+
+    // Add object files
+    for obj in &object_paths {
+        args.push(obj.clone());
+    }
+
+    // Output
+    args.push("-o".to_string());
+    args.push(exe_path.clone());
+
+    // Profile-specific flags
+    if &*config.profile == "release" {
+        args.push("-s".to_string()); // Strip symbols
+    }
+
+    let expected_outputs = vec![vx_cc::ExpectedOutput {
+        logical: "exe".to_string(),
+        path: Utf8PathBuf::from(&exe_path),
+        executable: true,
+    }];
+
+    Ok(vx_cc::CcLinkInvocation {
+        program: Utf8PathBuf::from("zig"), // Will be replaced with materialized path
+        args,
+        env: vec![],
+        cwd: Utf8PathBuf::from(&*config.workspace_root),
+        expected_outputs,
+    })
+}
+
+/// Generate a human-readable node ID for a cc-link node.
+#[picante::tracked]
+pub async fn node_id_cc_link<DB: Db>(db: &DB, target: CTarget) -> PicanteResult<NodeId> {
+    debug!("node_id_cc_link: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+    let target_name = target.name(db)?;
+
+    Ok(NodeId(format!(
+        "cc-link:{}:{}:{}",
+        &*target_name, &*config.target_triple, &*config.profile
+    )))
+}
+
+// =============================================================================
 // DATABASE
 // =============================================================================
 
 #[picante::db(
-    inputs(SourceFile, CargoToml, RustcVersion, BuildConfig),
-    tracked(cache_key_compile_bin, plan_compile_bin, node_id_compile_bin,),
+    inputs(
+        SourceFile,
+        CargoToml,
+        RustcVersion,
+        BuildConfig,
+        CSourceFile,
+        DiscoveredDeps,
+        ZigToolchainConfig,
+        CTarget,
+    ),
+    tracked(
+        cache_key_compile_bin,
+        plan_compile_bin,
+        node_id_compile_bin,
+        cache_key_cc_compile,
+        plan_cc_compile,
+        node_id_cc_compile,
+        cache_key_cc_link,
+        plan_cc_link,
+        node_id_cc_link,
+    ),
     db_trait(Db)
 )]
 pub struct Database {}
@@ -530,4 +898,397 @@ fn unix_timestamp() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}", duration.as_secs())
+}
+
+// =============================================================================
+// TESTS
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a fresh database for testing
+    fn test_db() -> Database {
+        Database::new()
+    }
+
+    /// Set up common build configuration for C builds
+    fn setup_cc_config(db: &Database) {
+        BuildConfig::set(
+            db,
+            "debug".to_string(),
+            "x86_64-linux-musl".to_string(),
+            "/test/workspace".to_string(),
+        )
+        .unwrap();
+
+        ZigToolchainConfig::set(db, "0.13.0".to_string(), "zig:abc123def456".to_string()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_cc_compile_deterministic() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        let source_hash = Blake3Hash::from_bytes(b"int main() { return 0; }");
+
+        // Create source file input
+        let source = CSourceFile::new(&db, "src/main.c".to_string(), source_hash.clone()).unwrap();
+
+        // Compute cache key twice
+        let key1 = cache_key_cc_compile(&db, source.clone()).await.unwrap();
+        let key2 = cache_key_cc_compile(&db, source).await.unwrap();
+
+        // Should be identical (deterministic)
+        assert_eq!(key1, key2);
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_cc_compile_changes_with_source() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        // First source
+        let source1 = CSourceFile::new(
+            &db,
+            "src/main.c".to_string(),
+            Blake3Hash::from_bytes(b"int main() { return 0; }"),
+        )
+        .unwrap();
+
+        let key1 = cache_key_cc_compile(&db, source1).await.unwrap();
+
+        // Different source content
+        let source2 = CSourceFile::new(
+            &db,
+            "src/main.c".to_string(),
+            Blake3Hash::from_bytes(b"int main() { return 1; }"),
+        )
+        .unwrap();
+
+        let key2 = cache_key_cc_compile(&db, source2).await.unwrap();
+
+        // Keys should be different
+        assert_ne!(key1, key2);
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_cc_compile_changes_with_profile() {
+        let db = test_db();
+
+        ZigToolchainConfig::set(&db, "0.13.0".to_string(), "zig:abc123def456".to_string()).unwrap();
+
+        let source_hash = Blake3Hash::from_bytes(b"int main() { return 0; }");
+
+        // Debug profile
+        BuildConfig::set(
+            &db,
+            "debug".to_string(),
+            "x86_64-linux-musl".to_string(),
+            "/test/workspace".to_string(),
+        )
+        .unwrap();
+
+        let source_debug =
+            CSourceFile::new(&db, "src/main.c".to_string(), source_hash.clone()).unwrap();
+        let key_debug = cache_key_cc_compile(&db, source_debug).await.unwrap();
+
+        // Release profile
+        BuildConfig::set(
+            &db,
+            "release".to_string(),
+            "x86_64-linux-musl".to_string(),
+            "/test/workspace".to_string(),
+        )
+        .unwrap();
+
+        let source_release = CSourceFile::new(&db, "src/main.c".to_string(), source_hash).unwrap();
+        let key_release = cache_key_cc_compile(&db, source_release).await.unwrap();
+
+        // Keys should be different
+        assert_ne!(key_debug, key_release);
+    }
+
+    #[tokio::test]
+    async fn test_plan_cc_compile_generates_correct_args() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        let source = CSourceFile::new(
+            &db,
+            "src/main.c".to_string(),
+            Blake3Hash::from_bytes(b"int main() { return 0; }"),
+        )
+        .unwrap();
+
+        let invocation = plan_cc_compile(&db, source).await.unwrap();
+
+        // Should have "cc" as first arg
+        assert_eq!(invocation.args[0], "cc");
+
+        // Should have -target
+        assert!(invocation.args.contains(&"-target".to_string()));
+        assert!(invocation.args.contains(&"x86_64-linux-musl".to_string()));
+
+        // Should have -c for compile-only
+        assert!(invocation.args.contains(&"-c".to_string()));
+
+        // Should have source file
+        assert!(invocation.args.contains(&"src/main.c".to_string()));
+
+        // Should have -o with .o output
+        assert!(invocation.args.contains(&"-o".to_string()));
+        let o_idx = invocation.args.iter().position(|a| a == "-o").unwrap();
+        assert!(invocation.args[o_idx + 1].ends_with(".o"));
+
+        // Should have -MMD -MF for depfile generation
+        assert!(invocation.args.contains(&"-MMD".to_string()));
+        assert!(invocation.args.contains(&"-MF".to_string()));
+
+        // Debug profile should have -O0 and -g
+        assert!(invocation.args.contains(&"-O0".to_string()));
+        assert!(invocation.args.contains(&"-g".to_string()));
+
+        // Should expect object and depfile outputs
+        assert_eq!(invocation.expected_outputs.len(), 2);
+        assert!(
+            invocation
+                .expected_outputs
+                .iter()
+                .any(|o| o.logical == "obj")
+        );
+        assert!(
+            invocation
+                .expected_outputs
+                .iter()
+                .any(|o| o.logical == "depfile")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_plan_cc_compile_release_flags() {
+        let db = test_db();
+
+        ZigToolchainConfig::set(&db, "0.13.0".to_string(), "zig:abc123def456".to_string()).unwrap();
+
+        // Release profile
+        BuildConfig::set(
+            &db,
+            "release".to_string(),
+            "x86_64-linux-musl".to_string(),
+            "/test/workspace".to_string(),
+        )
+        .unwrap();
+
+        let source = CSourceFile::new(
+            &db,
+            "src/main.c".to_string(),
+            Blake3Hash::from_bytes(b"int main() { return 0; }"),
+        )
+        .unwrap();
+
+        let invocation = plan_cc_compile(&db, source).await.unwrap();
+
+        // Release should have -O2, not -O0
+        assert!(invocation.args.contains(&"-O2".to_string()));
+        assert!(!invocation.args.contains(&"-O0".to_string()));
+
+        // Release should NOT have -g
+        assert!(!invocation.args.contains(&"-g".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_node_id_cc_compile_format() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        let source = CSourceFile::new(
+            &db,
+            "src/main.c".to_string(),
+            Blake3Hash::from_bytes(b"int main() { return 0; }"),
+        )
+        .unwrap();
+
+        let node_id = node_id_cc_compile(&db, source).await.unwrap();
+
+        // Should be formatted as "cc-compile:path:triple:profile"
+        assert!(node_id.0.starts_with("cc-compile:"));
+        assert!(node_id.0.contains("src/main.c"));
+        assert!(node_id.0.contains("x86_64-linux-musl"));
+        assert!(node_id.0.contains("debug"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_cc_link_deterministic() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        let obj_hashes = vec![
+            Blake3Hash::from_bytes(b"main.o contents"),
+            Blake3Hash::from_bytes(b"util.o contents"),
+        ];
+
+        let target = CTarget::new(
+            &db,
+            "hello".to_string(),
+            obj_hashes.clone(),
+            vec!["src/main.c".to_string(), "src/util.c".to_string()],
+        )
+        .unwrap();
+
+        let key1 = cache_key_cc_link(&db, target.clone()).await.unwrap();
+        let key2 = cache_key_cc_link(&db, target).await.unwrap();
+
+        assert_eq!(key1, key2);
+    }
+
+    #[tokio::test]
+    async fn test_cache_key_cc_link_changes_with_objects() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        // First set of objects
+        let target1 = CTarget::new(
+            &db,
+            "hello".to_string(),
+            vec![Blake3Hash::from_bytes(b"main.o v1")],
+            vec!["src/main.c".to_string()],
+        )
+        .unwrap();
+
+        let key1 = cache_key_cc_link(&db, target1).await.unwrap();
+
+        // Different object contents
+        let target2 = CTarget::new(
+            &db,
+            "hello".to_string(),
+            vec![Blake3Hash::from_bytes(b"main.o v2")],
+            vec!["src/main.c".to_string()],
+        )
+        .unwrap();
+
+        let key2 = cache_key_cc_link(&db, target2).await.unwrap();
+
+        assert_ne!(key1, key2);
+    }
+
+    #[tokio::test]
+    async fn test_plan_cc_link_generates_correct_args() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        let target = CTarget::new(
+            &db,
+            "hello".to_string(),
+            vec![
+                Blake3Hash::from_bytes(b"main.o"),
+                Blake3Hash::from_bytes(b"util.o"),
+            ],
+            vec!["src/main.c".to_string(), "src/util.c".to_string()],
+        )
+        .unwrap();
+
+        let invocation = plan_cc_link(&db, target).await.unwrap();
+
+        // Should have "cc" as first arg
+        assert_eq!(invocation.args[0], "cc");
+
+        // Should have -target
+        assert!(invocation.args.contains(&"-target".to_string()));
+        assert!(invocation.args.contains(&"x86_64-linux-musl".to_string()));
+
+        // Should have object files
+        assert!(invocation.args.iter().any(|a| a.ends_with("main.o")));
+        assert!(invocation.args.iter().any(|a| a.ends_with("util.o")));
+
+        // Should have -o with exe output
+        assert!(invocation.args.contains(&"-o".to_string()));
+        let o_idx = invocation.args.iter().position(|a| a == "-o").unwrap();
+        assert!(invocation.args[o_idx + 1].ends_with("hello"));
+
+        // Debug profile should NOT have -s (strip)
+        assert!(!invocation.args.contains(&"-s".to_string()));
+
+        // Should expect executable output
+        assert_eq!(invocation.expected_outputs.len(), 1);
+        assert_eq!(invocation.expected_outputs[0].logical, "exe");
+        assert!(invocation.expected_outputs[0].executable);
+    }
+
+    #[tokio::test]
+    async fn test_plan_cc_link_release_strips() {
+        let db = test_db();
+
+        ZigToolchainConfig::set(&db, "0.13.0".to_string(), "zig:abc123def456".to_string()).unwrap();
+
+        // Release profile
+        BuildConfig::set(
+            &db,
+            "release".to_string(),
+            "x86_64-linux-musl".to_string(),
+            "/test/workspace".to_string(),
+        )
+        .unwrap();
+
+        let target = CTarget::new(
+            &db,
+            "hello".to_string(),
+            vec![Blake3Hash::from_bytes(b"main.o")],
+            vec!["src/main.c".to_string()],
+        )
+        .unwrap();
+
+        let invocation = plan_cc_link(&db, target).await.unwrap();
+
+        // Release should have -s for stripping
+        assert!(invocation.args.contains(&"-s".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_node_id_cc_link_format() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        let target = CTarget::new(
+            &db,
+            "hello".to_string(),
+            vec![Blake3Hash::from_bytes(b"main.o")],
+            vec!["src/main.c".to_string()],
+        )
+        .unwrap();
+
+        let node_id = node_id_cc_link(&db, target).await.unwrap();
+
+        // Should be formatted as "cc-link:name:triple:profile"
+        assert!(node_id.0.starts_with("cc-link:"));
+        assert!(node_id.0.contains("hello"));
+        assert!(node_id.0.contains("x86_64-linux-musl"));
+        assert!(node_id.0.contains("debug"));
+    }
+
+    #[tokio::test]
+    async fn test_discovered_deps_affects_cache_key() {
+        let db = test_db();
+        setup_cc_config(&db);
+
+        let source_hash = Blake3Hash::from_bytes(b"#include \"header.h\"\nint main() {}");
+
+        // First compile: no discovered deps yet
+        let source1 = CSourceFile::new(&db, "src/main.c".to_string(), source_hash.clone()).unwrap();
+        let key1 = cache_key_cc_compile(&db, source1).await.unwrap();
+
+        // After first compile, we discover header.h dependency
+        // Set discovered deps for this translation unit
+        let tu_key = "cc:src/main.c:debug:x86_64-linux-musl".to_string();
+        let deps_hash = Blake3Hash::from_bytes(b"include/header.h");
+        DiscoveredDeps::new(&db, tu_key, deps_hash, vec!["include/header.h".to_string()]).unwrap();
+
+        // Second compile with same source but now with discovered deps
+        let source2 = CSourceFile::new(&db, "src/main.c".to_string(), source_hash).unwrap();
+        let key2 = cache_key_cc_compile(&db, source2).await.unwrap();
+
+        // Cache keys should be different because discovered deps changed
+        assert_ne!(key1, key2);
+    }
 }

@@ -3,7 +3,10 @@
 //! This crate provides types and utilities for building C/C++ code
 //! using the zig cc hermetic toolchain.
 
+pub mod depfile;
+
 use camino::Utf8PathBuf;
+use facet::Facet;
 use vx_cas_proto::Blake3Hash;
 
 /// Uniquely identifies a translation unit in the build
@@ -81,7 +84,7 @@ impl Artifact {
 }
 
 /// Expected output from an action
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Facet)]
 pub struct ExpectedOutput {
     /// Logical type ("obj", "exe", "depfile")
     pub logical: String,
@@ -92,7 +95,7 @@ pub struct ExpectedOutput {
 }
 
 /// Invocation for compiling a single translation unit
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Facet)]
 pub struct CcCompileInvocation {
     /// Path to zig binary (from toolchain cache)
     pub program: Utf8PathBuf,
@@ -109,7 +112,7 @@ pub struct CcCompileInvocation {
 }
 
 /// Invocation for linking objects into an executable
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Facet)]
 pub struct CcLinkInvocation {
     /// Path to zig binary
     pub program: Utf8PathBuf,

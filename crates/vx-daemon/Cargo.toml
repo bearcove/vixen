@@ -14,8 +14,10 @@ eyre = { workspace = true }
 tracing = { workspace = true }
 
 vx-cas-proto = { workspace = true }
+vx-cc = { path = "../vx-cc" }
 vx-exec-proto = { workspace = true }
 vx-daemon-proto = { workspace = true }
 vx-manifest = { workspace = true }
 vx-casd = { workspace = true }
 vx-execd = { workspace = true }
+vx-toolchain = { path = "../vx-toolchain" }

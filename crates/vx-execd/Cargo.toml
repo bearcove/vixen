@@ -10,6 +10,8 @@ tokio = { workspace = true }
 camino = { workspace = true }
 eyre = { workspace = true }
 jiff = { workspace = true }
+tracing = { workspace = true }
 
 vx-cas-proto = { workspace = true }
+vx-cc = { workspace = true }
 vx-exec-proto = { workspace = true }

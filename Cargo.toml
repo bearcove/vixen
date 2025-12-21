@@ -11,6 +11,7 @@ repository = "https://github.com/bearcove/vx"
 [workspace.dependencies]
 # internal crates
 vx-cas-proto = { path = "crates/vx-cas-proto" }
+vx-cc = { path = "crates/vx-cc" }
 vx-exec-proto = { path = "crates/vx-exec-proto" }
 vx-manifest = { path = "crates/vx-manifest" }
 vx-daemon = { path = "crates/vx-daemon" }
@@ -26,10 +27,10 @@ facet-toml = { git = "https://github.com/facet-rs/facet" }
 facet-value = { git = "https://github.com/facet-rs/facet" }
 
 # incremental computation
-picante = { git = "https://github.com/bearcove/picante", features = ["macros"] }
+picante = { path = "../picante/crates/picante", features = ["macros"] }
 
 # RPC
-rapace = { git = "https://github.com/bearcove/rapace" }
+rapace = { path = "../rapace/crates/rapace" }
 
 # hashing
 blake3 = "1"
