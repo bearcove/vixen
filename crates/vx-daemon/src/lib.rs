@@ -419,6 +419,137 @@ pub async fn node_id_compile_rlib<DB: Db>(db: &DB, crate_info: RustCrate) -> Pic
     )))
 }
 
+/// Compute the cache key for compiling a library crate with dependencies.
+///
+/// CRITICAL: The cache key explicitly includes dep_outputs (sorted by extern_name).
+/// This ensures that changes to dependencies invalidate the rlib cache key.
+#[picante::tracked]
+pub async fn cache_key_compile_rlib_with_deps<DB: Db>(
+    db: &DB,
+    crate_info: RustCrate,
+    dep_rlib_hashes: Vec<(String, Blake3Hash)>, // (extern_name, rlib_hash) sorted
+) -> PicanteResult<CacheKey> {
+    debug!("cache_key_compile_rlib_with_deps: COMPUTING (not memoized)");
+
+    let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+
+    let crate_name = crate_info.crate_name(db)?;
+    let edition = crate_info.edition(db)?;
+    let closure_hash = crate_info.source_closure_hash(db)?;
+
+    let mut hasher = blake3::Hasher::new();
+
+    hasher.update(b"vx-rlib-cache-key-v");
+    hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"rustc:");
+    hasher.update(rustc.version_string.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"target:");
+    hasher.update(config.target_triple.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"profile:");
+    hasher.update(config.profile.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"crate_name:");
+    hasher.update(crate_name.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"edition:");
+    hasher.update(edition.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"crate_type:lib\n");
+
+    hasher.update(b"source_closure:");
+    hasher.update(&closure_hash.0);
+    hasher.update(b"\n");
+
+    // Include dependency rlib hashes (sorted by extern_name for determinism)
+    for (extern_name, rlib_hash) in &dep_rlib_hashes {
+        hasher.update(b"dep:");
+        hasher.update(extern_name.as_bytes());
+        hasher.update(b":");
+        hasher.update(&rlib_hash.0);
+        hasher.update(b"\n");
+    }
+
+    Ok(Blake3Hash(*hasher.finalize().as_bytes()))
+}
+
+/// Plan a rustc invocation for compiling a library crate with dependencies.
+///
+/// All paths are workspace-relative. rustc is invoked with cwd = workspace_root.
+#[picante::tracked]
+pub async fn plan_compile_rlib_with_deps<DB: Db>(
+    db: &DB,
+    crate_info: RustCrate,
+    dep_extern_paths: Vec<(String, String)>, // (extern_name, workspace-rel rlib path) sorted
+) -> PicanteResult<RustcInvocation> {
+    debug!("plan_compile_rlib_with_deps: COMPUTING (not memoized)");
+
+    let config = BuildConfig::get(db)?.expect("BuildConfig not set");
+
+    let crate_id = crate_info.crate_id(db)?;
+    let crate_name = crate_info.crate_name(db)?;
+    let edition = crate_info.edition(db)?;
+    let crate_root = crate_info.crate_root_rel(db)?;
+
+    // Output path: .vx/build/{triple}/{profile}/deps/{crate_id}/lib{name}.rlib
+    let output_dir = format!(
+        ".vx/build/{}/{}/deps/{}",
+        &*config.target_triple, &*config.profile, &*crate_id
+    );
+    let rlib_filename = format!("lib{}.rlib", &*crate_name);
+    let output_path = format!("{}/{}", output_dir, rlib_filename);
+
+    let mut args = vec![
+        "--crate-name".to_string(),
+        crate_name.to_string(),
+        "--crate-type".to_string(),
+        "lib".to_string(),
+        "--edition".to_string(),
+        edition.to_string(),
+        format!(
+            "--remap-path-prefix={}=/vx-workspace",
+            &*config.workspace_root
+        ),
+        crate_root.to_string(),
+        "-o".to_string(),
+        output_path.clone(),
+    ];
+
+    // Add --extern flags for dependencies
+    for (extern_name, rlib_path) in &dep_extern_paths {
+        args.push("--extern".to_string());
+        args.push(format!("{}={}", extern_name, rlib_path));
+    }
+
+    if &*config.profile == "release" {
+        args.push("-C".to_string());
+        args.push("opt-level=3".to_string());
+    }
+
+    let expected_outputs = vec![ExpectedOutput {
+        logical: "rlib".to_string(),
+        path: output_path,
+        executable: false,
+    }];
+
+    Ok(RustcInvocation {
+        program: "rustc".to_string(),
+        args,
+        env: vec![],
+        cwd: config.workspace_root.to_string(),
+        expected_outputs,
+    })
+}
+
 /// Compute the cache key for compiling a binary crate with dependencies.
 ///
 /// CRITICAL: The cache key explicitly includes dep_outputs (sorted by extern_name).
@@ -904,6 +1035,8 @@ pub async fn node_id_cc_link<DB: Db>(db: &DB, target: CTarget) -> PicanteResult<
         cache_key_compile_rlib,
         plan_compile_rlib,
         node_id_compile_rlib,
+        cache_key_compile_rlib_with_deps,
+        plan_compile_rlib_with_deps,
         cache_key_compile_bin_with_deps,
         plan_compile_bin_with_deps,
         node_id_compile_bin_with_deps,
@@ -1405,8 +1538,8 @@ impl DaemonService {
         // Maps CrateId -> (rlib_hash, rlib_path)
         let mut rlib_outputs: HashMap<CrateId, (Blake3Hash, String)> = HashMap::new();
 
-        // Build output base directory
-        let output_base = graph
+        // Build output base directory (used by build_rlib and build_bin_with_deps)
+        let _output_base = graph
             .workspace_root
             .join(".vx/build")
             .join(&target_triple)
@@ -1457,11 +1590,33 @@ impl DaemonService {
 
             match crate_node.crate_type {
                 CrateType::Lib => {
+                    // Collect dependency outputs for this lib crate (sorted by extern_name)
+                    let mut dep_rlib_hashes: Vec<(String, Blake3Hash)> = Vec::new();
+                    let mut dep_extern_paths: Vec<(String, String)> = Vec::new();
+
+                    for dep in &crate_node.deps {
+                        let (rlib_hash, rlib_path) =
+                            rlib_outputs.get(&dep.crate_id).ok_or_else(|| {
+                                format!(
+                                    "rlib output not found for dependency {} of {}",
+                                    dep.extern_name, crate_node.crate_name
+                                )
+                            })?;
+                        dep_rlib_hashes.push((dep.extern_name.clone(), *rlib_hash));
+                        dep_extern_paths.push((dep.extern_name.clone(), rlib_path.clone()));
+                    }
+
+                    // Sort for determinism
+                    dep_rlib_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+                    dep_extern_paths.sort_by(|a, b| a.0.cmp(&b.0));
+
                     // Build library crate
                     let (rlib_hash, rlib_path, node_report) = self
                         .build_rlib(
                             &*db,
                             rust_crate.clone(),
+                            dep_rlib_hashes,
+                            dep_extern_paths,
                             &graph.workspace_root,
                             &target_triple,
                             profile,
@@ -1571,6 +1726,8 @@ impl DaemonService {
         &self,
         db: &Database,
         rust_crate: RustCrate,
+        dep_rlib_hashes: Vec<(String, Blake3Hash)>,
+        dep_extern_paths: Vec<(String, String)>,
         workspace_root: &Utf8PathBuf,
         target_triple: &str,
         profile: &str,
@@ -1585,10 +1742,16 @@ impl DaemonService {
             .source_closure_hash(db)
             .map_err(|e| format!("picante error: {}", e))?;
 
-        // Compute cache key
-        let cache_key = cache_key_compile_rlib(db, rust_crate.clone())
-            .await
-            .map_err(|e| format!("failed to compute rlib cache key: {}", e))?;
+        // Compute cache key (use _with_deps version if there are dependencies)
+        let cache_key = if dep_rlib_hashes.is_empty() {
+            cache_key_compile_rlib(db, rust_crate.clone())
+                .await
+                .map_err(|e| format!("failed to compute rlib cache key: {}", e))?
+        } else {
+            cache_key_compile_rlib_with_deps(db, rust_crate.clone(), dep_rlib_hashes.clone())
+                .await
+                .map_err(|e| format!("failed to compute rlib cache key: {}", e))?
+        };
 
         let node_id = node_id_compile_rlib(db, rust_crate.clone())
             .await
@@ -1659,10 +1822,16 @@ impl DaemonService {
             }
         }
 
-        // Cache miss - build
-        let invocation = plan_compile_rlib(db, rust_crate)
-            .await
-            .map_err(|e| format!("failed to plan rlib build: {}", e))?;
+        // Cache miss - build (use _with_deps version if there are dependencies)
+        let invocation = if dep_extern_paths.is_empty() {
+            plan_compile_rlib(db, rust_crate)
+                .await
+                .map_err(|e| format!("failed to plan rlib build: {}", e))?
+        } else {
+            plan_compile_rlib_with_deps(db, rust_crate, dep_extern_paths)
+                .await
+                .map_err(|e| format!("failed to plan rlib build: {}", e))?
+        };
 
         let start = std::time::Instant::now();
         let output = Command::new(&invocation.program)
@@ -1908,7 +2077,26 @@ impl DaemonService {
 
 impl Daemon for DaemonService {
     async fn build(&self, request: BuildRequest) -> BuildResult {
-        match self.do_build(request).await {
+        // Check if the project has dependencies - if so, use multi-crate build
+        let project_path = &request.project_path;
+        let cargo_toml_path = project_path.join("Cargo.toml");
+
+        let has_deps = if cargo_toml_path.exists() {
+            match Manifest::from_path(&cargo_toml_path) {
+                Ok(manifest) => !manifest.deps.is_empty(),
+                Err(_) => false, // Let do_build handle the error
+            }
+        } else {
+            false
+        };
+
+        let result = if has_deps {
+            self.do_build_multi_crate(request).await
+        } else {
+            self.do_build(request).await
+        };
+
+        match result {
             Ok(result) => result,
             Err(e) => BuildResult {
                 success: false,

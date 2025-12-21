@@ -45,6 +45,30 @@ impl TestEnv {
         self.build_with_home(self.vx_home.path(), release)
     }
 
+    /// Run `vx build` from a subdirectory within the project
+    pub fn build_in_subdir(&self, subdir: &str, release: bool) -> VxOutput {
+        self.build_in_subdir_with_home(subdir, self.vx_home.path(), release)
+    }
+
+    /// Run `vx build` from a subdirectory with a custom VX_HOME
+    pub fn build_in_subdir_with_home(
+        &self,
+        subdir: &str,
+        vx_home: &Path,
+        release: bool,
+    ) -> VxOutput {
+        let mut cmd = Command::new(Self::vx_binary());
+        cmd.current_dir(self.project.path().join(subdir));
+        cmd.env("VX_HOME", vx_home);
+        cmd.arg("build");
+        if release {
+            cmd.arg("--release");
+        }
+
+        let output = cmd.output().expect("failed to run vx");
+        VxOutput::from(output)
+    }
+
     /// Run `vx build` with a custom VX_HOME (for testing shared cache)
     pub fn build_with_home(&self, vx_home: &Path, release: bool) -> VxOutput {
         self.build_with_home_and_env(vx_home, release, &[])
@@ -245,4 +269,125 @@ build = "build.rs"
 
     env.write_file("src/main.rs", "fn main() {}\n");
     env.write_file("build.rs", "fn main() {}\n");
+}
+
+/// Create a multi-crate project with app (bin) depending on util (lib)
+///
+/// Layout:
+/// ```
+/// project/
+/// ├── app/
+/// │   ├── Cargo.toml    # [dependencies] util = { path = "../util" }
+/// │   └── src/main.rs   # use util::greet;
+/// └── util/
+///     ├── Cargo.toml
+///     └── src/lib.rs    # pub fn greet() -> &'static str
+/// ```
+pub fn create_multi_crate_project(env: &TestEnv) {
+    // util library crate
+    env.write_file(
+        "util/Cargo.toml",
+        r#"[package]
+name = "util"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    env.write_file(
+        "util/src/lib.rs",
+        r#"pub fn greet() -> &'static str {
+    "Hello from util!"
+}
+"#,
+    );
+
+    // app binary crate that depends on util
+    env.write_file(
+        "app/Cargo.toml",
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+util = { path = "../util" }
+"#,
+    );
+    env.write_file(
+        "app/src/main.rs",
+        r#"fn main() {
+    println!("{}", util::greet());
+}
+"#,
+    );
+}
+
+/// Create a diamond dependency project: app -> {common, helper}, helper -> common
+///
+/// Layout:
+/// ```
+/// project/
+/// ├── app/         # bin, depends on common and helper
+/// ├── helper/      # lib, depends on common
+/// └── common/      # lib, no deps
+/// ```
+pub fn create_diamond_dependency_project(env: &TestEnv) {
+    // common library (no deps)
+    env.write_file(
+        "common/Cargo.toml",
+        r#"[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    env.write_file(
+        "common/src/lib.rs",
+        r#"pub fn version() -> &'static str {
+    "1.0.0"
+}
+"#,
+    );
+
+    // helper library (depends on common)
+    env.write_file(
+        "helper/Cargo.toml",
+        r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+"#,
+    );
+    env.write_file(
+        "helper/src/lib.rs",
+        r#"pub fn describe() -> String {
+    format!("Helper v{}", common::version())
+}
+"#,
+    );
+
+    // app binary (depends on both common and helper)
+    env.write_file(
+        "app/Cargo.toml",
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+helper = { path = "../helper" }
+"#,
+    );
+    env.write_file(
+        "app/src/main.rs",
+        r#"fn main() {
+    println!("Version: {}", common::version());
+    println!("{}", helper::describe());
+}
+"#,
+    );
 }

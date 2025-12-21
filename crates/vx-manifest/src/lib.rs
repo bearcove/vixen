@@ -14,7 +14,6 @@ use std::collections::HashMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use facet::Facet;
-use facet_value::Value;
 use thiserror::Error;
 
 /// Errors that can occur during manifest parsing
@@ -148,7 +147,8 @@ struct RawManifest {
 #[repr(u8)]
 #[facet(untagged)]
 enum RawDependency {
-    /// Simple version string: `foo = "1.0"`
+    /// Simple version string: `foo = "1.0"` - we reject these but need to parse them
+    #[allow(dead_code)]
     Version(String),
     /// Table form: `foo = { path = "...", version = "...", etc }`
     Table(RawDependencyTable),
