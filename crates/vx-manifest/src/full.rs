@@ -98,6 +98,7 @@ pub struct Package {
     pub publish: Option<BoolOrVec>,
     pub metadata: Option<facet_value::Value>,
     pub default_run: Option<String>,
+    pub autolib: Option<bool>,
     pub autobins: Option<bool>,
     pub autoexamples: Option<bool>,
     pub autotests: Option<bool>,
@@ -291,7 +292,7 @@ pub struct DependencyDetail {
 }
 
 #[derive(Facet, Debug, Clone)]
-#[facet(rename_all = "kebab-case")]
+#[facet(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct WorkspaceDependency {
     /// Must be true - this is how we distinguish workspace deps from detailed deps
     pub workspace: bool,
@@ -345,6 +346,7 @@ pub struct LibTarget {
     pub edition: Option<Edition>,
     pub crate_type: Option<Vec<String>>,
     pub required_features: Option<Vec<String>>,
+    pub doc_scrape_examples: Option<bool>,
 }
 
 #[derive(Facet, Debug, Clone)]
@@ -553,9 +555,11 @@ pub enum LintLevel {
 }
 
 #[derive(Facet, Debug, Clone)]
+#[facet(rename_all = "kebab-case")]
 pub struct LintConfig {
     pub level: LintLevelString,
     pub priority: Option<i32>,
+    pub check_cfg: Option<Vec<String>>,
 }
 
 #[derive(Facet, Debug, Clone, Copy)]
