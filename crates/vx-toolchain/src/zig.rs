@@ -240,7 +240,7 @@ pub fn extract_zig_tarball(
         let entry = entry?;
         let path = Utf8PathBuf::try_from(entry.path())
             .map_err(|e| ZigError::ExtractionFailed(format!("non-UTF8 path: {}", e)))?;
-        if path.file_name().map_or(false, |n| n.starts_with("zig-")) {
+        if path.file_name().is_some_and(|n| n.starts_with("zig-")) {
             zig_dir = Some(path);
             break;
         }

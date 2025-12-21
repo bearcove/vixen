@@ -3,6 +3,10 @@
 //! Provides utilities for creating isolated test environments with temp directories
 //! for both the global CAS (~/.vx/) and project-local build outputs (.vx/).
 
+// Each integration test file compiles this module separately, so functions
+// used by one test file appear "unused" when compiling another.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
