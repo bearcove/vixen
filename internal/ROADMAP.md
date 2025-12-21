@@ -44,15 +44,14 @@ This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the n
 
 ### Cache Correctness
 
-**Note:** Current caching uses in-memory picante memoization + ad-hoc file checks. v0 completion requires CAS-backed manifest/index for proper cross-session persistence.
-
-- [x] No-op build = zero rustc invocations (within session)
+- [x] No-op build = zero rustc invocations
 - [x] Source change = cache miss
 - [x] Profile change = cache miss
 - [x] Edition change = cache miss
+- [x] Different checkout path = still cache hit (--remap-path-prefix)
+- [x] Cross-session cache persistence (CAS + picante persistence)
+- [x] Picante query memoization persists across sessions
 - [ ] Toolchain change = cache miss (needs RustcToolchain input)
-- [ ] Different checkout path = still cache hit (--remap-path-prefix)
-- [ ] Cross-session cache persistence (needs CAS manifest/index)
 
 ### Service Separation
 
@@ -75,25 +74,28 @@ This document tracks implementation status. See [DESIGN.md](DESIGN.md) for the n
 
 - [x] Fail on workspaces
 - [x] Fail on dependencies
-- [ ] Fail on features
+- [x] Fail on features
 - [ ] Fail on build.rs
-- [ ] Fail on proc-macros
-- [ ] Fail on tests/benches/examples
-- [ ] Fail on multiple targets
+- [x] Fail on proc-macros
+- [x] Fail on tests/benches/examples
+- [x] Fail on multiple bin targets
 
 ### Testing
 
-Current state: 3 unit tests in vx-manifest. Nothing else.
-
+- [x] Unit tests for vx-manifest (parse, reject unsupported features)
+- [x] Integration test harness with temp dir isolation
+- [x] Integration tests for full build flow:
+  - [x] Fresh build produces correct output
+  - [x] Second build is cache hit (zero rustc invocations)
+  - [x] Source change triggers rebuild
+  - [x] Profile change triggers rebuild
+  - [x] Edition change triggers rebuild
+  - [x] Different checkout path is cache hit
+  - [x] Cache persists across sessions
+  - [x] Picante memoization verified (query traces)
+- [x] Error handling tests (reject deps, features, workspaces, etc.)
 - [ ] Unit tests for CAS operations (put/get blob, manifest storage)
 - [ ] Unit tests for cache key computation (determinism, correct invalidation)
-- [ ] Integration tests for full build flow:
-  - [ ] Fresh build produces correct output
-  - [ ] Second build is cache hit (zero rustc invocations)
-  - [ ] Source change triggers rebuild
-  - [ ] Profile change triggers rebuild
-  - [ ] Edition change triggers rebuild
-- [ ] Test fixtures: minimal single-crate projects
 - [ ] CI: run tests on push
 
 ---

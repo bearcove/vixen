@@ -52,6 +52,10 @@ camino = "1"
 # testing
 tempfile = "3"
 
+# logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [patch.crates-io]
 facet = { git = "https://github.com/facet-rs/facet" }
 facet-core = { git = "https://github.com/facet-rs/facet" }

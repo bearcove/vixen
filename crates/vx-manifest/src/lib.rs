@@ -84,6 +84,10 @@ pub struct Manifest {
 struct RawManifest {
     package: Option<RawPackage>,
     bin: Option<Vec<RawBinTarget>>,
+    lib: Option<RawLibTarget>,
+    test: Option<Vec<TargetEntry>>,
+    bench: Option<Vec<TargetEntry>>,
+    example: Option<Vec<TargetEntry>>,
 
     dependencies: Option<toml_table::TomlTable>,
     dev_dependencies: Option<toml_table::TomlTable>,
@@ -106,6 +110,12 @@ struct RawBinTarget {
     path: Option<String>,
 }
 
+#[derive(Facet, Debug)]
+#[facet(rename_all = "kebab-case")]
+struct RawLibTarget {
+    proc_macro: Option<bool>,
+}
+
 /// Placeholder for catching unknown TOML tables
 /// We just need to know if the table exists, not its contents
 mod toml_table {
@@ -116,6 +126,14 @@ mod toml_table {
         // Accept any fields - we just care that the table exists
         // facet-toml will parse and discard contents
     }
+}
+
+/// Placeholder for target entries in [[test]], [[bench]], [[example]]
+/// We just need to know they exist
+#[derive(Facet, Debug)]
+struct TargetEntry {
+    name: Option<String>,
+    path: Option<String>,
 }
 
 impl Manifest {
@@ -164,6 +182,52 @@ impl Manifest {
                 feature: "[features]",
                 details: "features are not supported yet".into(),
             });
+        }
+
+        // Check for proc-macro crates
+        if let Some(ref lib) = raw.lib {
+            if lib.proc_macro == Some(true) {
+                return Err(ManifestError::Unsupported {
+                    feature: "proc-macro crates",
+                    details: "[lib] proc-macro = true is not supported yet".into(),
+                });
+            }
+        }
+
+        // Check for test/bench/example targets
+        if let Some(ref tests) = raw.test {
+            if !tests.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[[test]] targets",
+                    details: "test targets are not supported yet".into(),
+                });
+            }
+        }
+        if let Some(ref benches) = raw.bench {
+            if !benches.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[[bench]] targets",
+                    details: "bench targets are not supported yet".into(),
+                });
+            }
+        }
+        if let Some(ref examples) = raw.example {
+            if !examples.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[[example]] targets",
+                    details: "example targets are not supported yet".into(),
+                });
+            }
+        }
+
+        // Check for multiple binary targets
+        if let Some(ref bins) = raw.bin {
+            if bins.len() > 1 {
+                return Err(ManifestError::Unsupported {
+                    feature: "multiple [[bin]] targets",
+                    details: format!("found {} binary targets, only 1 is supported", bins.len()),
+                });
+            }
         }
 
         let package = raw.package.ok_or(ManifestError::MissingField("name"))?;
@@ -248,5 +312,125 @@ build = "build.rs"
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn reject_proc_macro() {
+        let toml = r#"
+[package]
+name = "hello"
+
+[lib]
+proc-macro = true
+"#;
+        let err = Manifest::from_str(toml, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::Unsupported {
+                feature: "proc-macro crates",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reject_test_targets() {
+        let toml = r#"
+[package]
+name = "hello"
+
+[[test]]
+name = "integration"
+"#;
+        let err = Manifest::from_str(toml, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::Unsupported {
+                feature: "[[test]] targets",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reject_bench_targets() {
+        let toml = r#"
+[package]
+name = "hello"
+
+[[bench]]
+name = "mybench"
+"#;
+        let err = Manifest::from_str(toml, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::Unsupported {
+                feature: "[[bench]] targets",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reject_example_targets() {
+        let toml = r#"
+[package]
+name = "hello"
+
+[[example]]
+name = "myexample"
+"#;
+        let err = Manifest::from_str(toml, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::Unsupported {
+                feature: "[[example]] targets",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reject_multiple_bin_targets() {
+        let toml = r#"
+[package]
+name = "hello"
+
+[[bin]]
+name = "one"
+path = "src/one.rs"
+
+[[bin]]
+name = "two"
+path = "src/two.rs"
+"#;
+        let err = Manifest::from_str(toml, None).unwrap_err();
+        assert!(matches!(
+            err,
+            ManifestError::Unsupported {
+                feature: "multiple [[bin]] targets",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reject_features() {
+        let toml = r#"
+[package]
+name = "hello"
+
+[features]
+default = []
+foo = []
+"#;
+        let err = Manifest::from_str(toml, None).unwrap_err();
+        // facet-toml can't parse [features] with array values into our TomlTable placeholder,
+        // so we get a ParseError that mentions "features" - this is acceptable for v0
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("features"),
+            "error should mention features: {err_str}"
+        );
     }
 }

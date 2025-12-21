@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -266,7 +275,7 @@ dependencies = [
 [[package]]
 name = "facet"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "autocfg",
  "facet-core",
@@ -277,7 +286,7 @@ dependencies = [
 [[package]]
 name = "facet-args"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "facet",
  "facet-core",
@@ -291,7 +300,7 @@ dependencies = [
 [[package]]
 name = "facet-core"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "autocfg",
  "bytes",
@@ -345,7 +354,7 @@ dependencies = [
 [[package]]
 name = "facet-json"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "facet",
  "facet-core",
@@ -363,7 +372,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-parse"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "facet-macro-types",
  "proc-macro2",
@@ -373,7 +382,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-types"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -383,7 +392,7 @@ dependencies = [
 [[package]]
 name = "facet-macros"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "facet-macros-impl",
 ]
@@ -391,7 +400,7 @@ dependencies = [
 [[package]]
 name = "facet-macros-impl"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "facet-macro-parse",
  "facet-macro-types",
@@ -404,7 +413,7 @@ dependencies = [
 [[package]]
 name = "facet-postcard"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -425,7 +434,7 @@ dependencies = [
 [[package]]
 name = "facet-reflect"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#7294c8e3e5089df46fee6e142938a73b704db9eb"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "facet-core",
  "miette",
@@ -434,7 +443,7 @@ dependencies = [
 [[package]]
 name = "facet-solver"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -444,7 +453,7 @@ dependencies = [
 [[package]]
 name = "facet-toml"
 version = "0.32.3"
-source = "git+https://github.com/facet-rs/facet#f52dc6f7ee8fe21a0cecda4ac37e4e6e0f9cd2ea"
+source = "git+https://github.com/facet-rs/facet#d21db56540616c62da8fc1c0e525e4a7d7eb3e11"
 dependencies = [
  "ariadne",
  "facet-core",
@@ -913,6 +922,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "lexical-parse-float"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -977,6 +992,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1032,6 +1056,15 @@ name = "mutants"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "num-complex"
@@ -1452,6 +1485,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-automata"
+version = "0.4.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5276caf25ac86c8d810222b3dbb938e512c55c6831a10f3e6ed1c93b84041f1c"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
 name = "ruint"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1542,6 +1592,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -1738,6 +1797,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "time"
 version = "0.3.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1871,6 +1939,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+ "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-subscriber"
+version = "0.3.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f30143827ddab0d256fd843b7a66d164e9f271cfa0dde49142c5ca0ca291f1e"
+dependencies = [
+ "matchers",
+ "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
+ "sharded-slab",
+ "smallvec",
+ "thread_local",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
 ]
 
 [[package]]
@@ -1980,6 +2078,7 @@ dependencies = [
  "owo-colors",
  "tempfile",
  "tokio",
+ "tracing-subscriber",
  "vx-daemon",
  "vx-daemon-proto",
 ]
@@ -2019,6 +2118,7 @@ dependencies = [
  "picante",
  "rapace",
  "tokio",
+ "tracing",
  "vx-cas-proto",
  "vx-casd",
  "vx-daemon-proto",

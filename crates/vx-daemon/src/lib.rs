@@ -7,9 +7,13 @@
 //! - Orchestrates builds via CAS and Exec services
 
 use std::process::Command;
+use std::sync::Arc;
 
 use camino::Utf8PathBuf;
-use picante::PicanteResult;
+use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
+use picante::{HasRuntime, PicanteResult};
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, CacheKey, Cas, NodeId, NodeManifest, OutputEntry};
 use vx_casd::CasService;
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
@@ -68,6 +72,8 @@ pub struct BuildConfig {
 /// Compute the cache key for compiling a binary crate.
 #[picante::tracked]
 pub async fn cache_key_compile_bin<DB: Db>(db: &DB, source: SourceFile) -> PicanteResult<CacheKey> {
+    debug!("cache_key_compile_bin: COMPUTING (not memoized)");
+
     let cargo = CargoToml::get(db)?.expect("CargoToml not set");
     let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
@@ -115,6 +121,8 @@ pub async fn cache_key_compile_bin<DB: Db>(db: &DB, source: SourceFile) -> Pican
 /// Build a rustc invocation for compiling a binary crate.
 #[picante::tracked]
 pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation> {
+    debug!("plan_compile_bin: COMPUTING (not memoized)");
+
     let cargo = CargoToml::get(db)?.expect("CargoToml not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
@@ -160,6 +168,8 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
 /// Generate a human-readable node ID for a compile-bin node.
 #[picante::tracked]
 pub async fn node_id_compile_bin<DB: Db>(db: &DB) -> PicanteResult<NodeId> {
+    debug!("node_id_compile_bin: COMPUTING (not memoized)");
+
     let cargo = CargoToml::get(db)?.expect("CargoToml not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
@@ -188,14 +198,67 @@ pub struct Database {}
 pub struct DaemonService {
     /// CAS service for content-addressed storage
     cas: CasService,
+    /// The picante incremental database (shared across builds)
+    db: Arc<Mutex<Database>>,
+    /// Path to the picante cache file
+    cache_path: Utf8PathBuf,
 }
 
 impl DaemonService {
     /// Create a new daemon service
-    pub fn new(cas_root: Utf8PathBuf) -> std::io::Result<Self> {
+    pub fn new(vx_home: Utf8PathBuf) -> std::io::Result<Self> {
+        let cas_root = vx_home.clone();
         let cas = CasService::new(cas_root);
         cas.init()?;
-        Ok(Self { cas })
+
+        let db = Database::new();
+        let cache_path = vx_home.join("picante.cache");
+
+        Ok(Self {
+            cas,
+            db: Arc::new(Mutex::new(db)),
+            cache_path,
+        })
+    }
+
+    /// Load picante cache from disk (call once at startup)
+    pub async fn load_cache(&self) -> eyre::Result<bool> {
+        let db = self.db.lock().await;
+        let ingredients = db.ingredient_registry().persistable_ingredients();
+
+        let options = CacheLoadOptions {
+            max_bytes: None,
+            on_corrupt: OnCorruptCache::Delete, // Delete corrupt caches, don't fail
+        };
+
+        match load_cache_with_options(&self.cache_path, db.runtime(), &ingredients, &options).await
+        {
+            Ok(true) => {
+                info!(path = %self.cache_path, "loaded picante cache");
+                Ok(true)
+            }
+            Ok(false) => {
+                debug!(path = %self.cache_path, "no picante cache found");
+                Ok(false)
+            }
+            Err(e) => {
+                warn!(path = %self.cache_path, error = %e, "failed to load picante cache");
+                Err(eyre::eyre!("failed to load picante cache: {}", e))
+            }
+        }
+    }
+
+    /// Save picante cache to disk
+    async fn save_cache(&self) -> eyre::Result<()> {
+        let db = self.db.lock().await;
+        let ingredients = db.ingredient_registry().persistable_ingredients();
+
+        save_cache(&self.cache_path, db.runtime(), &ingredients)
+            .await
+            .map_err(|e| eyre::eyre!("failed to save picante cache: {}", e))?;
+
+        debug!(path = %self.cache_path, "saved picante cache");
+        Ok(())
     }
 
     /// Internal build implementation
@@ -245,17 +308,17 @@ impl DaemonService {
 
         let profile = if request.release { "release" } else { "debug" };
 
-        // Set up picante database
-        let db = Database::new();
+        // Use the shared picante database
+        let db = self.db.lock().await;
 
         // Set inputs
         // Keyed input: SourceFile::new(db, key, data_fields...)
-        let source_id = SourceFile::new(&db, manifest.bin.path.to_string(), source_hash)
+        let source_id = SourceFile::new(&*db, manifest.bin.path.to_string(), source_hash)
             .map_err(|e| format!("picante error: {}", e))?;
 
         // Singletons: Type::set(db, field1, field2, ...)
         CargoToml::set(
-            &db,
+            &*db,
             cargo_toml_hash,
             manifest.name.clone(),
             manifest.edition,
@@ -263,10 +326,10 @@ impl DaemonService {
         )
         .map_err(|e| format!("picante error: {}", e))?;
 
-        RustcVersion::set(&db, rustc_version).map_err(|e| format!("picante error: {}", e))?;
+        RustcVersion::set(&*db, rustc_version).map_err(|e| format!("picante error: {}", e))?;
 
         BuildConfig::set(
-            &db,
+            &*db,
             profile.to_string(),
             target_triple.clone(),
             project_path.to_string(),
@@ -274,7 +337,7 @@ impl DaemonService {
         .map_err(|e| format!("picante error: {}", e))?;
 
         // Compute cache key via picante
-        let cache_key = cache_key_compile_bin(&db, source_id)
+        let cache_key = cache_key_compile_bin(&*db, source_id)
             .await
             .map_err(|e| format!("failed to compute cache key: {}", e))?;
 
@@ -314,13 +377,16 @@ impl DaemonService {
         }
 
         // Cache miss - get build plan from picante
-        let invocation = plan_compile_bin(&db)
+        let invocation = plan_compile_bin(&*db)
             .await
             .map_err(|e| format!("failed to plan build: {}", e))?;
 
-        let node_id = node_id_compile_bin(&db)
+        let node_id = node_id_compile_bin(&*db)
             .await
             .map_err(|e| format!("failed to get node id: {}", e))?;
+
+        // Release the db lock before executing rustc (which can take a while)
+        drop(db);
 
         // Execute rustc
         let start = std::time::Instant::now();
@@ -371,6 +437,11 @@ impl DaemonService {
                 "failed to publish cache entry: {:?}",
                 publish_result.error
             ));
+        }
+
+        // Save picante cache after successful build
+        if let Err(e) = self.save_cache().await {
+            warn!(error = %e, "failed to save picante cache (non-fatal)");
         }
 
         Ok(BuildResult {

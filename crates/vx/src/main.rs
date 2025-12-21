@@ -7,6 +7,7 @@ use eyre::{Result, bail};
 use facet::Facet;
 use facet_args as args;
 use owo_colors::OwoColorize;
+use tracing_subscriber::EnvFilter;
 
 use vx_daemon::DaemonService;
 use vx_daemon_proto::{BuildRequest, Daemon};
@@ -43,7 +44,14 @@ enum CliCommand {
     Explain,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize tracing from RUST_LOG env var (e.g., RUST_LOG=vx_daemon=debug)
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli: Cli = args::from_std_args()?;
 
     if cli.version {
@@ -52,7 +60,7 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
-        CliCommand::Build { release } => cmd_build(release),
+        CliCommand::Build { release } => cmd_build(release).await,
         CliCommand::Kill => cmd_kill(),
         CliCommand::Clean => cmd_clean(),
         CliCommand::Explain => cmd_explain(),
@@ -69,13 +77,13 @@ fn get_vx_home() -> Result<Utf8PathBuf> {
     Ok(Utf8PathBuf::from(home).join(".vx"))
 }
 
-fn cmd_build(release: bool) -> Result<()> {
+async fn cmd_build(release: bool) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
 
     // For v0, we run the daemon in-process
     // Future: connect to a persistent daemon via rapace
-    let cas_root = get_vx_home()?;
-    let daemon = DaemonService::new(cas_root)?;
+    let vx_home = get_vx_home()?;
+    let daemon = DaemonService::new(vx_home)?;
 
     let request = BuildRequest {
         project_path: cwd.clone(),
@@ -85,8 +93,10 @@ fn cmd_build(release: bool) -> Result<()> {
     // Print building message
     println!("{} ({})", "Building".green().bold(), cwd);
 
-    let rt = tokio::runtime::Runtime::new()?;
-    let result = rt.block_on(daemon.build(request));
+    // Load picante cache from disk (if it exists)
+    let _ = daemon.load_cache().await;
+
+    let result = daemon.build(request).await;
 
     if result.success {
         if result.cached {

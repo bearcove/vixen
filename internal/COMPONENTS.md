@@ -135,7 +135,19 @@ pub trait Daemon {
 - Reads: `Cargo.toml`, `src/main.rs` (to compute hashes)
 - Writes: `<project>/.vx/build/<triple>/<profile>/<name>` (materialized output)
 
-**Key principle:** All CAS operations go through rapace RPC. Daemon never writes to `~/.vx/` directly.
+**Key principle:** All CAS operations go through rapace RPC. Daemon never writes to `~/.vx/` directly (except for picante cache).
+
+**Picante persistence:**
+- Stores shared `Database` across builds (not per-request)
+- Loads `$VX_HOME/picante.cache` on startup via `load_cache()`
+- Saves cache after each successful build via `save_cache()`
+- Query results are memoized across sessions
+- Corrupt cache files are automatically deleted and rebuilt
+
+**Tracing:**
+- Uses `tracing` crate for structured logging
+- Controlled via `RUST_LOG` env var (e.g., `RUST_LOG=vx_daemon=debug`)
+- Debug logs include "COMPUTING" markers for query recomputation tracking
 
 **Dependencies:**
 - `vx-daemon-proto` — its own trait

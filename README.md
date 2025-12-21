@@ -1,4 +1,4 @@
-# vx
+# vertex
 
 It's really hard to stop cargo from rebuilding too much in CI, even with
 

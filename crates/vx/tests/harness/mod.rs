@@ -43,9 +43,22 @@ impl TestEnv {
 
     /// Run `vx build` with a custom VX_HOME (for testing shared cache)
     pub fn build_with_home(&self, vx_home: &Path, release: bool) -> VxOutput {
+        self.build_with_home_and_env(vx_home, release, &[])
+    }
+
+    /// Run `vx build` with a custom VX_HOME and additional environment variables
+    pub fn build_with_home_and_env(
+        &self,
+        vx_home: &Path,
+        release: bool,
+        env_vars: &[(&str, &str)],
+    ) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
         cmd.env("VX_HOME", vx_home);
+        for (key, value) in env_vars {
+            cmd.env(key, value);
+        }
         cmd.arg("build");
         if release {
             cmd.arg("--release");

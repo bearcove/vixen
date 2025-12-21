@@ -240,6 +240,17 @@ The daemon uses picante for incremental computation.
 
 The `CacheKey` is an explicit blake3 hash computed by the `cache_key_compile_bin` query. This keeps CacheKey stable across picante internal changes.
 
+### Persistence
+
+Picante's incremental database is persisted to `~/.vx/picante.cache` (or `$VX_HOME/picante.cache`):
+- **On startup:** `load_cache()` restores memoized query results from disk
+- **After each build:** `save_cache()` persists the database
+
+This means:
+- Query results survive across vx invocations
+- Second build with unchanged inputs = zero query recomputation
+- Corrupt cache files are automatically deleted and rebuilt
+
 ### Inputs
 
 ```rust
@@ -336,6 +347,7 @@ CAS is global, shared across all projects. This enables cross-project cache reus
   blobs/<hh>/<hash>              # raw bytes
   manifests/<hh>/<hash>.json     # structured node output records
   cache/<hh>/<cachekey>          # contains manifest hash
+  picante.cache                  # picante incremental database
   tmp/                           # staging for atomic writes
 ```
 
@@ -367,12 +379,13 @@ CAS is global, shared across all projects. This enables cross-project cache reus
 
 ## Filesystem Layout
 
-**Global (shared CAS):**
+**Global (shared CAS + picante):**
 ```
 ~/.vx/
   blobs/<hh>/<hash>
   manifests/<hh>/<hash>.json
   cache/<hh>/<cachekey>
+  picante.cache
   tmp/
 ```
 
