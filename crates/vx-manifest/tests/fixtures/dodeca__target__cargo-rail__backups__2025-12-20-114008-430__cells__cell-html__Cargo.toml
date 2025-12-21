@@ -1,0 +1,29 @@
+[package]
+name = "cell-html"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[[bin]]
+name = "ddc-cell-html"
+path = "src/main.rs"
+
+[dependencies]
+# HTML parsing
+html5ever = "0.36"
+markup5ever_rcdom = "0.36.0"
+lol_html = "2.7"
+
+# Error handling
+color-eyre = "0.6"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+rapace-cell.workspace = true
+
+# Local protocol definitions
+cell-html-proto = { path = "../cell-html-proto" }

@@ -1,0 +1,24 @@
+[package]
+name = "cell-html-diff"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[[bin]]
+name = "ddc-cell-html-diff"
+path = "src/main.rs"
+
+[dependencies]
+# Protocol types
+dodeca-protocol = { path = "../../crates/dodeca-protocol" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+rapace-cell.workspace = true
+
+# Local protocol definitions
+cell-html-diff-proto = { path = "../cell-html-diff-proto" }

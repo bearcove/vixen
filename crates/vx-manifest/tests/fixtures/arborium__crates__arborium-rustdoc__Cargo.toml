@@ -1,0 +1,46 @@
+[package]
+name = "arborium-rustdoc"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Post-process rustdoc HTML output to add syntax highlighting for non-Rust code blocks"
+authors = ["Amos Wenger <amos@bearcove.eu>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/bearcove/arborium"
+homepage = "https://github.com/bearcove/arborium"
+documentation = "https://docs.rs/arborium-rustdoc"
+keywords = ["syntax-highlighting", "rustdoc", "docs-rs", "tree-sitter"]
+categories = ["development-tools", "text-processing"]
+
+[[bin]]
+name = "arborium-rustdoc"
+path = "src/main.rs"
+
+[dependencies]
+# Core arborium dependencies
+arborium = { version = "0.0.0", path = "../arborium", features = ["all-languages"] }
+arborium-theme = { version = "0.0.0", path = "../arborium-theme" }
+
+# HTML transformation
+lol_html = "2"
+
+# CLI
+facet = { git = "https://github.com/facet-rs/facet" }
+facet-args = { git = "https://github.com/facet-rs/facet" }
+
+# File walking
+walkdir = "2"
+
+# Parallel processing
+rayon = "1"
+
+# Error handling
+anyhow = "1"
+
+# Progress/output
+owo-colors = "4"
+indicatif = "0.17"
+
+# Fast directory cloning (uses clonefile on APFS)
+clonetree = "0"

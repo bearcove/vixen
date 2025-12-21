@@ -10,6 +10,8 @@
 //! - No features, no optional deps, no dev-deps/build-deps
 //! - No build.rs, proc-macros, tests/benches/examples
 
+pub mod full;
+
 use std::collections::HashMap;
 
 use camino::{Utf8Path, Utf8PathBuf};

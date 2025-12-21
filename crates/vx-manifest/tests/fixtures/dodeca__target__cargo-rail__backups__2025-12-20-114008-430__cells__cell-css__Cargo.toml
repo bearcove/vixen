@@ -1,0 +1,24 @@
+[package]
+name = "cell-css"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[[bin]]
+name = "ddc-cell-css"
+path = "src/main.rs"
+
+[dependencies]
+# CSS processing
+lightningcss = { version = "1.0.0-alpha.68", features = ["visitor"] }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+rapace-cell.workspace = true
+
+# Local protocol definitions
+cell-css-proto = { path = "../cell-css-proto" }

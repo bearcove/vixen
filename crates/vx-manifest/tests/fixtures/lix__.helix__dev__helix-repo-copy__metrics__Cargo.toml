@@ -1,0 +1,19 @@
+[package]
+name = "helix-metrics"
+version = "0.1.1"
+edition = "2024"
+authors = ["HelixDB Team"]
+repository = "https://github.com/HelixDB/helix-db"
+license = "AGPL-3.0"
+description = "Metrics for HelixDB"
+
+[dependencies]
+reqwest = "0.12.11"
+serde = { version = "1.0", features = ["derive"] }
+sonic-rs = "0.5.3"
+chrono = "0.4"
+uuid = { version = "1.18.0", features = ["v7", "fast-rng"] }
+tokio = { version = "1.39", features = ["full"] }
+async-trait = "0.1.88"
+flume = "0.11.1"
+num_cpus = "1.17.0"

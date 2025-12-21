@@ -1,0 +1,23 @@
+[package]
+name = "gingembre"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+authors = ["Amos Wenger <amos@bearcove.eu>"]
+license = "MIT OR Apache-2.0"
+description = "A Jinja-like template engine with rich diagnostics"
+repository = "https://github.com/bearcove/dodeca"
+keywords = ["template", "jinja", "templating"]
+categories = ["template-engine", "web-programming"]
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[dependencies]
+miette = { version = "7", features = ["fancy-no-backtrace"] }
+thiserror = "2"
+camino = "1"
+facet-value.workspace = true

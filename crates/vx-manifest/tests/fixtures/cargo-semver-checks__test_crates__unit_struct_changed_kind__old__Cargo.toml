@@ -1,0 +1,7 @@
+[package]
+publish = false
+name = "unit_struct_changed_kind"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]

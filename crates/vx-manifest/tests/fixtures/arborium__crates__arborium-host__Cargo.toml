@@ -1,0 +1,24 @@
+[package]
+name = "arborium-host"
+version = "0.0.0"
+edition = "2024"
+description = "WASM host for arborium syntax highlighting (browser)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bearcove/arborium"
+readme = "README.md"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dependencies]
+arborium-highlight = { version = "0.0.0", path = "../arborium-highlight" }
+wasm-bindgen = "=0.2.106"
+wasm-bindgen-futures = "=0.4.56"
+js-sys = "=0.3.83"
+
+[dependencies.web-sys]
+version = "=0.3.83"
+features = ["console"]

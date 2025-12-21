@@ -1,0 +1,24 @@
+[package]
+name = "cell-fonts"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[[bin]]
+name = "ddc-cell-fonts"
+path = "src/main.rs"
+
+[dependencies]
+# Font processing
+fontcull = { version = "2.0", default-features = false, features = ["static-analysis"] }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+rapace-cell.workspace = true
+
+# Local protocol definitions
+cell-fonts-proto = { path = "../cell-fonts-proto" }

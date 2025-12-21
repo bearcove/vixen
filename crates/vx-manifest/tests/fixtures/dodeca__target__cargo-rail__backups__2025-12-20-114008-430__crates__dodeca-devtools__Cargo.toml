@@ -1,0 +1,64 @@
+[package]
+name = "dodeca-devtools"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+description = "Dioxus-powered devtools overlay for dodeca"
+publish = false
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Dioxus for UI
+dioxus = { version = "0.7", features = ["signals"] }
+dioxus-web = "0.7"
+
+# Glade component library
+glade = { git = "https://github.com/bearcove/glade", features = ["web"] }
+
+# WASM bindings
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "console",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlLinkElement",
+    "Location",
+    "Node",
+    "NodeList",
+    "Window",
+    "WebSocket",
+    "MessageEvent",
+    "BinaryType",
+    "CloseEvent",
+    "ErrorEvent",
+] }
+js-sys = "0.3"
+
+# Serialization (facet-postcard via dodeca-protocol re-export)
+
+# Re-use DOM patching from livereload-client
+livereload-client = { path = "../livereload-client" }
+
+# Shared protocol types
+dodeca-protocol = { path = "../dodeca-protocol" }
+
+# Logging
+tracing = "0.1"
+tracing-wasm = "0.2"
+
+# Fix for WASM: getrandom needs wasm_js feature
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+
+[package.metadata.cargo-shear]
+ignored = ["getrandom"]

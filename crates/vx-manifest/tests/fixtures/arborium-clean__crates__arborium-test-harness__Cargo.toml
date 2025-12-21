@@ -1,0 +1,20 @@
+[package]
+name = "arborium-test-harness"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Test harness for arborium grammar crates"
+authors = ["Amos Wenger <amos@bearcove.eu>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/bearcove/arborium"
+homepage = "https://github.com/bearcove/arborium"
+documentation = "https://docs.rs/arborium-test-harness"
+keywords = ["syntax-highlighting", "tree-sitter", "testing"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+arborium-highlight = { version = "0.0.0", path = "../arborium-highlight", features = ["tree-sitter"] }
+arborium-theme = { version = "0.0.0", path = "../arborium-theme" }
+arborium-tree-sitter = { version = "0.0.0", path = "../arborium-tree-sitter" }
+tree-sitter-language = { version = "0.1", path = "../arborium-tree-sitter/language" }

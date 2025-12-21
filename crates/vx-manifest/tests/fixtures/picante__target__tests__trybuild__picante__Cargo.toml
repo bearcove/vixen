@@ -1,0 +1,134 @@
+[package]
+name = "picante-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["picante/default"]
+macros = ["picante/macros", "dep:picante-macros"]
+
+[dependencies.dashmap]
+workspace = true
+
+[dependencies.divan]
+workspace = true
+
+[dependencies.facet]
+workspace = true
+
+[dependencies.facet-diff]
+workspace = true
+
+[dependencies.facet-postcard]
+workspace = true
+
+[dependencies.futures]
+workspace = true
+
+[dependencies.im]
+workspace = true
+
+[dependencies.parking_lot]
+workspace = true
+
+[dependencies.picante]
+path = "/Users/amos/bearcove/picante/crates/picante/"
+default-features = false
+
+[dependencies.picante-macros]
+path = "/Users/amos/bearcove/picante/crates/picante/../picante-macros/"
+optional = true
+
+[dependencies.tokio]
+workspace = true
+
+[dependencies.tracing]
+workspace = true
+
+[dependencies.tracing-subscriber]
+workspace = true
+
+[[bin]]
+name = "picante-tests"
+path = "main.rs"
+
+[[bin]]
+name = "trybuild000"
+path = "/Users/amos/bearcove/picante/crates/picante/tests/ui/input_multiple_keys.rs"
+
+[[bin]]
+name = "trybuild001"
+path = "/Users/amos/bearcove/picante/crates/picante/tests/ui/interned_generics.rs"
+
+[[bin]]
+name = "trybuild002"
+path = "/Users/amos/bearcove/picante/crates/picante/tests/ui/tracked_missing_db.rs"
+
+[[bin]]
+name = "trybuild003"
+path = "/Users/amos/bearcove/picante/crates/picante/tests/ui/tracked_multiple_generics.rs"
+
+[[bin]]
+name = "trybuild004"
+path = "/Users/amos/bearcove/picante/crates/picante/tests/ui/tracked_no_generic.rs"
+
+[workspace.dependencies.dashmap]
+version = "5.5.3"
+default-features = true
+
+[workspace.dependencies.divan]
+version = "0.1"
+default-features = true
+
+[workspace.dependencies.facet]
+version = "0.32.2"
+default-features = true
+
+[workspace.dependencies.facet-diff]
+version = "0.32.2"
+default-features = true
+
+[workspace.dependencies.facet-postcard]
+version = "0.32.2"
+default-features = true
+
+[workspace.dependencies.futures]
+version = "0.3.31"
+default-features = true
+
+[workspace.dependencies.heck]
+version = "0.5.0"
+default-features = true
+
+[workspace.dependencies.im]
+version = "15.1.0"
+default-features = true
+
+[workspace.dependencies.parking_lot]
+version = "0.12.4"
+default-features = true
+
+[workspace.dependencies.proc-macro2]
+version = "1.0.101"
+default-features = true
+
+[workspace.dependencies.quote]
+version = "1.0.41"
+default-features = true
+
+[workspace.dependencies.tokio]
+version = "1.48.0"
+features = ["fs", "macros", "rt", "sync", "time"]
+
+[workspace.dependencies.tracing]
+version = "0.1.41"
+default-features = true
+
+[workspace.dependencies.tracing-subscriber]
+version = "0.3.20"
+default-features = true
+
+[workspace.dependencies.unsynn]
+version = "0.3.0"
+default-features = true

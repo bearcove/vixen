@@ -1,0 +1,22 @@
+[package]
+name = "helix-macros"
+version = "0.1.7"
+edition = "2024"
+authors = ["HelixDB Team"]
+repository = "https://github.com/HelixDB/helix-db"
+license = "AGPL-3.0"
+description = "Proc macros for HelixDB"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0.104", features = ["full"] }
+quote = "1.0.40"
+proc-macro2 = "1.0.95"
+dirs = "5.0.1"
+
+[features]
+debug-output = []
+default = []
+
