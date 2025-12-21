@@ -84,16 +84,21 @@ pub struct RlibOutput {
     pub rlib_path: String,
 }
 
-/// A dependency edge for bin crate cache key computation.
+/// A dependency edge for bin/rlib cache key computation and reporting.
 ///
-/// This is used to explicitly pass dep outputs to the bin cache key query.
+/// This is used to explicitly pass dep outputs to cache key queries and
+/// to populate DependencyRecord in build reports.
 /// Sorted by extern_name for determinism.
 #[derive(Debug, Clone)]
 pub struct DepOutput {
     /// Extern crate name (used in --extern)
     pub extern_name: String,
+    /// Unique crate identifier
+    pub crate_id: CrateId,
     /// Blake3 hash of the dependency's rlib
     pub rlib_hash: Blake3Hash,
+    /// Manifest hash from CAS (set after the dep is published)
+    pub manifest_hash: Option<Blake3Hash>,
 }
 
 /// The parsed Cargo.toml manifest (singleton)
@@ -1285,6 +1290,7 @@ impl DaemonService {
                     execute_ms: 0,
                 },
                 inputs,
+                deps: Vec::new(),  // No deps for single-crate builds
                 outputs: cached_manifest
                     .outputs
                     .iter()
@@ -1365,6 +1371,7 @@ impl DaemonService {
                     execute_ms: duration.as_millis() as u64,
                 },
                 inputs,
+                deps: Vec::new(),  // No deps for single-crate builds
                 outputs: vec![],
                 invocation: Some(InvocationRecord {
                     program: invocation.program.clone(),
@@ -1436,6 +1443,7 @@ impl DaemonService {
                 execute_ms: duration.as_millis() as u64,
             },
             inputs,
+            deps: Vec::new(),  // No deps for single-crate builds
             outputs: vec![OutputRecord {
                 logical: "bin".to_string(),
                 manifest: Some(manifest_hash.to_hex()),
@@ -1591,7 +1599,7 @@ impl DaemonService {
             match crate_node.crate_type {
                 CrateType::Lib => {
                     // Collect dependency outputs for this lib crate (sorted by extern_name)
-                    let mut dep_rlib_hashes: Vec<(String, Blake3Hash)> = Vec::new();
+                    let mut deps: Vec<DepOutput> = Vec::new();
                     let mut dep_extern_paths: Vec<(String, String)> = Vec::new();
 
                     for dep in &crate_node.deps {
@@ -1602,12 +1610,17 @@ impl DaemonService {
                                     dep.extern_name, crate_node.crate_name
                                 )
                             })?;
-                        dep_rlib_hashes.push((dep.extern_name.clone(), *rlib_hash));
+                        deps.push(DepOutput {
+                            extern_name: dep.extern_name.clone(),
+                            crate_id: dep.crate_id,
+                            rlib_hash: *rlib_hash,
+                            manifest_hash: None,  // Will be populated after build
+                        });
                         dep_extern_paths.push((dep.extern_name.clone(), rlib_path.clone()));
                     }
 
                     // Sort for determinism
-                    dep_rlib_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+                    deps.sort_by(|a, b| a.extern_name.cmp(&b.extern_name));
                     dep_extern_paths.sort_by(|a, b| a.0.cmp(&b.0));
 
                     // Build library crate
@@ -1615,7 +1628,7 @@ impl DaemonService {
                         .build_rlib(
                             &*db,
                             rust_crate.clone(),
-                            dep_rlib_hashes,
+                            deps,
                             dep_extern_paths,
                             &graph.workspace_root,
                             &target_triple,
@@ -1639,7 +1652,7 @@ impl DaemonService {
 
                 CrateType::Bin => {
                     // Collect dependency outputs (sorted by extern_name)
-                    let mut dep_rlib_hashes: Vec<(String, Blake3Hash)> = Vec::new();
+                    let mut deps: Vec<DepOutput> = Vec::new();
                     let mut dep_extern_paths: Vec<(String, String)> = Vec::new();
 
                     for dep in &crate_node.deps {
@@ -1650,12 +1663,17 @@ impl DaemonService {
                                     dep.extern_name, crate_node.crate_name
                                 )
                             })?;
-                        dep_rlib_hashes.push((dep.extern_name.clone(), *rlib_hash));
+                        deps.push(DepOutput {
+                            extern_name: dep.extern_name.clone(),
+                            crate_id: dep.crate_id,
+                            rlib_hash: *rlib_hash,
+                            manifest_hash: None,  // Will be populated after build
+                        });
                         dep_extern_paths.push((dep.extern_name.clone(), rlib_path.clone()));
                     }
 
                     // Sort for determinism (should already be sorted, but be safe)
-                    dep_rlib_hashes.sort_by(|a, b| a.0.cmp(&b.0));
+                    deps.sort_by(|a, b| a.extern_name.cmp(&b.extern_name));
                     dep_extern_paths.sort_by(|a, b| a.0.cmp(&b.0));
 
                     // Build binary crate
@@ -1663,7 +1681,7 @@ impl DaemonService {
                         .build_bin_with_deps(
                             &*db,
                             rust_crate.clone(),
-                            dep_rlib_hashes,
+                            deps,
                             dep_extern_paths,
                             &graph.workspace_root,
                             &target_triple,
@@ -1726,7 +1744,7 @@ impl DaemonService {
         &self,
         db: &Database,
         rust_crate: RustCrate,
-        dep_rlib_hashes: Vec<(String, Blake3Hash)>,
+        deps: Vec<DepOutput>,
         dep_extern_paths: Vec<(String, String)>,
         workspace_root: &Utf8PathBuf,
         target_triple: &str,
@@ -1741,6 +1759,12 @@ impl DaemonService {
         let closure_hash = rust_crate
             .source_closure_hash(db)
             .map_err(|e| format!("picante error: {}", e))?;
+
+        // Extract (extern_name, rlib_hash) tuples for cache key computation
+        let dep_rlib_hashes: Vec<(String, Blake3Hash)> = deps
+            .iter()
+            .map(|d| (d.extern_name.clone(), d.rlib_hash))
+            .collect();
 
         // Compute cache key (use _with_deps version if there are dependencies)
         let cache_key = if dep_rlib_hashes.is_empty() {
@@ -1770,7 +1794,7 @@ impl DaemonService {
         std::fs::create_dir_all(&output_dir_abs)
             .map_err(|e| format!("failed to create output dir: {}", e))?;
 
-        let inputs = vec![
+        let mut inputs = vec![
             InputRecord {
                 label: "source_closure".to_string(),
                 value: closure_hash.to_hex(),
@@ -1780,6 +1804,25 @@ impl DaemonService {
                 value: crate_name.to_string(),
             },
         ];
+
+        // Add dep hashes to inputs (for backward compat with RunDiff)
+        for (extern_name, rlib_hash) in &dep_rlib_hashes {
+            inputs.push(InputRecord {
+                label: format!("dep:{}", extern_name),
+                value: rlib_hash.to_hex(),
+            });
+        }
+
+        // Create DependencyRecords for the report
+        let dep_records: Vec<vx_report::DependencyRecord> = deps
+            .iter()
+            .map(|d| vx_report::DependencyRecord {
+                extern_name: d.extern_name.clone(),
+                crate_id: d.crate_id.0.to_hex(),
+                rlib_hash: d.rlib_hash.to_hex(),
+                manifest_hash: d.manifest_hash.as_ref().map(|h| h.to_hex()).unwrap_or_else(|| "pending".to_string()),
+            })
+            .collect();
 
         // Check cache
         if let Some(cached_manifest_hash) = self.cas.lookup(cache_key).await {
@@ -1805,6 +1848,7 @@ impl DaemonService {
                                     execute_ms: 0,
                                 },
                                 inputs,
+                                deps: dep_records.clone(),
                                 outputs: vec![OutputRecord {
                                     logical: "rlib".to_string(),
                                     manifest: Some(cached_manifest_hash.to_hex()),
@@ -1880,6 +1924,7 @@ impl DaemonService {
                 execute_ms: duration.as_millis() as u64,
             },
             inputs,
+            deps: dep_records,
             outputs: vec![OutputRecord {
                 logical: "rlib".to_string(),
                 manifest: Some(manifest_hash.to_hex()),
@@ -1905,7 +1950,7 @@ impl DaemonService {
         &self,
         db: &Database,
         rust_crate: RustCrate,
-        dep_rlib_hashes: Vec<(String, Blake3Hash)>,
+        deps: Vec<DepOutput>,
         dep_extern_paths: Vec<(String, String)>,
         workspace_root: &Utf8PathBuf,
         target_triple: &str,
@@ -1917,6 +1962,12 @@ impl DaemonService {
         let closure_hash = rust_crate
             .source_closure_hash(db)
             .map_err(|e| format!("picante error: {}", e))?;
+
+        // Extract (extern_name, rlib_hash) tuples for cache key computation
+        let dep_rlib_hashes: Vec<(String, Blake3Hash)> = deps
+            .iter()
+            .map(|d| (d.extern_name.clone(), d.rlib_hash))
+            .collect();
 
         // Compute cache key (includes dep hashes!)
         let cache_key =
@@ -1947,13 +1998,24 @@ impl DaemonService {
             },
         ];
 
-        // Add dep hashes to inputs
+        // Add dep hashes to inputs (for backward compat with RunDiff)
         for (extern_name, rlib_hash) in &dep_rlib_hashes {
             inputs.push(InputRecord {
                 label: format!("dep:{}", extern_name),
                 value: rlib_hash.to_hex(),
             });
         }
+
+        // Create DependencyRecords for the report
+        let dep_records: Vec<vx_report::DependencyRecord> = deps
+            .iter()
+            .map(|d| vx_report::DependencyRecord {
+                extern_name: d.extern_name.clone(),
+                crate_id: d.crate_id.0.to_hex(),
+                rlib_hash: d.rlib_hash.to_hex(),
+                manifest_hash: d.manifest_hash.as_ref().map(|h| h.to_hex()).unwrap_or_else(|| "pending".to_string()),
+            })
+            .collect();
 
         // Check cache
         if let Some(cached_manifest_hash) = self.cas.lookup(cache_key).await {
@@ -1978,6 +2040,7 @@ impl DaemonService {
                                     execute_ms: 0,
                                 },
                                 inputs,
+                                deps: dep_records.clone(),
                                 outputs: vec![OutputRecord {
                                     logical: "bin".to_string(),
                                     manifest: Some(cached_manifest_hash.to_hex()),
@@ -2046,6 +2109,7 @@ impl DaemonService {
                 execute_ms: duration.as_millis() as u64,
             },
             inputs,
+            deps: dep_records,
             outputs: vec![OutputRecord {
                 logical: "bin".to_string(),
                 manifest: Some(manifest_hash.to_hex()),

@@ -241,6 +241,8 @@ pub struct NodeReport {
 
     /// Inputs that contributed to the cache key
     pub inputs: Vec<InputRecord>,
+    /// Dependencies used (for nodes with dependencies)
+    pub deps: Vec<DependencyRecord>,
     /// Outputs produced (with hashes)
     pub outputs: Vec<OutputRecord>,
     /// Invocation details (if executed)
@@ -311,6 +313,22 @@ pub struct InputRecord {
     pub label: String,
     /// Value of the input (hash, version string, etc.)
     pub value: String,
+}
+
+/// Record of a dependency used by a node.
+///
+/// This captures the full provenance of a dependency: what it's called,
+/// what crate it is, and the exact rlib + manifest hashes that were used.
+#[derive(Debug, Clone, Facet)]
+pub struct DependencyRecord {
+    /// Extern crate name (as used in --extern)
+    pub extern_name: String,
+    /// Unique crate identifier (hex)
+    pub crate_id: String,
+    /// Blake3 hash of the rlib file (hex)
+    pub rlib_hash: String,
+    /// Manifest hash from CAS (hex)
+    pub manifest_hash: String,
 }
 
 /// Record of an output produced by a node.
