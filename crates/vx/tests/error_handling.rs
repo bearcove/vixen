@@ -101,36 +101,3 @@ proc-macro = true
 
     assert!(!result.success, "build should fail with proc-macro");
 }
-
-#[test]
-#[ignore = "not yet implemented - requires mod parsing"]
-fn rejects_multi_file_crates() {
-    let env = TestEnv::new();
-    env.write_file(
-        "Cargo.toml",
-        r#"[package]
-name = "multifile"
-version = "0.1.0"
-edition = "2021"
-"#,
-    );
-    env.write_file(
-        "src/main.rs",
-        r#"mod other;
-fn main() { other::hello(); }
-"#,
-    );
-    env.write_file(
-        "src/other.rs",
-        r#"pub fn hello() { println!("hello"); }
-"#,
-    );
-
-    let result = env.build(false);
-
-    assert!(!result.success, "build should fail with multi-file crate");
-    assert!(
-        result.contains("mod") || result.contains("single-file"),
-        "error should mention single-file restriction"
-    );
-}

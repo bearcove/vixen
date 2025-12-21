@@ -2759,6 +2759,7 @@ dependencies = [
  "vx-execd",
  "vx-manifest",
  "vx-report",
+ "vx-rs",
  "vx-toolchain",
 ]
 
