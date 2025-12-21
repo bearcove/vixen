@@ -1,12 +1,13 @@
 //! Basic cache correctness tests
 //!
 //! These tests verify fundamental caching behavior:
-//! - Fresh builds work
+//! - Fresh builds work (single and multi-file)
 //! - Second build is a cache hit
 //! - Source/profile/edition changes cause cache miss
+//! - Changes to any module in the closure cause cache miss
 
 mod harness;
-use harness::{TestEnv, create_hello_world};
+use harness::{create_hello_world, TestEnv};
 
 #[test]
 fn fresh_build_succeeds() {
@@ -139,6 +140,104 @@ fn clean_removes_project_local_vx_dir() {
 
     // Check .vx is gone
     assert!(!env.file_exists(".vx"), ".vx should not exist after clean");
+}
+
+#[test]
+fn multi_file_crate_builds_successfully() {
+    // This test verifies that crates with multiple source files
+    // (using mod declarations) build correctly.
+    let env = TestEnv::new();
+
+    env.write_file(
+        "Cargo.toml",
+        r#"[package]
+name = "multifile"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    env.write_file(
+        "src/main.rs",
+        r#"mod greeter;
+
+fn main() {
+    greeter::say_hello();
+}
+"#,
+    );
+    env.write_file(
+        "src/greeter.rs",
+        r#"pub fn say_hello() {
+    println!("Hello from greeter module!");
+}
+"#,
+    );
+
+    let result = env.build(false);
+    assert!(
+        result.success,
+        "multi-file build failed: {}\n{}",
+        result.stdout, result.stderr
+    );
+}
+
+#[test]
+fn module_change_causes_cache_miss() {
+    // This test verifies that changing a non-main module file
+    // correctly invalidates the cache.
+    let env = TestEnv::new();
+
+    env.write_file(
+        "Cargo.toml",
+        r#"[package]
+name = "multifile"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    env.write_file(
+        "src/main.rs",
+        r#"mod helper;
+
+fn main() {
+    helper::greet();
+}
+"#,
+    );
+    env.write_file(
+        "src/helper.rs",
+        r#"pub fn greet() {
+    println!("Hello!");
+}
+"#,
+    );
+
+    // First build
+    let result1 = env.build(false);
+    assert!(result1.success, "first build failed");
+    assert!(!result1.was_cached(), "first build should not be cached");
+
+    // Second build — should be cached
+    let result2 = env.build(false);
+    assert!(result2.success, "second build failed");
+    assert!(result2.was_cached(), "second build should be cached");
+
+    // Modify the helper module (not main.rs)
+    env.write_file(
+        "src/helper.rs",
+        r#"pub fn greet() {
+    println!("Hello, modified!");
+}
+"#,
+    );
+
+    // Third build — should NOT be cached
+    let result3 = env.build(false);
+    assert!(result3.success, "third build failed");
+    assert!(
+        !result3.was_cached(),
+        "build after module change should not be cached"
+    );
 }
 
 #[test]
