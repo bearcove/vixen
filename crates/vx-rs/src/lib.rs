@@ -8,9 +8,10 @@ pub mod crate_graph;
 pub mod depfile;
 pub mod input_set;
 pub mod module_scanner;
+pub mod snapshot;
 
 pub use crate_graph::{CrateGraph, CrateGraphError, CrateId, CrateNode, CrateType, DepEdge};
-pub use depfile::{DepfileError, parse_depfile, parse_depfile_content};
+pub use depfile::{normalize_dep_path, DepfileError, parse_depfile, parse_depfile_content};
 pub use input_set::{
     build_input_set_from_depinfo, classify_path, DeclaredExternal, GeneratedFile, InputSet,
     PathClassification, ToolchainFile, WorkspaceFile,
@@ -18,4 +19,7 @@ pub use input_set::{
 pub use module_scanner::{
     ModDecl, ModuleError, hash_source_closure, resolve_mod_path, rust_source_closure,
     scan_mod_decls, validate_mod_decls,
+};
+pub use snapshot::{
+    build_maximalist_snapshot, SnapshotEntry, SnapshotError, SnapshotManifest,
 };

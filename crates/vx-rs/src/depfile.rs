@@ -24,11 +24,13 @@
 //! use vx_rs::depfile::parse_depfile;
 //! use camino::Utf8Path;
 //!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let deps = parse_depfile(Utf8Path::new("target/debug/libfoo.d"))?;
 //! for dep in deps {
 //!     println!("Dependency: {}", dep);
 //! }
-//! # Ok::<(), std::io::Error>(())
+//! # Ok(())
+//! # }
 //! ```
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -46,6 +48,31 @@ pub enum DepfileError {
 
     #[error("invalid UTF-8 in depfile: {path}")]
     InvalidUtf8 { path: Utf8PathBuf },
+}
+
+/// Normalize a dependency path to workspace-relative form
+///
+/// This is used after parsing dep-info from a remote execd run.
+/// The remote workspace was materialized at `remote_workspace_root`,
+/// and we want to convert absolute paths back to workspace-relative.
+///
+/// # Arguments
+///
+/// * `dep_path` - Absolute path from dep-info
+/// * `remote_workspace_root` - Where the workspace was materialized remotely
+///
+/// # Returns
+///
+/// The workspace-relative path if the dep was under the workspace,
+/// otherwise returns the original path unchanged (for toolchain files, etc.)
+pub fn normalize_dep_path(
+    dep_path: &Utf8Path,
+    remote_workspace_root: &Utf8Path,
+) -> Utf8PathBuf {
+    dep_path
+        .strip_prefix(remote_workspace_root)
+        .map(|p| p.to_owned())
+        .unwrap_or_else(|_| dep_path.to_owned())
 }
 
 /// Parse a Makefile-style dependency file and return all dependency paths.
@@ -238,5 +265,26 @@ mod tests {
         let content = "target.o:";
         let deps = parse_depfile_content(content);
         assert_eq!(deps.len(), 0);
+    }
+
+    #[test]
+    fn test_normalize_dep_path_under_workspace() {
+        let dep = Utf8Path::new("/tmp/vx-sandbox-12345/src/lib.rs");
+        let remote_ws = Utf8Path::new("/tmp/vx-sandbox-12345");
+
+        let normalized = normalize_dep_path(dep, remote_ws);
+
+        assert_eq!(normalized, Utf8PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_normalize_dep_path_outside_workspace() {
+        let dep = Utf8Path::new("/Users/user/.rustup/toolchains/stable/lib/libstd.rlib");
+        let remote_ws = Utf8Path::new("/tmp/vx-sandbox-12345");
+
+        let normalized = normalize_dep_path(dep, remote_ws);
+
+        // Should remain unchanged
+        assert_eq!(normalized, dep);
     }
 }
