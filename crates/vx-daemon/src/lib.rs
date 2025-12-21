@@ -20,7 +20,7 @@ use vx_cas_proto::{Blake3Hash, CacheKey, Cas, NodeId, NodeManifest, OutputEntry}
 use vx_casd::CasService;
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
 use vx_exec_proto::{ExpectedOutput, RustcInvocation};
-use vx_manifest::{Edition, Manifest};
+use vx_manifest::Edition;
 use vx_report::{
     BuildReport, CacheOutcome, DiagnosticsRecord, InputRecord, InvocationRecord, MissReason,
     NodeReport, NodeTiming, OutputRecord, ReportStore, ToolchainRef, ToolchainsUsed,
@@ -115,28 +115,36 @@ pub struct CargoToml {
 }
 
 /// The rustc version info (singleton) - DEPRECATED, use RustToolchain instead
-#[picante::input]
-pub struct RustcVersion {
-    /// Full `rustc -vV` output (includes version, commit, LLVM version, host)
-    pub version_string: String,
-}
-
 // =============================================================================
-// HERMETIC TOOLCHAIN INPUTS
+// HERMETIC TOOLCHAIN INPUTS (per "Toolchains are CAS artifacts" spec)
 // =============================================================================
 
-/// Rust toolchain identity (singleton)
+/// Rust toolchain identity (singleton picante input)
 ///
 /// This represents a hermetically acquired Rust toolchain from static.rust-lang.org.
-/// The toolchain_id is a content-derived hash of rustc + rust-std tarballs.
+/// The toolchain_id is derived from publisher SHA256s + host/target triples.
+///
+/// NOTE: Paths are NOT stored here - they are machine-specific and derived
+/// at runtime from materialization. Only identity and provenance are recorded.
 #[picante::input]
 pub struct RustToolchain {
-    /// Content-derived toolchain identifier (hash of rustc + rust-std)
+    /// Content-derived toolchain identifier
     pub toolchain_id: Blake3Hash,
-    /// Rustc version string (e.g., "1.76.0")
-    pub rustc_version: String,
-    /// Channel manifest date
-    pub manifest_date: String,
+    /// CAS blob hash of the ToolchainManifest (for provenance)
+    pub toolchain_manifest: Blake3Hash,
+    /// Host triple (e.g., "aarch64-apple-darwin")
+    pub host: String,
+    /// Target triple (e.g., "aarch64-apple-darwin")
+    pub target: String,
+}
+
+/// Materialized Rust toolchain paths (runtime state, NOT part of cache key)
+///
+/// These paths are machine-specific and derived from toolchain materialization.
+/// They are stored separately from RustToolchain identity to ensure cache keys
+/// only depend on content identity, not local filesystem layout.
+#[picante::input]
+pub struct RustToolchainPaths {
     /// Path to the materialized rustc binary
     pub rustc_path: String,
     /// Path to the sysroot directory
@@ -227,17 +235,12 @@ pub async fn cache_key_compile_bin<DB: Db>(db: &DB) -> PicanteResult<CacheKey> {
     hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
-    // Use hermetic RustToolchain if available, otherwise fall back to RustcVersion
-    if let Some(toolchain) = RustToolchain::get(db)? {
-        hasher.update(b"rust_toolchain:");
-        hasher.update(&toolchain.toolchain_id.0);
-        hasher.update(b"\n");
-    } else {
-        let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
-        hasher.update(b"rustc:");
-        hasher.update(rustc.version_string.as_bytes());
-        hasher.update(b"\n");
-    }
+    // Hermetic RustToolchain is required (no fallback to system rustc)
+    let toolchain =
+        RustToolchain::get(db)?.expect("RustToolchain not set - hermetic toolchain required");
+    hasher.update(b"rust_toolchain:");
+    hasher.update(&toolchain.toolchain_id.0);
+    hasher.update(b"\n");
 
     hasher.update(b"target:");
     hasher.update(config.target_triple.as_bytes());
@@ -277,16 +280,9 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
     let cargo = CargoToml::get(db)?.expect("CargoToml not set");
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
-    // Determine rustc program and env based on hermetic toolchain availability
-    let (program, env) = if let Some(toolchain) = RustToolchain::get(db)? {
-        // Use hermetic rustc with explicit sysroot
-        (
-            toolchain.rustc_path.clone(),
-            vec![("RUSTC_SYSROOT".to_string(), toolchain.sysroot_path.clone())],
-        )
-    } else {
-        ("rustc".to_string(), vec![])
-    };
+    // Hermetic toolchain paths are required
+    let paths = RustToolchainPaths::get(db)?
+        .expect("RustToolchainPaths not set - hermetic toolchain required");
 
     let output_dir = format!(".vx/build/{}/{}", config.target_triple, config.profile);
     let output_path = format!("{}/{}", output_dir, cargo.name);
@@ -320,11 +316,9 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
         args.push("opt-level=3".to_string());
     }
 
-    // Add sysroot if using hermetic toolchain
-    if let Some(toolchain) = RustToolchain::get(db)? {
-        args.push("--sysroot".to_string());
-        args.push(toolchain.sysroot_path.clone());
-    }
+    // Add sysroot for hermetic toolchain
+    args.push("--sysroot".to_string());
+    args.push(paths.sysroot_path.clone());
 
     let expected_outputs = vec![ExpectedOutput {
         logical: "bin".to_string(),
@@ -333,9 +327,9 @@ pub async fn plan_compile_bin<DB: Db>(db: &DB) -> PicanteResult<RustcInvocation>
     }];
 
     Ok(RustcInvocation {
-        program,
+        program: paths.rustc_path.clone(),
         args,
-        env,
+        env: vec![],
         cwd: config.workspace_root.clone(),
         expected_outputs,
     })
@@ -387,17 +381,12 @@ pub async fn cache_key_compile_rlib<DB: Db>(
     hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
-    // Use hermetic RustToolchain if available, otherwise fall back to RustcVersion
-    if let Some(toolchain) = RustToolchain::get(db)? {
-        hasher.update(b"rust_toolchain:");
-        hasher.update(&toolchain.toolchain_id.0);
-        hasher.update(b"\n");
-    } else {
-        let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
-        hasher.update(b"rustc:");
-        hasher.update(rustc.version_string.as_bytes());
-        hasher.update(b"\n");
-    }
+    // Hermetic RustToolchain is required (no fallback to system rustc)
+    let toolchain =
+        RustToolchain::get(db)?.expect("RustToolchain not set - hermetic toolchain required");
+    hasher.update(b"rust_toolchain:");
+    hasher.update(&toolchain.toolchain_id.0);
+    hasher.update(b"\n");
 
     hasher.update(b"target:");
     hasher.update(config.target_triple.as_bytes());
@@ -436,15 +425,9 @@ pub async fn plan_compile_rlib<DB: Db>(
 
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
-    // Determine rustc program and env based on hermetic toolchain availability
-    let (program, env) = if let Some(toolchain) = RustToolchain::get(db)? {
-        (
-            toolchain.rustc_path.clone(),
-            vec![("RUSTC_SYSROOT".to_string(), toolchain.sysroot_path.clone())],
-        )
-    } else {
-        ("rustc".to_string(), vec![])
-    };
+    // Hermetic toolchain paths are required
+    let paths = RustToolchainPaths::get(db)?
+        .expect("RustToolchainPaths not set - hermetic toolchain required");
 
     let crate_id = crate_info.crate_id(db)?;
     let crate_name = crate_info.crate_name(db)?;
@@ -473,17 +456,13 @@ pub async fn plan_compile_rlib<DB: Db>(
         crate_root.to_string(),
         "-o".to_string(),
         output_path.clone(),
+        "--sysroot".to_string(),
+        paths.sysroot_path.to_string(),
     ];
 
     if &*config.profile == "release" {
         args.push("-C".to_string());
         args.push("opt-level=3".to_string());
-    }
-
-    // Add sysroot if using hermetic toolchain
-    if let Some(toolchain) = RustToolchain::get(db)? {
-        args.push("--sysroot".to_string());
-        args.push(toolchain.sysroot_path.clone());
     }
 
     let expected_outputs = vec![ExpectedOutput {
@@ -493,9 +472,9 @@ pub async fn plan_compile_rlib<DB: Db>(
     }];
 
     Ok(RustcInvocation {
-        program,
+        program: paths.rustc_path.to_string(),
         args,
-        env,
+        env: vec![],
         cwd: config.workspace_root.to_string(),
         expected_outputs,
     })
@@ -539,17 +518,12 @@ pub async fn cache_key_compile_rlib_with_deps<DB: Db>(
     hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
-    // Use hermetic RustToolchain if available, otherwise fall back to RustcVersion
-    if let Some(toolchain) = RustToolchain::get(db)? {
-        hasher.update(b"rust_toolchain:");
-        hasher.update(&toolchain.toolchain_id.0);
-        hasher.update(b"\n");
-    } else {
-        let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
-        hasher.update(b"rustc:");
-        hasher.update(rustc.version_string.as_bytes());
-        hasher.update(b"\n");
-    }
+    // Hermetic RustToolchain is required (no fallback to system rustc)
+    let toolchain =
+        RustToolchain::get(db)?.expect("RustToolchain not set - hermetic toolchain required");
+    hasher.update(b"rust_toolchain:");
+    hasher.update(&toolchain.toolchain_id.0);
+    hasher.update(b"\n");
 
     hasher.update(b"target:");
     hasher.update(config.target_triple.as_bytes());
@@ -598,6 +572,10 @@ pub async fn plan_compile_rlib_with_deps<DB: Db>(
 
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
+    // Hermetic toolchain paths are required
+    let paths = RustToolchainPaths::get(db)?
+        .expect("RustToolchainPaths not set - hermetic toolchain required");
+
     let crate_id = crate_info.crate_id(db)?;
     let crate_name = crate_info.crate_name(db)?;
     let edition = crate_info.edition(db)?;
@@ -625,6 +603,8 @@ pub async fn plan_compile_rlib_with_deps<DB: Db>(
         crate_root.to_string(),
         "-o".to_string(),
         output_path.clone(),
+        "--sysroot".to_string(),
+        paths.sysroot_path.to_string(),
     ];
 
     // Add --extern flags for dependencies
@@ -645,7 +625,7 @@ pub async fn plan_compile_rlib_with_deps<DB: Db>(
     }];
 
     Ok(RustcInvocation {
-        program: "rustc".to_string(),
+        program: paths.rustc_path.to_string(),
         args,
         env: vec![],
         cwd: config.workspace_root.to_string(),
@@ -680,17 +660,12 @@ pub async fn cache_key_compile_bin_with_deps<DB: Db>(
     hasher.update(&vx_cas_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
-    // Use hermetic RustToolchain if available, otherwise fall back to RustcVersion
-    if let Some(toolchain) = RustToolchain::get(db)? {
-        hasher.update(b"rust_toolchain:");
-        hasher.update(&toolchain.toolchain_id.0);
-        hasher.update(b"\n");
-    } else {
-        let rustc = RustcVersion::get(db)?.expect("RustcVersion not set");
-        hasher.update(b"rustc:");
-        hasher.update(rustc.version_string.as_bytes());
-        hasher.update(b"\n");
-    }
+    // Hermetic RustToolchain is required (no fallback to system rustc)
+    let toolchain =
+        RustToolchain::get(db)?.expect("RustToolchain not set - hermetic toolchain required");
+    hasher.update(b"rust_toolchain:");
+    hasher.update(&toolchain.toolchain_id.0);
+    hasher.update(b"\n");
 
     hasher.update(b"target:");
     hasher.update(config.target_triple.as_bytes());
@@ -741,6 +716,10 @@ pub async fn plan_compile_bin_with_deps<DB: Db>(
 
     let config = BuildConfig::get(db)?.expect("BuildConfig not set");
 
+    // Hermetic toolchain paths are required
+    let paths = RustToolchainPaths::get(db)?
+        .expect("RustToolchainPaths not set - hermetic toolchain required");
+
     let crate_name = crate_info.crate_name(db)?;
     let edition = crate_info.edition(db)?;
     let crate_root = crate_info.crate_root_rel(db)?;
@@ -763,6 +742,8 @@ pub async fn plan_compile_bin_with_deps<DB: Db>(
         crate_root.to_string(),
         "-o".to_string(),
         output_path.clone(),
+        "--sysroot".to_string(),
+        paths.sysroot_path.to_string(),
     ];
 
     // Add --extern flags for dependencies (sorted for determinism)
@@ -783,7 +764,7 @@ pub async fn plan_compile_bin_with_deps<DB: Db>(
     }];
 
     Ok(RustcInvocation {
-        program: "rustc".to_string(),
+        program: paths.rustc_path.to_string(),
         args,
         env: vec![],
         cwd: config.workspace_root.to_string(),
@@ -1125,10 +1106,10 @@ pub async fn node_id_cc_link<DB: Db>(db: &DB, target: CTarget) -> PicanteResult<
     inputs(
         SourceClosure,
         CargoToml,
-        RustcVersion,
         BuildConfig,
-        // Hermetic toolchain inputs
+        // Hermetic toolchain inputs (per "Toolchains are CAS artifacts" spec)
         RustToolchain,
+        RustToolchainPaths,
         ZigToolchain,
         // Multi-crate Rust inputs
         RustCrate,
@@ -1424,382 +1405,30 @@ impl DaemonService {
         Ok(())
     }
 
-    /// Internal build implementation
-    async fn do_build(&self, request: BuildRequest) -> Result<BuildResult, String> {
-        let project_path = &request.project_path;
-        let cargo_toml_path = project_path.join("Cargo.toml");
-
-        if !cargo_toml_path.exists() {
-            return Ok(BuildResult {
-                success: false,
-                message: format!("no Cargo.toml found in {}", project_path),
-                cached: false,
-                duration_ms: 0,
-                output_path: None,
-                error: Some("Cargo.toml not found".to_string()),
-            });
-        }
-
-        // Parse manifest
-        let manifest = Manifest::from_path(&cargo_toml_path)
-            .map_err(|e| format!("failed to parse Cargo.toml: {}", e))?;
-
-        // Reject ambient RUSTFLAGS - vx uses a clean environment for hermeticity.
-        // Users must configure flags through vx-specific config (future feature).
-        reject_ambient_rustflags()?;
-
-        // Get rustc version and target triple
-        let rustc_version = get_rustc_version().map_err(|e| e.to_string())?;
-        let target_triple = get_target_triple().map_err(|e| e.to_string())?;
-
-        let profile = if request.release { "release" } else { "debug" };
-
-        // Initialize build report
-        let mut build_report = BuildReport::new(
-            project_path.to_string(),
-            profile.to_string(),
-            target_triple.clone(),
-        );
-
-        // Record toolchain info
-        build_report.toolchains = ToolchainsUsed {
-            rust: Some(ToolchainRef {
-                id: Blake3Hash::from_bytes(rustc_version.as_bytes()).to_hex(),
-                version: extract_rustc_version(&rustc_version),
-            }),
-            zig: None, // Not used for Rust builds
-        };
-
-        // Get the binary target (required for single-crate builds)
-        let bin_target = manifest.bin.as_ref().ok_or_else(|| {
-            "no binary target found (this build path requires a bin crate)".to_string()
-        })?;
-
-        // Compute source closure (all .rs files in the crate)
-        let crate_root = &bin_target.path;
-        let closure_paths = vx_rs::rust_source_closure(crate_root, project_path).map_err(|e| {
-            let error_msg = format_module_error(&e);
-            build_report.finalize(false, Some(error_msg.clone()));
-            self.save_report(project_path, &build_report);
-            error_msg
-        })?;
-
-        // Hash the closure (paths + contents)
-        let closure_hash = vx_rs::hash_source_closure(&closure_paths, project_path)
-            .map_err(|e| format!("failed to hash source closure: {}", e))?;
-
-        // Hash Cargo.toml
-        let cargo_toml_content = std::fs::read(&cargo_toml_path)
-            .map_err(|e| format!("failed to read Cargo.toml: {}", e))?;
-        let cargo_toml_hash = Blake3Hash::from_bytes(&cargo_toml_content);
-
-        // Use the shared picante database
-        let db = self.db.lock().await;
-
-        // Set inputs
-        let closure_paths_strings: Vec<String> =
-            closure_paths.iter().map(|p| p.to_string()).collect();
-        SourceClosure::set(&*db, closure_hash.clone(), closure_paths_strings)
-            .map_err(|e| format!("picante error: {}", e))?;
-
-        // Singletons: Type::set(db, field1, field2, ...)
-        CargoToml::set(
-            &*db,
-            cargo_toml_hash.clone(),
-            manifest.name.clone(),
-            manifest.edition,
-            bin_target.path.to_string(),
-        )
-        .map_err(|e| format!("picante error: {}", e))?;
-
-        RustcVersion::set(&*db, rustc_version.clone())
-            .map_err(|e| format!("picante error: {}", e))?;
-
-        BuildConfig::set(
-            &*db,
-            profile.to_string(),
-            target_triple.clone(),
-            project_path.to_string(),
-        )
-        .map_err(|e| format!("picante error: {}", e))?;
-
-        // Compute cache key via picante
-        let cache_key = cache_key_compile_bin(&*db)
-            .await
-            .map_err(|e| format!("failed to compute cache key: {}", e))?;
-
-        // Build output directory
-        let output_dir = project_path
-            .join(".vx/build")
-            .join(&target_triple)
-            .join(profile);
-        std::fs::create_dir_all(&output_dir)
-            .map_err(|e| format!("failed to create output dir: {}", e))?;
-
-        let output_path = output_dir.join(&manifest.name);
-
-        // Build the inputs list for the report
-        let inputs = vec![
-            InputRecord {
-                label: "source_closure".to_string(),
-                value: closure_hash.to_hex(),
-            },
-            InputRecord {
-                label: "Cargo.toml".to_string(),
-                value: cargo_toml_hash.to_hex(),
-            },
-            InputRecord {
-                label: "rustc".to_string(),
-                value: Blake3Hash::from_bytes(rustc_version.as_bytes()).to_hex(),
-            },
-            InputRecord {
-                label: "target".to_string(),
-                value: target_triple.clone(),
-            },
-            InputRecord {
-                label: "profile".to_string(),
-                value: profile.to_string(),
-            },
-        ];
-
-        // Check cache
-        if let Some(cached_manifest_hash) = self.cas.lookup(cache_key.clone()).await
-            && let Some(cached_manifest) = self.cas.get_manifest(cached_manifest_hash.clone()).await
-        {
-            // Cache hit - materialize outputs
-            for output in &cached_manifest.outputs {
-                if let Some(blob_data) = self.cas.get_blob(output.blob.clone()).await {
-                    let dest_path = output_dir.join(&output.filename);
-                    atomic_write_file(&dest_path, &blob_data, output.executable)
-                        .map_err(|e| format!("failed to write {}: {}", dest_path, e))?;
-                } else {
-                    return Err(format!("blob {} not found in CAS", output.blob.to_hex()));
-                }
-            }
-
-            // Record cache hit in report
-            let node_report = NodeReport {
-                node_id: cached_manifest.node_id.0.clone(),
-                kind: "rust.compile_bin".to_string(),
-                cache_key: cache_key.to_hex(),
-                cache: CacheOutcome::Hit {
-                    manifest: cached_manifest_hash.to_hex(),
-                },
-                timing: NodeTiming {
-                    queued_ms: 0,
-                    execute_ms: 0,
-                },
-                inputs,
-                deps: Vec::new(),  // No deps for single-crate builds
-                outputs: cached_manifest
-                    .outputs
-                    .iter()
-                    .map(|o| OutputRecord {
-                        logical: o.logical.clone(),
-                        manifest: Some(cached_manifest_hash.to_hex()),
-                        blob: Some(o.blob.to_hex()),
-                        path: Some(format!(
-                            ".vx/build/{}/{}/{}",
-                            target_triple, profile, o.filename
-                        )),
-                    })
-                    .collect(),
-                invocation: None,
-                diagnostics: DiagnosticsRecord::default(),
-            };
-            build_report.add_node(node_report);
-            build_report.finalize(true, None);
-            self.save_report(project_path, &build_report);
-
-            return Ok(BuildResult {
-                success: true,
-                message: format!("{} {} (cached)", manifest.name, profile),
-                cached: true,
-                duration_ms: 0,
-                output_path: Some(output_path),
-                error: None,
-            });
-        }
-
-        // Cache miss - get build plan from picante
-        let invocation = plan_compile_bin(&*db)
-            .await
-            .map_err(|e| format!("failed to plan build: {}", e))?;
-
-        let node_id = node_id_compile_bin(&*db)
-            .await
-            .map_err(|e| format!("failed to get node id: {}", e))?;
-
-        // Release the db lock before executing rustc (which can take a while)
-        drop(db);
-
-        // Execute rustc
-        let start = std::time::Instant::now();
-        let output = Command::new(&invocation.program)
-            .args(&invocation.args)
-            .current_dir(&invocation.cwd)
-            .output()
-            .map_err(|e| format!("failed to execute rustc: {}", e))?;
-
-        let duration = start.elapsed();
-
-        // Store stdout/stderr in CAS (even for failures)
-        let stdout_blob = if !output.stdout.is_empty() {
-            Some(self.cas.put_blob(output.stdout.clone()).await)
-        } else {
-            None
-        };
-        let stderr_blob = if !output.stderr.is_empty() {
-            Some(self.cas.put_blob(output.stderr.clone()).await)
-        } else {
-            None
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-
-            // Record failed build in report
-            let node_report = NodeReport {
-                node_id: node_id.0.clone(),
-                kind: "rust.compile_bin".to_string(),
-                cache_key: cache_key.to_hex(),
-                cache: CacheOutcome::Miss {
-                    reason: MissReason::KeyNotFound,
-                },
-                timing: NodeTiming {
-                    queued_ms: 0,
-                    execute_ms: duration.as_millis() as u64,
-                },
-                inputs,
-                deps: Vec::new(),  // No deps for single-crate builds
-                outputs: vec![],
-                invocation: Some(InvocationRecord {
-                    program: invocation.program.clone(),
-                    args: invocation.args.clone(),
-                    cwd: invocation.cwd.clone(),
-                    exit_code: output.status.code().unwrap_or(-1),
-                }),
-                diagnostics: DiagnosticsRecord {
-                    stdout_blob: stdout_blob.map(|h| h.to_hex()),
-                    stderr_blob: stderr_blob.map(|h| h.to_hex()),
-                },
-            };
-            build_report.add_node(node_report);
-            build_report.finalize(false, Some(stderr.to_string()));
-            self.save_report(project_path, &build_report);
-
-            return Ok(BuildResult {
-                success: false,
-                message: "rustc failed".to_string(),
-                cached: false,
-                duration_ms: duration.as_millis() as u64,
-                output_path: None,
-                error: Some(stderr.to_string()),
-            });
-        }
-
-        // Store output in CAS
-        let binary_data = std::fs::read(&output_path)
-            .map_err(|e| format!("failed to read output {}: {}", output_path, e))?;
-        let blob_hash = self.cas.put_blob(binary_data).await;
-
-        // Create manifest
-        let node_manifest = NodeManifest {
-            node_id: node_id.clone(),
-            cache_key: cache_key.clone(),
-            produced_at: unix_timestamp(),
-            outputs: vec![OutputEntry {
-                logical: "bin".to_string(),
-                filename: manifest.name.clone(),
-                blob: blob_hash.clone(),
-                executable: true,
-            }],
-        };
-
-        let manifest_hash = self.cas.put_manifest(node_manifest).await;
-
-        // Publish to cache
-        let publish_result = self
-            .cas
-            .publish(cache_key.clone(), manifest_hash.clone())
-            .await;
-        if !publish_result.success {
-            return Err(format!(
-                "failed to publish cache entry: {:?}",
-                publish_result.error
-            ));
-        }
-
-        // Record successful build in report
-        let node_report = NodeReport {
-            node_id: node_id.0.clone(),
-            kind: "rust.compile_bin".to_string(),
-            cache_key: cache_key.to_hex(),
-            cache: CacheOutcome::Miss {
-                reason: MissReason::KeyNotFound,
-            },
-            timing: NodeTiming {
-                queued_ms: 0,
-                execute_ms: duration.as_millis() as u64,
-            },
-            inputs,
-            deps: Vec::new(),  // No deps for single-crate builds
-            outputs: vec![OutputRecord {
-                logical: "bin".to_string(),
-                manifest: Some(manifest_hash.to_hex()),
-                blob: Some(blob_hash.to_hex()),
-                path: Some(format!(
-                    ".vx/build/{}/{}/{}",
-                    target_triple, profile, manifest.name
-                )),
-            }],
-            invocation: Some(InvocationRecord {
-                program: invocation.program.clone(),
-                args: invocation.args.clone(),
-                cwd: invocation.cwd.clone(),
-                exit_code: 0,
-            }),
-            diagnostics: DiagnosticsRecord {
-                stdout_blob: stdout_blob.map(|h| h.to_hex()),
-                stderr_blob: stderr_blob.map(|h| h.to_hex()),
-            },
-        };
-        build_report.add_node(node_report);
-        build_report.finalize(true, None);
-        self.save_report(project_path, &build_report);
-
-        // Save picante cache after successful build
-        if let Err(e) = self.save_cache().await {
-            warn!(error = %e, "failed to save picante cache (non-fatal)");
-        }
-
-        Ok(BuildResult {
-            success: true,
-            message: format!(
-                "{} {} in {:.2}s",
-                manifest.name,
-                profile,
-                duration.as_secs_f64()
-            ),
-            cached: false,
-            duration_ms: duration.as_millis() as u64,
-            output_path: Some(output_path),
-            error: None,
-        })
-    }
-
-    /// Build a multi-crate project with path dependencies.
+    /// Build a Rust project (single or multi-crate with path dependencies).
     ///
     /// This method:
-    /// 1. Builds the CrateGraph from the invocation directory
-    /// 2. Computes source closures for all crates
-    /// 3. Builds lib crates in topological order
-    /// 4. Builds the root bin crate with --extern flags for deps
-    async fn do_build_multi_crate(&self, request: BuildRequest) -> Result<BuildResult, String> {
+    /// 1. Acquires a hermetic Rust toolchain
+    /// 2. Builds the CrateGraph from the invocation directory
+    /// 3. Computes source closures for all crates
+    /// 4. Builds lib crates in topological order
+    /// 5. Builds the root bin crate with --extern flags for deps
+    ///
+    /// Single-crate projects are a degenerate case: a graph with one node and no edges.
+    async fn do_build(&self, request: BuildRequest) -> Result<BuildResult, String> {
         let project_path = &request.project_path;
 
         // Reject ambient RUSTFLAGS - vx uses a clean environment for hermeticity.
         reject_ambient_rustflags()?;
+
+        // Acquire hermetic Rust toolchain (stable channel for now)
+        let rust_toolchain = self
+            .ensure_rust_toolchain(vx_toolchain::Channel::Stable)
+            .await?;
+
+        // Target triple comes from the toolchain spec (host = target for native builds)
+        let target_triple = vx_toolchain::detect_host_triple()
+            .map_err(|e| format!("failed to detect host triple: {}", e))?;
 
         // Build the crate graph (this parses all Cargo.toml files and computes LCA)
         let graph = CrateGraph::build(project_path)
@@ -1808,12 +1437,10 @@ impl DaemonService {
         info!(
             workspace_root = %graph.workspace_root,
             crate_count = graph.nodes.len(),
+            toolchain_id = %rust_toolchain.id,
             "resolved crate graph"
         );
 
-        // Get rustc version and target triple
-        let rustc_version = get_rustc_version().map_err(|e| e.to_string())?;
-        let target_triple = get_target_triple().map_err(|e| e.to_string())?;
         let profile = if request.release { "release" } else { "debug" };
 
         // Initialize build report
@@ -1825,8 +1452,8 @@ impl DaemonService {
 
         build_report.toolchains = ToolchainsUsed {
             rust: Some(ToolchainRef {
-                id: Blake3Hash::from_bytes(rustc_version.as_bytes()).to_hex(),
-                version: extract_rustc_version(&rustc_version),
+                id: rust_toolchain.id.0.to_hex(),
+                version: Some(rust_toolchain.version.clone()),
             }),
             zig: None,
         };
@@ -1834,8 +1461,23 @@ impl DaemonService {
         // Set up shared picante inputs
         let db = self.db.lock().await;
 
-        RustcVersion::set(&*db, rustc_version.clone())
-            .map_err(|e| format!("picante error: {}", e))?;
+        // Set hermetic toolchain identity (for cache keys)
+        RustToolchain::set(
+            &*db,
+            rust_toolchain.id.0,
+            Blake3Hash::from_bytes(&[0u8; 32]), // TODO: manifest hash from CAS acquisition
+            target_triple.clone(),
+            target_triple.clone(),
+        )
+        .map_err(|e| format!("picante error: {}", e))?;
+
+        // Set hermetic toolchain paths (for plan queries)
+        RustToolchainPaths::set(
+            &*db,
+            rust_toolchain.rustc_path.to_string(),
+            rust_toolchain.sysroot_path.to_string(),
+        )
+        .map_err(|e| format!("picante error: {}", e))?;
 
         BuildConfig::set(
             &*db,
@@ -1917,7 +1559,7 @@ impl DaemonService {
                             extern_name: dep.extern_name.clone(),
                             crate_id: dep.crate_id,
                             rlib_hash: *rlib_hash,
-                            manifest_hash: None,  // Will be populated after build
+                            manifest_hash: None, // Will be populated after build
                         });
                         dep_extern_paths.push((dep.extern_name.clone(), rlib_path.clone()));
                     }
@@ -1970,7 +1612,7 @@ impl DaemonService {
                             extern_name: dep.extern_name.clone(),
                             crate_id: dep.crate_id,
                             rlib_hash: *rlib_hash,
-                            manifest_hash: None,  // Will be populated after build
+                            manifest_hash: None, // Will be populated after build
                         });
                         dep_extern_paths.push((dep.extern_name.clone(), rlib_path.clone()));
                     }
@@ -2123,7 +1765,11 @@ impl DaemonService {
                 extern_name: d.extern_name.clone(),
                 crate_id: d.crate_id.0.to_hex(),
                 rlib_hash: d.rlib_hash.to_hex(),
-                manifest_hash: d.manifest_hash.as_ref().map(|h| h.to_hex()).unwrap_or_else(|| "pending".to_string()),
+                manifest_hash: d
+                    .manifest_hash
+                    .as_ref()
+                    .map(|h| h.to_hex())
+                    .unwrap_or_else(|| "pending".to_string()),
             })
             .collect();
 
@@ -2316,7 +1962,11 @@ impl DaemonService {
                 extern_name: d.extern_name.clone(),
                 crate_id: d.crate_id.0.to_hex(),
                 rlib_hash: d.rlib_hash.to_hex(),
-                manifest_hash: d.manifest_hash.as_ref().map(|h| h.to_hex()).unwrap_or_else(|| "pending".to_string()),
+                manifest_hash: d
+                    .manifest_hash
+                    .as_ref()
+                    .map(|h| h.to_hex())
+                    .unwrap_or_else(|| "pending".to_string()),
             })
             .collect();
 
@@ -2444,26 +2094,7 @@ impl DaemonService {
 
 impl Daemon for DaemonService {
     async fn build(&self, request: BuildRequest) -> BuildResult {
-        // Check if the project has dependencies - if so, use multi-crate build
-        let project_path = &request.project_path;
-        let cargo_toml_path = project_path.join("Cargo.toml");
-
-        let has_deps = if cargo_toml_path.exists() {
-            match Manifest::from_path(&cargo_toml_path) {
-                Ok(manifest) => !manifest.deps.is_empty(),
-                Err(_) => false, // Let do_build handle the error
-            }
-        } else {
-            false
-        };
-
-        let result = if has_deps {
-            self.do_build_multi_crate(request).await
-        } else {
-            self.do_build(request).await
-        };
-
-        match result {
+        match self.do_build(request).await {
             Ok(result) => result,
             Err(e) => BuildResult {
                 success: false,
@@ -2524,44 +2155,6 @@ fn reject_ambient_rustflags() -> Result<(), String> {
         )),
         (None, None) => Ok(()),
     }
-}
-
-fn get_rustc_version() -> eyre::Result<String> {
-    let output = Command::new("rustc").arg("-vV").output()?;
-
-    if !output.status.success() {
-        eyre::bail!("rustc -vV failed");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-/// Extract a human-readable version from `rustc -vV` output.
-fn extract_rustc_version(rustc_version: &str) -> Option<String> {
-    // Example output:
-    // rustc 1.84.0 (9fc6b4312 2024-01-17)
-    // binary: rustc
-    // commit-hash: 9fc6b43126469e3858e2fe86f5c5d5f8f3e39649
-    // ...
-    for line in rustc_version.lines() {
-        if line.starts_with("rustc ") {
-            return Some(line.to_string());
-        }
-    }
-    None
-}
-
-fn get_target_triple() -> eyre::Result<String> {
-    let output = Command::new("rustc").arg("-vV").output()?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(host) = line.strip_prefix("host: ") {
-            return Ok(host.to_string());
-        }
-    }
-
-    eyre::bail!("could not determine host triple from rustc -vV")
 }
 
 fn atomic_write_file(dest: &Utf8PathBuf, data: &[u8], executable: bool) -> std::io::Result<()> {

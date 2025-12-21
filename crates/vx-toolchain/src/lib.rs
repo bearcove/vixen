@@ -174,39 +174,37 @@ struct RawTarget {
 
 impl ChannelManifest {
     /// Parse a channel manifest from TOML content
+    ///
+    /// NOTE: We use the `toml` crate here instead of `facet_toml` because Rust's
+    /// channel manifest is very large (hundreds of packages) and exceeds the
+    /// fixed-size map capacity in facet-toml's internal deserializer.
     pub fn from_toml(contents: &str) -> Result<Self, ToolchainError> {
-        let raw: RawChannelManifest = facet_toml::from_str(contents)
-            .map_err(|e| ToolchainError::ParseError(e.to_string()))?;
+        let doc: toml::Value = contents
+            .parse()
+            .map_err(|e| ToolchainError::ParseError(format!("TOML parse error: {}", e)))?;
 
-        let date = raw
-            .date
-            .ok_or_else(|| ToolchainError::ParseError("missing 'date' field".into()))?;
+        let date = doc
+            .get("date")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolchainError::ParseError("missing 'date' field".into()))?
+            .to_string();
 
-        let pkg_value = raw
-            .pkg
+        let pkg = doc
+            .get("pkg")
+            .and_then(|v| v.as_table())
             .ok_or_else(|| ToolchainError::ParseError("missing 'pkg' table".into()))?;
 
-        // Extract rustc and rust-std from the pkg object
-        let pkg_obj = pkg_value
-            .as_object()
-            .ok_or_else(|| ToolchainError::ParseError("pkg is not an object".into()))?;
-
-        let rustc_value = pkg_obj
+        let rustc = pkg
             .get("rustc")
             .ok_or_else(|| ToolchainError::ParseError("missing 'pkg.rustc'".into()))?;
-        let rustc: RawPackage = facet_value::from_value(rustc_value.clone())
-            .map_err(|e| ToolchainError::ParseError(format!("failed to parse rustc: {}", e)))?;
-
-        let rust_std_value = pkg_obj
+        let rust_std = pkg
             .get("rust-std")
             .ok_or_else(|| ToolchainError::ParseError("missing 'pkg.rust-std'".into()))?;
-        let rust_std: RawPackage = facet_value::from_value(rust_std_value.clone())
-            .map_err(|e| ToolchainError::ParseError(format!("failed to parse rust-std: {}", e)))?;
 
         Ok(ChannelManifest {
             date,
-            rustc: parse_package(rustc)?,
-            rust_std: parse_package(rust_std)?,
+            rustc: parse_package_from_toml(rustc)?,
+            rust_std: parse_package_from_toml(rust_std)?,
         })
     }
 
@@ -235,40 +233,57 @@ impl ChannelManifest {
     }
 }
 
-fn parse_package(raw: RawPackage) -> Result<PackageManifest, ToolchainError> {
-    let version = raw
-        .version
-        .ok_or_else(|| ToolchainError::ParseError("missing 'version' in package".into()))?;
+/// Parse a package manifest from a toml::Value (used by ChannelManifest::from_toml)
+fn parse_package_from_toml(value: &toml::Value) -> Result<PackageManifest, ToolchainError> {
+    let version = value
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolchainError::ParseError("missing 'version' in package".into()))?
+        .to_string();
+
+    let git_commit_hash = value
+        .get("git-commit-hash")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let mut targets = HashMap::new();
 
-    if let Some(target_value) = raw.target {
-        // The target field is an object/table containing platform triples as keys
-        if let Some(obj) = target_value.as_object() {
-            for (name, value) in obj.iter() {
-                // Convert the Value back to RawTarget
-                let raw_target: RawTarget =
-                    facet_value::from_value(value.clone()).map_err(|e| {
-                        ToolchainError::ParseError(format!(
-                            "failed to parse target {}: {}",
-                            name, e
-                        ))
-                    })?;
+    if let Some(target_table) = value.get("target").and_then(|v| v.as_table()) {
+        for (name, target_value) in target_table {
+            let available = target_value
+                .get("available")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-                let target = TargetManifest {
-                    available: raw_target.available.unwrap_or(false),
-                    // Prefer xz-compressed URLs
-                    url: raw_target.xz_url.or(raw_target.url).unwrap_or_default(),
-                    hash: raw_target.xz_hash.or(raw_target.hash).unwrap_or_default(),
-                };
-                targets.insert(name.to_string(), target);
-            }
+            // Prefer xz-compressed URLs
+            let url = target_value
+                .get("xz_url")
+                .or_else(|| target_value.get("url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let hash = target_value
+                .get("xz_hash")
+                .or_else(|| target_value.get("hash"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            targets.insert(
+                name.clone(),
+                TargetManifest {
+                    available,
+                    url,
+                    hash,
+                },
+            );
         }
     }
 
     Ok(PackageManifest {
         version,
-        git_commit_hash: raw.git_commit_hash,
+        git_commit_hash,
         targets,
     })
 }
