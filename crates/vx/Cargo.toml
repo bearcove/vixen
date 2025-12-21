@@ -1,0 +1,13 @@
+[package]
+name = "vx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+facet = { workspace = true }
+facet-args = { workspace = true }
+facet-json = { workspace = true }
+facet-pretty = { workspace = true }
+eyre = { workspace = true }
+color-eyre = { workspace = true }
+owo-colors = { workspace = true }

@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.dependencies]
+# facet ecosystem
+facet = { path = "../facet/facet" }
+facet-args = { path = "../facet/facet-args" }
+facet-json = { path = "../facet/facet-json" }
+facet-pretty = { path = "../facet/facet-pretty" }
+
+# error handling
+eyre = "0.6"
+color-eyre = "0.6"
+
+# terminal colors
+owo-colors = "4"
