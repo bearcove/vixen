@@ -1954,19 +1954,14 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vx"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "camino",
  "eyre",
  "facet",
  "facet-args",
  "owo-colors",
  "tokio",
- "vx-cas-proto",
- "vx-casd",
  "vx-daemon",
- "vx-exec-proto",
- "vx-execd",
- "vx-manifest",
+ "vx-daemon-proto",
 ]
 
 [[package]]
@@ -2005,8 +2000,20 @@ dependencies = [
  "rapace",
  "tokio",
  "vx-cas-proto",
+ "vx-casd",
+ "vx-daemon-proto",
  "vx-exec-proto",
+ "vx-execd",
  "vx-manifest",
+]
+
+[[package]]
+name = "vx-daemon-proto"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "facet",
+ "rapace",
 ]
 
 [[package]]

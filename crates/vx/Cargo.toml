@@ -10,11 +10,6 @@ eyre = { workspace = true }
 owo-colors = { workspace = true }
 camino = { workspace = true }
 tokio = { workspace = true }
-blake3 = { workspace = true }
 
-vx-cas-proto = { workspace = true }
-vx-exec-proto = { workspace = true }
-vx-casd = { workspace = true }
-vx-execd = { workspace = true }
 vx-daemon = { workspace = true }
-vx-manifest = { workspace = true }
+vx-daemon-proto = { workspace = true }

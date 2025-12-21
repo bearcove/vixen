@@ -80,29 +80,30 @@ pub struct Manifest {
 
 /// Raw TOML structure for parsing (before validation)
 #[derive(Facet, Debug)]
+#[facet(rename_all = "kebab-case")]
 struct RawManifest {
     package: Option<RawPackage>,
+    bin: Option<Vec<RawBinTarget>>,
 
-    // These must not be present in v0
-    #[facet(default)]
     dependencies: Option<toml_table::TomlTable>,
-    #[facet(default, rename = "dev-dependencies")]
     dev_dependencies: Option<toml_table::TomlTable>,
-    #[facet(default, rename = "build-dependencies")]
     build_dependencies: Option<toml_table::TomlTable>,
-    #[facet(default)]
     workspace: Option<toml_table::TomlTable>,
-    #[facet(default)]
     features: Option<toml_table::TomlTable>,
 }
 
 #[derive(Facet, Debug)]
 struct RawPackage {
     name: Option<String>,
-    #[facet(default)]
+    version: Option<String>,
     edition: Option<Edition>,
-    #[facet(default)]
     build: Option<String>,
+}
+
+#[derive(Facet, Debug)]
+struct RawBinTarget {
+    name: Option<String>,
+    path: Option<String>,
 }
 
 /// Placeholder for catching unknown TOML tables
