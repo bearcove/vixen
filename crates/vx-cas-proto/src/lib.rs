@@ -99,18 +99,6 @@ pub struct PublishResult {
     pub error: Option<String>,
 }
 
-/// ID for a chunked blob upload session
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Facet)]
-pub struct BlobUploadId(pub u64);
-
-/// Result of finishing a blob upload
-#[derive(Debug, Clone, Facet)]
-pub struct FinishBlobResult {
-    pub success: bool,
-    pub hash: Option<BlobHash>,
-    pub error: Option<String>,
-}
-
 /// CAS service trait
 ///
 /// CAS stores immutable content. Clients produce working directories.
@@ -156,19 +144,6 @@ pub trait Cas {
     async fn has_blob(&self, hash: BlobHash) -> bool;
 
     // =========================================================================
-    // Chunked blob upload (for large files, avoids big allocations)
-    // =========================================================================
-
-    /// Begin a chunked blob upload, returns upload session ID
-    async fn begin_blob(&self) -> BlobUploadId;
-
-    /// Append a chunk to an in-progress upload
-    async fn blob_chunk(&self, id: BlobUploadId, chunk: Vec<u8>);
-
-    /// Finish the upload, returns the final blob hash
-    async fn finish_blob(&self, id: BlobUploadId) -> FinishBlobResult;
-
-    // =========================================================================
     // Streaming blob operations (for large files like toolchains)
     // =========================================================================
 
@@ -187,7 +162,10 @@ pub trait Cas {
     async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest>;
 
     /// Get materialization plan for a toolchain
-    async fn get_materialization_plan(&self, manifest_hash: Blake3Hash) -> Option<MaterializationPlan>;
+    async fn get_materialization_plan(
+        &self,
+        manifest_hash: Blake3Hash,
+    ) -> Option<MaterializationPlan>;
 
     // =========================================================================
     // Registry operations (called by execd/daemon)
@@ -197,7 +175,10 @@ pub trait Cas {
     async fn ensure_registry_crate(&self, spec: RegistrySpec) -> EnsureRegistryCrateResult;
 
     /// Get a registry crate manifest by its hash
-    async fn get_registry_manifest(&self, manifest_hash: Blake3Hash) -> Option<RegistryCrateManifest>;
+    async fn get_registry_manifest(
+        &self,
+        manifest_hash: Blake3Hash,
+    ) -> Option<RegistryCrateManifest>;
 
     /// Lookup manifest hash by spec key
     async fn lookup_registry_spec(&self, spec_key: Blake3Hash) -> Option<Blake3Hash>;

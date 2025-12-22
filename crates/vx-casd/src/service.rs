@@ -1,3 +1,20 @@
+use std::fs;
+
+use vx_cas_proto::Cas;
+use vx_cas_proto::{
+    Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, ManifestHash,
+    MaterializationPlan, MaterializeStep, NodeManifest, PublishResult, RegistryCrateManifest,
+    RegistrySpec, RegistrySpecKey, ToolchainKind, ToolchainManifest,
+};
+
+use crate::registry::{download_crate, validate_crate_tarball};
+use crate::types::CasService;
+use crate::utils::atomic_write;
+
+const CRATES_IO_REGISTRY: &str = "https://crates.io";
+const REGISTRY_MANIFEST_SCHEMA_VERSION: u32 = 1;
+const MATERIALIZATION_LAYOUT_VERSION: u32 = 1;
+
 impl Cas for CasService {
     async fn lookup(&self, cache_key: CacheKey) -> Option<ManifestHash> {
         let path = self.cache_path(&cache_key);
@@ -37,22 +54,8 @@ impl Cas for CasService {
         let json = facet_json::to_string(&manifest);
         let hash = ManifestHash::from_bytes(json.as_bytes());
         let dest = self.manifest_path(&hash);
-        let tmp_dir = self.tmp_dir();
 
-        tokio::task::spawn_blocking(move || {
-            if !dest.exists() {
-                // Atomic write
-                if let Some(parent) = dest.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                let _ = fs::create_dir_all(&tmp_dir);
-                let tmp = tmp_dir.join(format!("write-{}", rand_suffix()));
-                let _ = fs::write(&tmp, json.as_bytes());
-                let _ = fs::rename(&tmp, &dest);
-            }
-        })
-        .await
-        .ok();
+        let _ = atomic_write(&dest, json.as_bytes()).await;
 
         hash
     }
@@ -71,23 +74,10 @@ impl Cas for CasService {
     async fn put_blob(&self, data: Vec<u8>) -> BlobHash {
         let hash = BlobHash::from_bytes(&data);
         let dest = self.blob_path(&hash);
-        let tmp_dir = self.tmp_dir();
 
-        // Use spawn_blocking for all file I/O
-        tokio::task::spawn_blocking(move || {
-            if !dest.exists() {
-                // Atomic write: tmp + rename
-                if let Some(parent) = dest.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                let _ = fs::create_dir_all(&tmp_dir);
-                let tmp = tmp_dir.join(format!("write-{}", rand_suffix()));
-                let _ = fs::write(&tmp, &data);
-                let _ = fs::rename(&tmp, &dest);
-            }
-        })
-        .await
-        .ok();
+        if !dest.exists() {
+            let _ = atomic_write(&dest, &data).await;
+        }
 
         hash
     }
@@ -105,83 +95,6 @@ impl Cas for CasService {
         tokio::task::spawn_blocking(move || path.exists())
             .await
             .unwrap_or(false)
-    }
-
-    async fn begin_blob(&self) -> BlobUploadId {
-        let id = self.next_upload_id.fetch_add(1, Ordering::SeqCst);
-        let tmp_path = self.tmp_dir().join(format!("upload-{}", id));
-
-        // Create the temp file
-        let file = match std::fs::File::create(&tmp_path) {
-            Ok(f) => f,
-            Err(_) => {
-                // Return the ID anyway; finish_blob will fail
-                return BlobUploadId(id);
-            }
-        };
-
-        let upload = ChunkedUpload {
-            hasher: blake3::Hasher::new(),
-            tmp_path,
-            file,
-        };
-
-        self.uploads.lock().unwrap().insert(id, upload);
-        BlobUploadId(id)
-    }
-
-    async fn blob_chunk(&self, id: BlobUploadId, chunk: Vec<u8>) {
-        use std::io::Write;
-
-        let mut uploads = self.uploads.lock().unwrap();
-        if let Some(upload) = uploads.get_mut(&id.0) {
-            upload.hasher.update(&chunk);
-            let _ = upload.file.write_all(&chunk);
-        }
-    }
-
-    async fn finish_blob(&self, id: BlobUploadId) -> FinishBlobResult {
-        let upload = {
-            let mut uploads = self.uploads.lock().unwrap();
-            uploads.remove(&id.0)
-        };
-
-        let Some(upload) = upload else {
-            return FinishBlobResult {
-                success: false,
-                hash: None,
-                error: Some("upload session not found".to_string()),
-            };
-        };
-
-        // Finalize hash
-        let hash = Blake3Hash(*upload.hasher.finalize().as_bytes());
-        let dest = self.blob_path(&hash);
-
-        // Move to final location if not already present
-        if !dest.exists() {
-            if let Some(parent) = dest.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            if let Err(e) = fs::rename(&upload.tmp_path, &dest) {
-                // Clean up temp file
-                let _ = fs::remove_file(&upload.tmp_path);
-                return FinishBlobResult {
-                    success: false,
-                    hash: None,
-                    error: Some(format!("failed to finalize blob: {}", e)),
-                };
-            }
-        } else {
-            // Already exists, remove temp
-            let _ = fs::remove_file(&upload.tmp_path);
-        }
-
-        FinishBlobResult {
-            success: true,
-            hash: Some(hash),
-            error: None,
-        }
     }
 
     #[tracing::instrument(skip(self), fields(name = %spec.name, version = %spec.version))]
