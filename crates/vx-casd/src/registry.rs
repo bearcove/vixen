@@ -8,13 +8,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use vx_cas_proto::{Blake3Hash, Cas};
+use vx_cas_proto::Blake3Hash;
 use vx_cas_proto::{
-    CRATES_IO_REGISTRY, EnsureRegistryCrateResult, EnsureStatus, REGISTRY_MANIFEST_SCHEMA_VERSION,
-    RegistryCrateManifest, RegistrySpec, RegistrySpecKey,
+    EnsureRegistryCrateResult, EnsureStatus, RegistryCrateManifest, RegistrySpecKey,
 };
 
-use crate::CasService;
+use crate::{CasService, atomic_write};
 
 /// Maximum retry attempts for transient failures
 const MAX_RETRIES: u32 = 3;
@@ -49,15 +48,9 @@ impl RegistryManager {
     pub async fn ensure<L, LFut, A, AFut>(
         &self,
         spec_key: RegistrySpecKey,
-        lookup_fn: L,
-        acquire_fn: A,
-    ) -> EnsureRegistryCrateResult
-    where
-        L: Fn() -> LFut,
-        LFut: std::future::Future<Output = Option<Blake3Hash>>,
-        A: FnOnce() -> AFut,
-        AFut: std::future::Future<Output = EnsureRegistryCrateResult>,
-    {
+        lookup_fn: impl AsyncFn() -> Option<Blake3Hash>,
+        acquire_fn: impl AsyncFn() -> EnsureRegistryCrateResult,
+    ) -> EnsureRegistryCrateResult {
         // Fast path: check if already in CAS
         if let Some(manifest_hash) = lookup_fn().await {
             return EnsureRegistryCrateResult {
@@ -87,7 +80,7 @@ impl RegistryManager {
 // =============================================================================
 
 /// Download a crate tarball from crates.io with retries.
-async fn download_crate(
+pub(crate) async fn download_crate(
     name: &str,
     version: &str,
     expected_checksum: &str,
@@ -196,7 +189,9 @@ fn compute_sha256(data: &[u8]) -> String {
 /// - No absolute paths
 /// - No .. components
 /// - No symlink escapes
-fn validate_crate_tarball(tarball_bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn validate_crate_tarball(tarball_bytes: &[u8]) -> Result<(), String> {
+    // FIXME: it's extremely silly to do that "in advance" rather than when we actually extract it.
+
     use flate2::read::GzDecoder;
     use std::io::Read;
 
@@ -273,7 +268,7 @@ impl CasService {
     }
 
     /// Publish registry spec → manifest_hash mapping atomically (first-writer-wins).
-    fn publish_registry_spec_mapping(
+    pub(crate) fn publish_registry_spec_mapping(
         &self,
         spec_key: &RegistrySpecKey,
         manifest_hash: &Blake3Hash,
@@ -300,20 +295,27 @@ impl CasService {
     }
 
     /// Lookup manifest_hash by registry spec_key (internal helper).
-    fn lookup_registry_spec_local(&self, spec_key: &RegistrySpecKey) -> Option<Blake3Hash> {
+    pub(crate) fn lookup_registry_spec_local(
+        &self,
+        spec_key: &RegistrySpecKey,
+    ) -> Option<Blake3Hash> {
         let path = self.registry_spec_path(spec_key);
         let content = std::fs::read_to_string(&path).ok()?;
         Blake3Hash::from_hex(content.trim())
     }
 
     /// Store a RegistryCrateManifest and return its hash.
-    async fn put_registry_manifest(&self, manifest: &RegistryCrateManifest) -> Blake3Hash {
+    pub(crate) async fn put_registry_manifest(
+        &self,
+        manifest: &RegistryCrateManifest,
+    ) -> Blake3Hash {
         let json = facet_json::to_string(manifest);
         let hash = Blake3Hash::from_bytes(json.as_bytes());
         let path = self.manifest_path(&hash);
 
         if !path.exists() {
-            let _ = self.atomic_write(&path, json.as_bytes());
+            // FIXME: why is this ignoring errors?
+            let _ = atomic_write(&path, json.as_bytes());
         }
 
         hash
