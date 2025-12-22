@@ -6,9 +6,10 @@ use std::sync::Arc;
 use vx_cas_proto::*;
 use vx_cas_proto::{
     EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult, RustChannel, RustToolchainSpec,
-    TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentBlob, ToolchainKind, ToolchainManifest,
+    TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentTree, ToolchainKind, ToolchainManifest,
     ToolchainSpecKey, ZigToolchainSpec,
 };
+use vx_tarball::Compression;
 
 use crate::types::CasService;
 
@@ -81,7 +82,7 @@ impl CasService {
             }
             Err(e) => {
                 return EnsureToolchainResult {
-                    spec_key: None, // Can't compute - no sentinel hash
+                    spec_key: None,
                     toolchain_id: None,
                     manifest_hash: None,
                     status: ToolchainEnsureStatus::Failed,
@@ -96,100 +97,230 @@ impl CasService {
         self.toolchain_manager
             .ensure(
                 spec_key,
-                // Async lookup (CAS is remote in production)
                 async move || this.lookup_spec(&spec_key).await,
-                async move || {
-                    // Convert proto spec to vx_toolchain types
-                    let channel = match &spec.channel {
-                        RustChannel::Stable => vx_toolchain::Channel::Stable,
-                        RustChannel::Beta => vx_toolchain::Channel::Beta,
-                        RustChannel::Nightly { date } => {
-                            vx_toolchain::Channel::Nightly { date: date.clone() }
-                        }
-                    };
-
-                    let toolchain_spec = vx_toolchain::RustToolchainSpec {
-                        channel,
-                        host: spec.host.clone(),
-                        target: if spec.target == spec.host {
-                            None
-                        } else {
-                            Some(spec.target.clone())
-                        },
-                    };
-
-                    // Acquire (downloads, verifies, returns tarballs)
-                    let acquired = match vx_toolchain::acquire_rust_toolchain(&toolchain_spec).await
-                    {
-                        Ok(a) => a,
-                        Err(e) => {
-                            return EnsureToolchainResult {
-                                spec_key: Some(spec_key),
-                                toolchain_id: None,
-                                manifest_hash: None,
-                                status: ToolchainEnsureStatus::Failed,
-                                error: Some(format!("{}", e)),
-                            };
-                        }
-                    };
-
-                    // Store component blobs
-                    let rustc_blob = this2.put_blob(acquired.rustc_tarball.clone()).await;
-                    let rust_std_blob = this2.put_blob(acquired.rust_std_tarball.clone()).await;
-
-                    // Build manifest
-                    let manifest = ToolchainManifest {
-                        schema_version: TOOLCHAIN_MANIFEST_SCHEMA_VERSION,
-                        kind: ToolchainKind::Rust,
-                        spec_key,
-                        toolchain_id: acquired.id.0,
-                        created_at: Timestamp::now().in_tz("UTC").unwrap().datetime(),
-                        rust_manifest_date: Some(acquired.manifest_date.clone()),
-                        rust_version: Some(acquired.rustc_version.clone()),
-                        zig_version: None,
-                        components: vec![
-                            ToolchainComponentBlob {
-                                name: "rustc".to_string(),
-                                target: Some(spec.host.clone()),
-                                compression: "xz".to_string(),
-                                blob: rustc_blob,
-                                sha256: acquired.rustc_manifest_sha256.clone(),
-                                size_bytes: acquired.rustc_tarball.len() as u64,
-                            },
-                            ToolchainComponentBlob {
-                                name: "rust-std".to_string(),
-                                target: Some(spec.target.clone()),
-                                compression: "xz".to_string(),
-                                blob: rust_std_blob,
-                                sha256: acquired.rust_std_manifest_sha256.clone(),
-                                size_bytes: acquired.rust_std_tarball.len() as u64,
-                            },
-                        ],
-                    };
-
-                    // Store manifest using put_toolchain_manifest (not put_blob!)
-                    let manifest_hash = this2.put_toolchain_manifest(&manifest).await;
-
-                    // Publish spec → manifest_hash mapping (atomic, first-writer-wins)
-                    let _ = this2.publish_spec_mapping(&spec_key, &manifest_hash);
-
-                    tracing::info!(
-                        spec_key = %spec_key.short_hex(),
-                        toolchain_id = %acquired.id.short_hex(),
-                        manifest_hash = %manifest_hash.short_hex(),
-                        "stored Rust toolchain in CAS"
-                    );
-
-                    EnsureToolchainResult {
-                        spec_key: Some(spec_key),
-                        toolchain_id: Some(acquired.id.0),
-                        manifest_hash: Some(manifest_hash),
-                        status: ToolchainEnsureStatus::Downloaded,
-                        error: None,
-                    }
-                },
+                async move || this2.acquire_rust_toolchain_impl(spec_key, &spec).await,
             )
             .await
+    }
+
+    async fn acquire_rust_toolchain_impl(
+        &self,
+        spec_key: ToolchainSpecKey,
+        spec: &RustToolchainSpec,
+    ) -> EnsureToolchainResult {
+        // Convert proto spec to vx_toolchain types
+        let channel = match &spec.channel {
+            RustChannel::Stable => vx_toolchain::Channel::Stable,
+            RustChannel::Beta => vx_toolchain::Channel::Beta,
+            RustChannel::Nightly { date } => vx_toolchain::Channel::Nightly { date: date.clone() },
+        };
+
+        // Fetch channel manifest to get download URLs
+        let manifest = match vx_toolchain::fetch_channel_manifest(&channel).await {
+            Ok(m) => m,
+            Err(e) => {
+                return EnsureToolchainResult {
+                    spec_key: Some(spec_key),
+                    toolchain_id: None,
+                    manifest_hash: None,
+                    status: ToolchainEnsureStatus::Failed,
+                    error: Some(format!("failed to fetch channel manifest: {}", e)),
+                };
+            }
+        };
+
+        let rustc_target = match manifest.rustc_for_target(&spec.host) {
+            Ok(t) => t,
+            Err(e) => {
+                return EnsureToolchainResult {
+                    spec_key: Some(spec_key),
+                    toolchain_id: None,
+                    manifest_hash: None,
+                    status: ToolchainEnsureStatus::Failed,
+                    error: Some(format!("{}", e)),
+                };
+            }
+        };
+
+        let rust_std_target = match manifest.rust_std_for_target(&spec.target) {
+            Ok(t) => t,
+            Err(e) => {
+                return EnsureToolchainResult {
+                    spec_key: Some(spec_key),
+                    toolchain_id: None,
+                    manifest_hash: None,
+                    status: ToolchainEnsureStatus::Failed,
+                    error: Some(format!("{}", e)),
+                };
+            }
+        };
+
+        // Compute toolchain ID from manifest SHA256s
+        let toolchain_id = vx_toolchain::RustToolchainId::from_manifest_sha256s(
+            &spec.host,
+            &spec.target,
+            &rustc_target.hash,
+            &rust_std_target.hash,
+        );
+
+        // Download rustc tarball (verified)
+        let rustc_tarball =
+            match vx_toolchain::download_component(&rustc_target.url, &rustc_target.hash).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return EnsureToolchainResult {
+                        spec_key: Some(spec_key),
+                        toolchain_id: None,
+                        manifest_hash: None,
+                        status: ToolchainEnsureStatus::Failed,
+                        error: Some(format!("failed to download rustc: {}", e)),
+                    };
+                }
+            };
+
+        // Extract rustc to tree
+        let this = self.clone();
+        let rustc_tree = match vx_tarball::extract_to_tree(
+            std::io::Cursor::new(rustc_tarball),
+            Compression::Xz,
+            1, // strip first component
+            async move |data| {
+                let hash = this.put_blob(data).await;
+                Ok(hash)
+            },
+        )
+        .await
+        {
+            Ok(tree) => tree,
+            Err(e) => {
+                return EnsureToolchainResult {
+                    spec_key: Some(spec_key),
+                    toolchain_id: None,
+                    manifest_hash: None,
+                    status: ToolchainEnsureStatus::Failed,
+                    error: Some(format!("failed to extract rustc: {}", e)),
+                };
+            }
+        };
+
+        // Store rustc tree manifest
+        let rustc_tree_json = facet_json::to_string(&rustc_tree);
+        let rustc_tree_hash = self.put_blob(rustc_tree_json.into_bytes()).await;
+
+        tracing::info!(
+            rustc_tree = %rustc_tree_hash.short_hex(),
+            files = rustc_tree.entries.len(),
+            unique_blobs = rustc_tree.unique_blobs,
+            total_bytes = rustc_tree.total_size_bytes,
+            "stored rustc tree"
+        );
+
+        // Download rust-std tarball (verified)
+        let rust_std_tarball =
+            match vx_toolchain::download_component(&rust_std_target.url, &rust_std_target.hash)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return EnsureToolchainResult {
+                        spec_key: Some(spec_key),
+                        toolchain_id: None,
+                        manifest_hash: None,
+                        status: ToolchainEnsureStatus::Failed,
+                        error: Some(format!("failed to download rust-std: {}", e)),
+                    };
+                }
+            };
+
+        // Extract rust-std to tree
+        let this = self.clone();
+        let rust_std_tree = match vx_tarball::extract_to_tree(
+            std::io::Cursor::new(rust_std_tarball),
+            Compression::Xz,
+            1, // strip first component
+            async move |data| {
+                let hash = this.put_blob(data).await;
+                Ok(hash)
+            },
+        )
+        .await
+        {
+            Ok(tree) => tree,
+            Err(e) => {
+                return EnsureToolchainResult {
+                    spec_key: Some(spec_key),
+                    toolchain_id: None,
+                    manifest_hash: None,
+                    status: ToolchainEnsureStatus::Failed,
+                    error: Some(format!("failed to extract rust-std: {}", e)),
+                };
+            }
+        };
+
+        // Store rust-std tree manifest
+        let rust_std_tree_json = facet_json::to_string(&rust_std_tree);
+        let rust_std_tree_hash = self.put_blob(rust_std_tree_json.into_bytes()).await;
+
+        tracing::info!(
+            rust_std_tree = %rust_std_tree_hash.short_hex(),
+            files = rust_std_tree.entries.len(),
+            unique_blobs = rust_std_tree.unique_blobs,
+            total_bytes = rust_std_tree.total_size_bytes,
+            "stored rust-std tree"
+        );
+
+        // Build toolchain manifest
+        let toolchain_manifest = ToolchainManifest {
+            schema_version: TOOLCHAIN_MANIFEST_SCHEMA_VERSION,
+            kind: ToolchainKind::Rust,
+            spec_key,
+            toolchain_id: toolchain_id.0.clone(),
+            created_at: Timestamp::now().in_tz("UTC").unwrap().datetime(),
+            rust_manifest_date: Some(manifest.date.clone()),
+            rust_version: Some(manifest.rustc.version.clone()),
+            zig_version: None,
+            components: vec![
+                ToolchainComponentTree {
+                    name: "rustc".to_string(),
+                    target: Some(spec.host.clone()),
+                    tree_manifest: rustc_tree_hash,
+                    sha256: rustc_target.hash.clone(),
+                    total_size_bytes: rustc_tree.total_size_bytes,
+                    file_count: rustc_tree.entries.len() as u32,
+                    unique_blobs: rustc_tree.unique_blobs,
+                },
+                ToolchainComponentTree {
+                    name: "rust-std".to_string(),
+                    target: Some(spec.target.clone()),
+                    tree_manifest: rust_std_tree_hash,
+                    sha256: rust_std_target.hash.clone(),
+                    total_size_bytes: rust_std_tree.total_size_bytes,
+                    file_count: rust_std_tree.entries.len() as u32,
+                    unique_blobs: rust_std_tree.unique_blobs,
+                },
+            ],
+        };
+
+        // Store manifest
+        let manifest_hash = self.put_toolchain_manifest(&toolchain_manifest).await;
+
+        // Publish spec → manifest_hash mapping
+        let _ = self.publish_spec_mapping(&spec_key, &manifest_hash);
+
+        tracing::info!(
+            spec_key = %spec_key.short_hex(),
+            toolchain_id = %toolchain_id.short_hex(),
+            manifest_hash = %manifest_hash.short_hex(),
+            "stored Rust toolchain in CAS"
+        );
+
+        EnsureToolchainResult {
+            spec_key: Some(spec_key),
+            toolchain_id: Some(toolchain_id.0),
+            manifest_hash: Some(manifest_hash),
+            status: ToolchainEnsureStatus::Downloaded,
+            error: None,
+        }
     }
 
     /// Ensure a Zig toolchain exists in CAS (internal helper, not an RPC method).

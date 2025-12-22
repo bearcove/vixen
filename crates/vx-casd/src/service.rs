@@ -215,10 +215,10 @@ impl Cas for CasService {
                 let mut steps = vec![MaterializeStep::EnsureDir {
                     relpath: "sysroot".to_string(),
                 }];
+                // Materialize each component tree into sysroot
                 steps.extend(manifest.components.iter().map(|c| {
-                    MaterializeStep::ExtractTarXz {
-                        blob: c.blob,
-                        strip_components: 1, // Validated during acquisition
+                    MaterializeStep::MaterializeTree {
+                        tree_manifest: c.tree_manifest,
                         dest_subdir: "sysroot".to_string(),
                     }
                 }));
@@ -228,21 +228,10 @@ impl Cas for CasService {
                 let mut steps = Vec::new();
                 for c in &manifest.components {
                     match c.name.as_str() {
-                        "zig-exe" => {
-                            steps.push(MaterializeStep::WriteFile {
-                                relpath: "zig".to_string(),
-                                blob: c.blob,
-                                mode: 0o755,
-                            });
-                        }
-                        "zig-lib" => {
-                            steps.push(MaterializeStep::EnsureDir {
-                                relpath: "lib".to_string(),
-                            });
-                            steps.push(MaterializeStep::ExtractTarXz {
-                                blob: c.blob,
-                                strip_components: 0,
-                                dest_subdir: "lib".to_string(),
+                        "zig-exe" | "zig-lib" => {
+                            steps.push(MaterializeStep::MaterializeTree {
+                                tree_manifest: c.tree_manifest,
+                                dest_subdir: ".".to_string(),
                             });
                         }
                         _ => {} // Unknown component, skip

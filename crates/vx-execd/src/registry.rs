@@ -261,7 +261,8 @@ async fn extract_crate_tarball(
     }
 
     // .crate files are gzipped tarballs with strip_components=1
-    vx_tarball::extract(compressed_data, dest.to_owned(), Compression::Gzip, 1)
+    let cursor = std::io::Cursor::new(compressed_data);
+    vx_tarball::extract(cursor, dest, Compression::Gzip, 1)
         .await
         .map_err(|e| e.to_string())
 }

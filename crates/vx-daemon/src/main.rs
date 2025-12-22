@@ -14,7 +14,10 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
-use vx_cas_proto::{Blake3Hash, CacheKey, Cas, CasClient, NodeId, NodeManifest, OutputEntry};
+use vx_cas_proto::{
+    Blake3Hash, CacheKey, Cas, CasClient, EnsureStatus, NodeId, NodeManifest, OutputEntry,
+    RegistrySpec, RustChannel, RustComponent, RustToolchainSpec,
+};
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon, DaemonServer};
 use vx_exec_proto::{
     Exec, ExecClient, ExpectedOutput, MaterializeStatus, RegistryMaterializeRequest,
@@ -1496,7 +1499,7 @@ impl DaemonService {
     /// Does NOT materialize - that's execd's job.
     pub async fn ensure_rust_toolchain(
         &self,
-        channel: vx_toolchain::Channel,
+        channel: RustChannel,
     ) -> Result<ToolchainInfo, String> {
         // Check if already acquired
         {
@@ -1517,20 +1520,20 @@ impl DaemonService {
 
         // Build RustToolchainSpec for CAS
         let spec = RustToolchainSpec {
-            channel: match channel {
-                vx_toolchain::Channel::Stable => RustChannel::Stable,
-                vx_toolchain::Channel::Beta => RustChannel::Beta,
-                vx_toolchain::Channel::Nightly { date } => RustChannel::Nightly { date },
-            },
+            channel,
             host: host.clone(),
             target: host.clone(),
             components: vec![RustComponent::Rustc, RustComponent::RustStd],
         };
 
         // Ensure toolchain exists in CAS (downloads if needed)
-        let result = self.cas.ensure_rust_toolchain(spec).await;
+        let result = self
+            .cas
+            .ensure_rust_toolchain(spec)
+            .await
+            .map_err(|e| format!("RPC error: {}", e))?;
 
-        if result.status == vx_toolchain_proto::EnsureStatus::Failed {
+        if result.status == EnsureStatus::Failed {
             return Err(result.error.unwrap_or_else(|| "unknown error".into()));
         }
 
@@ -1543,6 +1546,7 @@ impl DaemonService {
             .cas
             .get_toolchain_manifest(manifest_hash)
             .await
+            .map_err(|e| format!("RPC error: {}", e))?
             .ok_or("failed to get toolchain manifest")?;
 
         let toolchain_info = ToolchainInfo {
@@ -1636,9 +1640,13 @@ impl DaemonService {
             let spec = RegistrySpec::crates_io(&info.name, &info.version, &info.checksum);
 
             // Ensure the crate exists in CAS (downloads tarball if needed)
-            let ensure_result = self.cas.ensure_registry_crate(spec).await;
+            let ensure_result = self
+                .cas
+                .ensure_registry_crate(spec)
+                .await
+                .map_err(|e| format!("RPC error: {}", e))?;
 
-            if ensure_result.status == vx_registry_proto::EnsureStatus::Failed {
+            if ensure_result.status == EnsureStatus::Failed {
                 return Err(format!(
                     "failed to acquire registry crate {} {}: {}",
                     info.name,
@@ -1661,7 +1669,11 @@ impl DaemonService {
                 manifest_hash,
                 workspace_root: graph.workspace_root.to_string(),
             };
-            let mat_result = self.exec.materialize_registry_crate(request).await;
+            let mat_result = self
+                .exec
+                .materialize_registry_crate(request)
+                .await
+                .map_err(|e| format!("RPC error: {}", e))?;
 
             if mat_result.status == MaterializeStatus::Failed {
                 return Err(format!(
@@ -1707,7 +1719,7 @@ impl DaemonService {
 
         // Acquire hermetic Rust toolchain (stable channel for now)
         let rust_toolchain = self
-            .ensure_rust_toolchain(vx_toolchain::Channel::Stable)
+            .ensure_rust_toolchain(RustChannel::Stable)
             .await?;
 
         // Target triple comes from the toolchain spec (host = target for native builds)
@@ -2101,13 +2113,27 @@ impl DaemonService {
             .collect();
 
         // Check cache
-        if let Some(cached_manifest_hash) = self.cas.lookup(cache_key).await {
-            if let Some(cached_manifest) = self.cas.get_manifest(cached_manifest_hash.clone()).await
+        if let Some(cached_manifest_hash) = self
+            .cas
+            .lookup(cache_key)
+            .await
+            .map_err(|e| format!("RPC error: {}", e))?
+        {
+            if let Some(cached_manifest) = self
+                .cas
+                .get_manifest(cached_manifest_hash.clone())
+                .await
+                .map_err(|e| format!("RPC error: {}", e))?
             {
                 // Cache hit - materialize rlib
                 for output in &cached_manifest.outputs {
                     if output.logical == "rlib" {
-                        if let Some(blob_data) = self.cas.get_blob(output.blob).await {
+                        if let Some(blob_data) = self
+                            .cas
+                            .get_blob(output.blob)
+                            .await
+                            .map_err(|e| format!("RPC error: {}", e))?
+                        {
                             let dest_path = workspace_root.join(&rlib_path);
                             vx_io::sync::atomic_write_executable(&dest_path, &blob_data, false)
                                 .map_err(|e| format!("failed to write {}: {}", dest_path, e))?;
@@ -2164,7 +2190,11 @@ impl DaemonService {
         let invocation_cwd = invocation.cwd.clone();
 
         // Execute rustc via exec service (V1: RPC)
-        let exec_result = self.exec.execute_rustc(invocation).await;
+        let exec_result = self
+            .exec
+            .execute_rustc(invocation)
+            .await
+            .map_err(|e| format!("RPC error: {}", e))?;
 
         let duration = std::time::Duration::from_millis(exec_result.duration_ms);
 
@@ -2187,7 +2217,7 @@ impl DaemonService {
         let node_manifest = NodeManifest {
             node_id: node_id.clone(),
             cache_key,
-            produced_at: unix_timestamp(),
+            produced_at: jiff::Zoned::now().datetime(),
             outputs: vec![OutputEntry {
                 logical: "rlib".to_string(),
                 filename: rlib_filename,
@@ -2196,8 +2226,15 @@ impl DaemonService {
             }],
         };
 
-        let manifest_hash = self.cas.put_manifest(node_manifest).await;
-        self.cas.publish(cache_key, manifest_hash.clone()).await;
+        let manifest_hash = self
+            .cas
+            .put_manifest(node_manifest)
+            .await
+            .map_err(|e| format!("RPC error: {}", e))?;
+        self.cas
+            .publish(cache_key, manifest_hash.clone())
+            .await
+            .map_err(|e| format!("RPC error: {}", e))?;
 
         let node_report = NodeReport {
             node_id: node_id.0.clone(),
@@ -2380,7 +2417,11 @@ impl DaemonService {
         let invocation_cwd = invocation.cwd.clone();
 
         // Execute rustc via exec service (V1: RPC)
-        let exec_result = self.exec.execute_rustc(invocation).await;
+        let exec_result = self
+            .exec
+            .execute_rustc(invocation)
+            .await
+            .map_err(|e| format!("RPC error: {}", e))?;
 
         let duration = std::time::Duration::from_millis(exec_result.duration_ms);
 

@@ -1,41 +1,62 @@
 use camino::Utf8Path;
 use futures_util::StreamExt;
 use tracing::debug;
-use vx_cas_proto::Blake3Hash;
-use vx_tarball::Compression;
+use vx_cas_proto::{Blake3Hash, TreeManifest};
 
 use crate::ExecService;
 
 impl ExecService {
-    /// Extract a tar.xz blob from CAS to a destination directory
-    pub(crate) async fn extract_tar_xz_from_cas(
+    /// Materialize a tree from CAS to a destination directory
+    pub(crate) async fn materialize_tree_from_cas(
         &self,
-        blob_hash: Blake3Hash,
+        tree_manifest_hash: Blake3Hash,
         dest: &Utf8Path,
-        strip_components: u32,
     ) -> Result<(), String> {
-        debug!(blob = %blob_hash, dest = %dest, strip = strip_components, "extracting tar.xz");
+        debug!(tree = %tree_manifest_hash, dest = %dest, "materializing tree");
 
-        // Stream blob from CAS
-        let mut stream = self
+        // Fetch tree manifest blob from CAS
+        let tree_json = self
             .cas
-            .stream_blob(blob_hash)
+            .get_blob(tree_manifest_hash)
             .await
-            .map_err(|e| format!("failed to start blob stream: {:?}", e))?;
-        let mut compressed_data = Vec::new();
+            .map_err(|e| format!("failed to fetch tree manifest: {:?}", e))?
+            .ok_or_else(|| format!("tree manifest {} not found in CAS", tree_manifest_hash))?;
 
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| format!("failed to stream blob: {:?}", e))?;
-            compressed_data.extend_from_slice(&chunk);
-        }
-
-        vx_tarball::extract(
-            compressed_data,
-            dest.to_owned(),
-            Compression::Xz,
-            strip_components,
+        // Parse tree manifest
+        let tree: TreeManifest = facet_json::from_str(
+            std::str::from_utf8(&tree_json)
+                .map_err(|e| format!("tree manifest is not valid UTF-8: {}", e))?,
         )
+        .map_err(|e| format!("failed to parse tree manifest: {}", e))?;
+
+        debug!(
+            tree = %tree_manifest_hash,
+            files = tree.entries.len(),
+            total_bytes = tree.total_size_bytes,
+            "parsed tree manifest"
+        );
+
+        // Materialize using vx_tarball::materialize_tree
+        let cas = self.cas.clone();
+        vx_tarball::materialize_tree(&tree, dest, async move |blob_hash| {
+            // Fetch blob from CAS
+            let mut stream = cas
+                .stream_blob(blob_hash)
+                .await
+                .map_err(|e| format!("failed to start blob stream: {:?}", e))?;
+
+            let mut data = Vec::new();
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = chunk_result.map_err(|e| format!("failed to stream blob: {:?}", e))?;
+                data.extend_from_slice(&chunk);
+            }
+
+            Ok(data)
+        })
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("failed to materialize tree: {}", e))?;
+
+        debug!(tree = %tree_manifest_hash, dest = %dest, "tree materialized");
+        Ok(())
     }
 }

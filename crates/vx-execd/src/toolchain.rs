@@ -1,5 +1,4 @@
 use camino::Utf8PathBuf;
-use futures_util::StreamExt;
 use tracing::{debug, info};
 use vx_cas_proto::{Blake3Hash, MaterializeStep};
 
@@ -59,63 +58,11 @@ impl ExecService {
         // Execute materialization plan
         for step in &plan.steps {
             match step {
-                MaterializeStep::ExtractTarXz {
-                    blob,
-                    dest_subdir,
-                    strip_components,
-                } => {
-                    let dest = temp_dir.join(dest_subdir);
-                    tokio::fs::create_dir_all(&dest)
-                        .await
-                        .map_err(|e| format!("failed to create dest dir {}: {}", dest, e))?;
-
-                    self.extract_tar_xz_from_cas(*blob, &dest, *strip_components)
-                        .await?;
-                }
                 MaterializeStep::EnsureDir { relpath } => {
                     let dest = temp_dir.join(relpath);
                     tokio::fs::create_dir_all(&dest)
                         .await
                         .map_err(|e| format!("failed to create directory {}: {}", dest, e))?;
-                }
-                MaterializeStep::WriteFile {
-                    relpath,
-                    blob,
-                    mode,
-                } => {
-                    let dest = temp_dir.join(relpath);
-                    if let Some(parent) = dest.parent() {
-                        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                            format!("failed to create parent directory {}: {}", parent, e)
-                        })?;
-                    }
-
-                    // Fetch blob from CAS
-                    let mut stream = self
-                        .cas
-                        .stream_blob(*blob)
-                        .await
-                        .map_err(|e| format!("failed to start blob stream: {:?}", e))?;
-                    let mut data = Vec::new();
-                    while let Some(chunk_result) = stream.next().await {
-                        let chunk =
-                            chunk_result.map_err(|e| format!("failed to stream blob: {:?}", e))?;
-                        data.extend_from_slice(&chunk);
-                    }
-
-                    tokio::fs::write(&dest, data)
-                        .await
-                        .map_err(|e| format!("failed to write file {}: {}", dest, e))?;
-
-                    // Set permissions
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let perms = std::fs::Permissions::from_mode(*mode);
-                        tokio::fs::set_permissions(&dest, perms)
-                            .await
-                            .map_err(|e| format!("failed to set permissions on {}: {}", dest, e))?;
-                    }
                 }
                 MaterializeStep::Symlink { relpath, target } => {
                     let dest = temp_dir.join(relpath);
@@ -132,8 +79,20 @@ impl ExecService {
                     }
                     #[cfg(not(unix))]
                     {
-                        return Err(format!("symlinks not supported on this platform"));
+                        return Err("symlinks not supported on this platform".to_string());
                     }
+                }
+                MaterializeStep::MaterializeTree {
+                    tree_manifest,
+                    dest_subdir,
+                } => {
+                    let dest = temp_dir.join(dest_subdir);
+                    tokio::fs::create_dir_all(&dest)
+                        .await
+                        .map_err(|e| format!("failed to create dest dir {}: {}", dest, e))?;
+
+                    self.materialize_tree_from_cas(*tree_manifest, &dest)
+                        .await?;
                 }
             }
         }

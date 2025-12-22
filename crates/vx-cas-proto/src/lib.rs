@@ -349,26 +349,30 @@ pub struct ToolchainManifest {
     // === Zig-specific fields ===
     pub zig_version: Option<String>,
 
-    /// Components with their CAS blob references
-    pub components: Vec<ToolchainComponentBlob>,
+    /// Components stored as trees (deduped file storage)
+    pub components: Vec<ToolchainComponentTree>,
 }
 
-pub const TOOLCHAIN_MANIFEST_SCHEMA_VERSION: u32 = 2;
+/// Schema version 3: components stored as trees instead of tarballs
+pub const TOOLCHAIN_MANIFEST_SCHEMA_VERSION: u32 = 3;
 
+/// A toolchain component stored as a tree (deduped file storage)
 #[derive(Debug, Clone, Facet)]
-pub struct ToolchainComponentBlob {
+pub struct ToolchainComponentTree {
     /// Component name: "rustc", "rust-std", "zig-exe", "zig-lib"
     pub name: String,
     /// Target triple (for rust-std)
     pub target: Option<String>,
-    /// Compression format: "xz", "none", "tar"
-    pub compression: String,
-    /// CAS blob hash of the tarball/file bytes
-    pub blob: Blake3Hash,
+    /// Hash of the TreeManifest blob
+    pub tree_manifest: Blake3Hash,
     /// Upstream SHA256 hex (for provenance/verification)
     pub sha256: String,
-    /// Size in bytes
-    pub size_bytes: u64,
+    /// Total size of all files in the tree
+    pub total_size_bytes: u64,
+    /// Number of files in the tree
+    pub file_count: u32,
+    /// Number of unique blobs (for dedup stats)
+    pub unique_blobs: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Facet)]
@@ -401,24 +405,15 @@ pub enum MaterializeStep {
     /// Ensure a directory exists (for explicit dir creation).
     /// relpath must be non-empty; use "." for toolchain root if needed.
     EnsureDir { relpath: String },
-    /// Extract a tar.xz blob
-    ExtractTarXz {
-        blob: Blake3Hash,
-        /// Number of path components to strip (usually 1)
-        strip_components: u32,
+    /// Create a symlink (target must not escape toolchain root)
+    Symlink { relpath: String, target: String },
+    /// Materialize a tree from a TreeManifest
+    MaterializeTree {
+        /// Hash of the TreeManifest blob
+        tree_manifest: Blake3Hash,
         /// Destination subdirectory relative to toolchain root
         dest_subdir: String,
     },
-    /// Write a single file from a blob
-    WriteFile {
-        /// Relative path within toolchain root
-        relpath: String,
-        blob: Blake3Hash,
-        /// Unix mode (e.g., 0o755 for executables)
-        mode: u32,
-    },
-    /// Create a symlink (target must not escape toolchain root)
-    Symlink { relpath: String, target: String },
 }
 
 // Toolchain RPC Result Types
