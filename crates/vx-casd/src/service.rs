@@ -9,7 +9,7 @@ use vx_cas_proto::{
 
 use crate::registry::download_crate;
 use crate::types::CasService;
-use crate::utils::atomic_write;
+use vx_io::atomic_write;
 
 const CRATES_IO_REGISTRY: &str = "https://crates.io";
 const REGISTRY_MANIFEST_SCHEMA_VERSION: u32 = 1;

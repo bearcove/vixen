@@ -3224,6 +3224,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vx-cas-proto",
+ "vx-io",
  "vx-toolchain",
  "xz2",
 ]
@@ -3258,6 +3259,7 @@ dependencies = [
  "vx-cc",
  "vx-daemon-proto",
  "vx-exec-proto",
+ "vx-io",
  "vx-manifest",
  "vx-report",
  "vx-rs",
@@ -3300,6 +3302,15 @@ dependencies = [
  "vx-cc",
  "vx-exec-proto",
  "vx-tarball",
+]
+
+[[package]]
+name = "vx-io"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

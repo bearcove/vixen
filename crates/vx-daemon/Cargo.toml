@@ -24,6 +24,7 @@ vx-cas-proto = { workspace = true }
 vx-cc = { path = "../vx-cc" }
 vx-exec-proto = { workspace = true }
 vx-daemon-proto = { workspace = true }
+vx-io = { workspace = true }
 vx-manifest = { workspace = true }
 vx-report = { workspace = true }
 vx-rs = { path = "../vx-rs" }

@@ -16,6 +16,7 @@ vx-exec-proto = { path = "crates/vx-exec-proto" }
 vx-manifest = { path = "crates/vx-manifest" }
 vx-daemon-proto = { path = "crates/vx-daemon-proto" }
 vx-report = { path = "crates/vx-report" }
+vx-io = { path = "crates/vx-io" }
 vx-tarball = { path = "crates/vx-tarball" }
 vx-toolchain = { path = "crates/vx-toolchain" }
 

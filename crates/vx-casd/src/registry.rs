@@ -13,7 +13,8 @@ use vx_cas_proto::{
     EnsureRegistryCrateResult, EnsureStatus, RegistryCrateManifest, RegistrySpecKey,
 };
 
-use crate::{CasService, atomic_write};
+use crate::CasService;
+use vx_io::atomic_write;
 
 /// Maximum retry attempts for transient failures
 const MAX_RETRIES: u32 = 3;

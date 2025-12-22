@@ -6,12 +6,10 @@ pub(crate) mod registry;
 pub(crate) mod service;
 pub(crate) mod toolchain;
 pub(crate) mod types;
-pub(crate) mod utils;
 
 use crate::registry::RegistryManager;
 use crate::toolchain::ToolchainManager;
 use crate::types::{CasService, CasServiceInner};
-use crate::utils::atomic_write;
 use camino::Utf8PathBuf;
 use eyre::Result;
 use std::sync::Arc;
@@ -21,6 +19,7 @@ use vx_cas_proto::CasServer;
 use vx_cas_proto::{
     Blake3Hash, BlobHash, CacheKey, ManifestHash, ToolchainManifest, ToolchainSpecKey,
 };
+use vx_io::atomic_write;
 
 #[derive(Debug)]
 struct Args {
