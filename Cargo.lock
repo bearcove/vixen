@@ -3,15 +3,6 @@
 version = 4
 
 [[package]]
-name = "addr2line"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
-dependencies = [
- "gimli",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -102,7 +93,9 @@ dependencies = [
 
 [[package]]
 name = "arborium"
-version = "0.0.0"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b2802e052851be176d4237d09b694e1f0241c6151df81716ca01e493e88795"
 dependencies = [
  "arborium-highlight",
  "arborium-rust",
@@ -114,7 +107,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-highlight"
-version = "0.0.0"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a365288b90446586f233a147ff4ef33230b0267a2149e0b17762eb44ccd392"
 dependencies = [
  "arborium-theme",
  "arborium-tree-sitter",
@@ -123,7 +118,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-rust"
-version = "0.0.0"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ca63f7b7cd7d57f0af354fe7d29171f8f5a70f0a9765e42bb7c52cf54e54a17"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -132,7 +129,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-sysroot"
-version = "0.0.0"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8aa30c5369011c4b5f136fea1cd4c2d7e764ed6882537d090a6f279f31480c4"
 dependencies = [
  "cc",
  "dlmalloc",
@@ -140,11 +139,15 @@ dependencies = [
 
 [[package]]
 name = "arborium-theme"
-version = "0.0.0"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef0b989ad89326a933995cd9904cf8b7c18e031f157345cc6bd11e4f885835ac"
 
 [[package]]
 name = "arborium-toml"
-version = "0.0.0"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d3b5bfb42ad623caf3d649db6a24e8532afc3391734fdce6f6840197742a5a7"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -153,7 +156,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-tree-sitter"
-version = "0.0.0"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d862313cf59637a1320b3df8120f1fdbae1d7a7ed48fa68e217003ba4c1c59bc"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -218,30 +223,6 @@ name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
-
-[[package]]
-name = "backtrace"
-version = "0.3.76"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
-dependencies = [
- "addr2line",
- "cfg-if",
- "libc",
- "miniz_oxide",
- "object",
- "rustc-demangle",
- "windows-link",
-]
-
-[[package]]
-name = "backtrace-ext"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "537beee3be4a18fb023b570f80e3ae28003db9167a751266b259926e25539d50"
-dependencies = [
- "backtrace",
-]
 
 [[package]]
 name = "base64"
@@ -628,7 +609,7 @@ dependencies = [
 [[package]]
 name = "facet"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#0c823615e984f77f8afeb2c3f1822d3cd4886917"
 dependencies = [
  "autocfg",
  "facet-core",
@@ -653,7 +634,7 @@ dependencies = [
 [[package]]
 name = "facet-core"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#0c823615e984f77f8afeb2c3f1822d3cd4886917"
 dependencies = [
  "autocfg",
  "bytes",
@@ -725,7 +706,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-parse"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#0c823615e984f77f8afeb2c3f1822d3cd4886917"
 dependencies = [
  "facet-macro-types",
  "proc-macro2",
@@ -735,7 +716,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-types"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#0c823615e984f77f8afeb2c3f1822d3cd4886917"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -745,7 +726,7 @@ dependencies = [
 [[package]]
 name = "facet-macros"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#0c823615e984f77f8afeb2c3f1822d3cd4886917"
 dependencies = [
  "facet-macros-impl",
 ]
@@ -753,7 +734,7 @@ dependencies = [
 [[package]]
 name = "facet-macros-impl"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#0c823615e984f77f8afeb2c3f1822d3cd4886917"
 dependencies = [
  "facet-macro-parse",
  "facet-macro-types",
@@ -787,7 +768,7 @@ dependencies = [
 [[package]]
 name = "facet-reflect"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#0c823615e984f77f8afeb2c3f1822d3cd4886917"
 dependencies = [
  "facet-core",
  "miette",
@@ -1051,12 +1032,6 @@ dependencies = [
  "wasip2",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "gimli"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "globset"
@@ -1672,8 +1647,6 @@ version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f98efec8807c63c752b5bd61f862c165c115b0a35685bdcfd9238c7aeb592b7"
 dependencies = [
- "backtrace",
- "backtrace-ext",
  "cfg-if",
  "miette-derive",
  "owo-colors",
@@ -1687,9 +1660,13 @@ dependencies = [
 
 [[package]]
 name = "miette-arborium"
-version = "0.0.0"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7f8b64bfc052acbc93e93b7ea6cbcb4eba4a9fd37f9e27d51ec66201c55fbfd"
 dependencies = [
  "arborium",
+ "arborium-highlight",
+ "arborium-theme",
  "miette",
  "owo-colors",
 ]
@@ -1764,15 +1741,6 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
  "libm",
-]
-
-[[package]]
-name = "object"
-version = "0.37.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
-dependencies = [
- "memchr",
 ]
 
 [[package]]
@@ -2362,12 +2330,6 @@ name = "ruint-macro"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
-
-[[package]]
-name = "rustc-demangle"
-version = "0.1.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56f7d92ca342cea22a06f2121d944b4fd82af56988c270852495420f961d4ace"
 
 [[package]]
 name = "rustc-hash"
@@ -3078,7 +3040,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-language"
-version = "0.1.5"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ae62f7eae5eb549c71b76658648b72cc6111f2d87d24a1e31fa907f4943e3ce"
 
 [[package]]
 name = "try-lock"

@@ -40,6 +40,10 @@ pub enum ManifestError {
     #[diagnostic(code(vx_manifest::parse_error))]
     ParseError(String),
 
+    #[error("missing required section: [{0}]")]
+    #[diagnostic(code(vx_manifest::missing_section))]
+    MissingSection(&'static str),
+
     #[error("missing required field: [package].{0}")]
     #[diagnostic(code(vx_manifest::missing_field))]
     MissingField(&'static str),
@@ -192,7 +196,7 @@ impl Manifest {
         let package = cargo
             .package
             .as_ref()
-            .ok_or(ManifestError::MissingField("package"))?;
+            .ok_or(ManifestError::MissingSection("package"))?;
 
         // Validate unsupported features
         if let Some(ref dev_deps) = cargo.dev_dependencies {
@@ -422,9 +426,11 @@ fn parse_dependencies(
                 }
 
                 // Determine dependency type: path or version
+                // Note: path + version is valid (version used for crates.io, path for local dev)
+                // When both are present, we prefer path for local builds (like Cargo does)
                 match (&detail.path, &detail.version) {
-                    (Some(path), None) => {
-                        // Path dependency: `foo = { path = "../foo" }`
+                    (Some(path), _) => {
+                        // Path dependency (possibly with version for crates.io publishing)
                         path_deps.push(PathDependency {
                             name: name.clone(),
                             path: Utf8PathBuf::from(path),
@@ -435,14 +441,6 @@ fn parse_dependencies(
                         version_deps.push(VersionDependency {
                             name: name.clone(),
                             version: version.clone(),
-                        });
-                    }
-                    (Some(_), Some(_)) => {
-                        return Err(ManifestError::InvalidDependency {
-                            name: name.clone(),
-                            reason: "cannot specify both 'path' and 'version'".into(),
-                            src: None,
-                            span: None,
                         });
                     }
                     (None, None) => {
