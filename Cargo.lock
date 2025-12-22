@@ -3219,6 +3219,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "tracing-subscriber",
  "vx-cas-proto",
  "vx-registry-proto",
  "vx-toolchain",

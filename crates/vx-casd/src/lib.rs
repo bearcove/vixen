@@ -179,76 +179,134 @@ fn rand_suffix() -> u64 {
 impl Cas for CasService {
     async fn lookup(&self, cache_key: CacheKey) -> Option<ManifestHash> {
         let path = self.cache_path(&cache_key);
-        let content = fs::read_to_string(&path).ok()?;
-        ManifestHash::from_hex(content.trim())
+        tokio::task::spawn_blocking(move || {
+            let content = fs::read_to_string(&path).ok()?;
+            ManifestHash::from_hex(content.trim())
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     async fn publish(&self, cache_key: CacheKey, manifest_hash: ManifestHash) -> PublishResult {
-        // Validate manifest exists
         let manifest_path = self.manifest_path(&manifest_hash);
-        if !manifest_path.exists() {
-            return PublishResult {
-                success: false,
-                error: Some(format!(
-                    "manifest {} does not exist",
-                    manifest_hash.to_hex()
-                )),
-            };
-        }
-
-        // Optionally: validate all blobs referenced by manifest exist
-        // For v0, we trust that blobs were written before manifest
-
-        // Atomically write the cache mapping
         let dest = self.cache_path(&cache_key);
-        match self.atomic_write(&dest, manifest_hash.to_hex().as_bytes()) {
-            Ok(()) => PublishResult {
-                success: true,
-                error: None,
-            },
-            Err(e) => PublishResult {
-                success: false,
-                error: Some(format!("failed to write cache mapping: {}", e)),
-            },
-        }
+        let tmp_dir = self.tmp_dir();
+
+        tokio::task::spawn_blocking(move || {
+            // Validate manifest exists
+            if !manifest_path.exists() {
+                return PublishResult {
+                    success: false,
+                    error: Some(format!(
+                        "manifest {} does not exist",
+                        manifest_hash.to_hex()
+                    )),
+                };
+            }
+
+            // Atomically write the cache mapping (inline atomic_write)
+            if let Some(parent) = dest.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::create_dir_all(&tmp_dir);
+            let tmp = tmp_dir.join(format!("write-{}", rand_suffix()));
+            match fs::write(&tmp, manifest_hash.to_hex().as_bytes()) {
+                Ok(()) => match fs::rename(&tmp, &dest) {
+                    Ok(()) => PublishResult {
+                        success: true,
+                        error: None,
+                    },
+                    Err(e) => PublishResult {
+                        success: false,
+                        error: Some(format!("failed to rename: {}", e)),
+                    },
+                },
+                Err(e) => PublishResult {
+                    success: false,
+                    error: Some(format!("failed to write: {}", e)),
+                },
+            }
+        })
+        .await
+        .unwrap_or_else(|_| PublishResult {
+            success: false,
+            error: Some("spawn_blocking failed".to_string()),
+        })
     }
 
     async fn put_manifest(&self, manifest: NodeManifest) -> ManifestHash {
         let json = facet_json::to_string(&manifest);
         let hash = ManifestHash::from_bytes(json.as_bytes());
         let dest = self.manifest_path(&hash);
+        let tmp_dir = self.tmp_dir();
 
-        if !dest.exists() {
-            let _ = self.atomic_write(&dest, json.as_bytes());
-        }
+        tokio::task::spawn_blocking(move || {
+            if !dest.exists() {
+                // Atomic write
+                if let Some(parent) = dest.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::create_dir_all(&tmp_dir);
+                let tmp = tmp_dir.join(format!("write-{}", rand_suffix()));
+                let _ = fs::write(&tmp, json.as_bytes());
+                let _ = fs::rename(&tmp, &dest);
+            }
+        })
+        .await
+        .ok();
 
         hash
     }
 
     async fn get_manifest(&self, hash: ManifestHash) -> Option<NodeManifest> {
         let path = self.manifest_path(&hash);
-        let json = fs::read_to_string(&path).ok()?;
-        facet_json::from_str(&json).ok()
+        tokio::task::spawn_blocking(move || {
+            let json = fs::read_to_string(&path).ok()?;
+            facet_json::from_str(&json).ok()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     async fn put_blob(&self, data: Vec<u8>) -> BlobHash {
         let hash = BlobHash::from_bytes(&data);
         let dest = self.blob_path(&hash);
+        let tmp_dir = self.tmp_dir();
 
-        if !dest.exists() {
-            let _ = self.atomic_write(&dest, &data);
-        }
+        // Use spawn_blocking for all file I/O
+        tokio::task::spawn_blocking(move || {
+            if !dest.exists() {
+                // Atomic write: tmp + rename
+                if let Some(parent) = dest.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::create_dir_all(&tmp_dir);
+                let tmp = tmp_dir.join(format!("write-{}", rand_suffix()));
+                let _ = fs::write(&tmp, &data);
+                let _ = fs::rename(&tmp, &dest);
+            }
+        })
+        .await
+        .ok();
 
         hash
     }
 
     async fn get_blob(&self, hash: BlobHash) -> Option<Vec<u8>> {
         let path = self.blob_path(&hash);
-        fs::read(&path).ok()
+        tokio::task::spawn_blocking(move || fs::read(&path).ok())
+            .await
+            .ok()
+            .flatten()
     }
 
     async fn has_blob(&self, hash: BlobHash) -> bool {
-        self.blob_path(&hash).exists()
+        let path = self.blob_path(&hash);
+        tokio::task::spawn_blocking(move || path.exists())
+            .await
+            .unwrap_or(false)
     }
 
     async fn begin_blob(&self) -> BlobUploadId {
