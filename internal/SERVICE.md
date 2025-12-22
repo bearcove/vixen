@@ -19,11 +19,7 @@ This plan details how to refactor vertex from its current in-process architectur
    - `/Users/amos/bearcove/vertex/crates/vx-daemon/src/lib.rs:1902` - in `build_rlib()`
    - `/Users/amos/bearcove/vertex/crates/vx-daemon/src/lib.rs:2113` - in `build_bin_with_deps()`
 
-2. **Direct `Command::new` in build script execution** (bypasses Exec service):
-   - `/Users/amos/bearcove/vertex/crates/vx-rs/src/build_script.rs:81` - compiling build.rs
-   - `/Users/amos/bearcove/vertex/crates/vx-rs/src/build_script.rs:97` - running build.rs
-
-3. **In-process service instantiation**:
+2. **In-process service instantiation**:
    - `DaemonService::new()` creates `CasService` and `ExecService` directly
    - No rapace client connections exist
 
@@ -37,16 +33,18 @@ This plan details how to refactor vertex from its current in-process architectur
 
 | Service | Env Var | Default Value |
 |---------|---------|---------------|
-| Daemon | `VX_DAEMON` | `shm://$VX_HOME/daemon.sock` |
-| CAS | `VX_CAS` | `shm://$VX_HOME/cas.sock` |
-| Exec | `VX_EXEC` | `shm://$VX_HOME/exec.sock` |
+| Daemon | `VX_DAEMON` | `tcp://127.0.0.1:9001` |
+| CAS | `VX_CAS` | `tcp://127.0.0.1:9002` |
+| Exec | `VX_EXEC` | `tcp://127.0.0.1:9003` |
 
 Where `$VX_HOME` defaults to `~/.vx`.
 
 **Rationale**: 
-- SHM sockets are fast for local development
-- Env vars allow easy override for remote workers
+- TCP sockets are universally supported and work across all platforms
+- Env vars allow easy override for remote workers (e.g., `tcp://build-server:9001`)
 - Defaults mean zero configuration for common case
+- rapace's stream transport works with any `AsyncRead + AsyncWrite` (including `tokio::net::TcpStream`)
+- Future migration to SHM or Unix sockets is straightforward
 
 ### Startup Order and Auto-Spawn
 
@@ -80,14 +78,24 @@ async fn get_daemon_client() -> Result<DaemonClient> {
 
 ### Shutdown Cascade
 
-**Strategy: Graceful Shutdown via RPC**
+**Strategy: Graceful Shutdown with Remote-Aware Cleanup**
 
 1. `vx kill` calls `daemon.shutdown()`
-2. Daemon calls `execd.shutdown()`, waits for ACK
+2. Daemon shuts down gracefully:
+   - **Only** sends `shutdown()` to execd/casd if they were auto-spawned locally (tracked via spawn record)
+   - Does **not** shut down remote services (identified by non-localhost endpoints)
 3. Daemon exits
-4. CAS stays running (shared resource, might serve other projects)
+4. CAS stays running by default (shared resource, might serve other projects or remote workers)
 
-**For full cleanup**: `vx clean` sends shutdown to all services.
+**Spawn Tracking**: Daemon keeps track of which services it spawned vs. connected to:
+```rust
+struct SpawnRecord {
+    spawned_casd: bool,   // true if we spawned it
+    spawned_execd: bool,  // true if we spawned it
+}
+```
+
+**For full cleanup**: `vx clean --all` sends shutdown to all connected services (including remote ones if user has permission).
 
 ---
 
@@ -99,201 +107,31 @@ Add `main.rs` files and `[[bin]]` sections without changing current in-process b
 
 #### 1.1 Create `crates/vx-casd/src/main.rs`
 
-```rust
-//! vx-casd: Content-addressed storage service binary
-//!
-//! Listens on a rapace endpoint and serves the Cas trait.
+**Purpose**: CAS service binary entrypoint
 
-use camino::Utf8PathBuf;
-use eyre::Result;
-use facet::Facet;
-use facet_args as args;
-use tracing_subscriber::EnvFilter;
-use vx_casd::CasService;
-
-#[derive(Facet, Debug)]
-struct Cli {
-    /// CAS storage root directory
-    #[facet(args::named)]
-    root: Option<Utf8PathBuf>,
-    
-    /// Endpoint to listen on (default: shm://$VX_HOME/cas.sock)
-    #[facet(args::named)]
-    endpoint: Option<String>,
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn,vx_casd=info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    init_tracing();
-    
-    let cli: Cli = args::from_std_args()?;
-    
-    let vx_home = get_vx_home()?;
-    let root = cli.root.unwrap_or_else(|| vx_home.clone());
-    let endpoint = cli.endpoint.unwrap_or_else(|| {
-        format!("shm://{}/cas.sock", vx_home)
-    });
-    
-    let service = CasService::new(root);
-    service.init()?;
-    
-    tracing::info!(endpoint = %endpoint, "starting CAS service");
-    
-    // TODO: Start rapace server (Phase 2)
-    // let server = CasServer::new(service);
-    // server.serve(Transport::from_endpoint(&endpoint)?).await?;
-    
-    // For now, just block forever (placeholder)
-    std::future::pending::<()>().await;
-    Ok(())
-}
-
-fn get_vx_home() -> Result<Utf8PathBuf> {
-    if let Ok(vx_home) = std::env::var("VX_HOME") {
-        return Ok(Utf8PathBuf::from(vx_home));
-    }
-    let home = std::env::var("HOME")?;
-    Ok(Utf8PathBuf::from(home).join(".vx"))
-}
-```
+**Key elements**:
+- CLI args: `--root` (storage dir), `--endpoint` (default: `tcp://127.0.0.1:9002`)
+- Initialize tracing with `vx_casd=info` level
+- Create `CasService`, call `init()`
+- Placeholder: `std::future::pending()` (will wire up server in Phase 2)
 
 #### 1.2 Create `crates/vx-execd/src/main.rs`
 
-```rust
-//! vx-execd: Execution service binary
-//!
-//! Listens on a rapace endpoint and serves the Exec trait.
+**Purpose**: Exec service binary entrypoint
 
-use camino::Utf8PathBuf;
-use eyre::Result;
-use facet::Facet;
-use facet_args as args;
-use tracing_subscriber::EnvFilter;
-
-#[derive(Facet, Debug)]
-struct Cli {
-    /// Endpoint to listen on
-    #[facet(args::named)]
-    endpoint: Option<String>,
-    
-    /// CAS endpoint to connect to
-    #[facet(args::named)]
-    cas_endpoint: Option<String>,
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn,vx_execd=info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    init_tracing();
-    
-    let cli: Cli = args::from_std_args()?;
-    
-    let vx_home = get_vx_home()?;
-    let endpoint = cli.endpoint.unwrap_or_else(|| {
-        format!("shm://{}/exec.sock", vx_home)
-    });
-    let _cas_endpoint = cli.cas_endpoint.unwrap_or_else(|| {
-        format!("shm://{}/cas.sock", vx_home)
-    });
-    
-    tracing::info!(endpoint = %endpoint, "starting Exec service");
-    
-    // TODO: Connect to CAS, start rapace server (Phase 2)
-    
-    std::future::pending::<()>().await;
-    Ok(())
-}
-
-fn get_vx_home() -> Result<Utf8PathBuf> {
-    if let Ok(vx_home) = std::env::var("VX_HOME") {
-        return Ok(Utf8PathBuf::from(vx_home));
-    }
-    let home = std::env::var("HOME")?;
-    Ok(Utf8PathBuf::from(home).join(".vx"))
-}
-```
+**Key elements**:
+- CLI args: `--endpoint` (default: `tcp://127.0.0.1:9003`), `--cas-endpoint` (default: `tcp://127.0.0.1:9002`)
+- Initialize tracing with `vx_execd=info` level
+- Placeholder: will connect to CAS and start server in Phase 2
 
 #### 1.3 Create `crates/vx-daemon/src/main.rs`
 
-```rust
-//! vx-daemon: Build orchestration daemon binary
-//!
-//! Listens on a rapace endpoint and serves the Daemon trait.
+**Purpose**: Daemon service binary entrypoint
 
-use camino::Utf8PathBuf;
-use eyre::Result;
-use facet::Facet;
-use facet_args as args;
-use tracing_subscriber::EnvFilter;
-
-#[derive(Facet, Debug)]
-struct Cli {
-    /// Endpoint to listen on
-    #[facet(args::named)]
-    endpoint: Option<String>,
-    
-    /// CAS endpoint to connect to
-    #[facet(args::named)]
-    cas_endpoint: Option<String>,
-    
-    /// Exec endpoint to connect to
-    #[facet(args::named)]
-    exec_endpoint: Option<String>,
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("warn,vx_daemon=info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    init_tracing();
-    
-    let cli: Cli = args::from_std_args()?;
-    
-    let vx_home = get_vx_home()?;
-    let endpoint = cli.endpoint.unwrap_or_else(|| {
-        format!("shm://{}/daemon.sock", vx_home)
-    });
-    
-    tracing::info!(endpoint = %endpoint, "starting daemon service");
-    
-    // TODO: Connect to CAS and Exec, start rapace server (Phase 2)
-    
-    std::future::pending::<()>().await;
-    Ok(())
-}
-
-fn get_vx_home() -> Result<Utf8PathBuf> {
-    if let Ok(vx_home) = std::env::var("VX_HOME") {
-        return Ok(Utf8PathBuf::from(vx_home));
-    }
-    let home = std::env::var("HOME")?;
-    Ok(Utf8PathBuf::from(home).join(".vx"))
-}
-```
+**Key elements**:
+- CLI args: `--endpoint` (default: `tcp://127.0.0.1:9001`), `--cas-endpoint`, `--exec-endpoint`
+- Initialize tracing with `vx_daemon=info` level
+- Placeholder: will connect to CAS/Exec clients and start server in Phase 5
 
 #### 1.4 Update Cargo.toml Files
 
@@ -364,19 +202,13 @@ pub struct DaemonServer<T: Daemon> { ... }
 
 #### 2.3 Wire Up Servers in Binaries
 
-**`crates/vx-casd/src/main.rs`** - replace placeholder:
-```rust
-use vx_cas_proto::CasServer;
-use rapace::Transport;
+**Pattern for all service binaries**:
+1. Parse endpoint (strip `tcp://` prefix to get bind address)
+2. `TcpListener::bind(addr)` to listen
+3. Accept loop: for each connection, spawn a task
+4. In spawned task: `Transport::stream(tcpstream)` → `RpcSession::new()` → `XxxServer::new()` → `server.serve()`
 
-// In main():
-let service = CasService::new(root);
-service.init()?;
-
-let server = CasServer::new(service);
-let transport = Transport::shm_listen(&endpoint).await?;
-server.serve(transport).await?;
-```
+This allows multiple concurrent clients per service.
 
 ---
 
@@ -386,118 +218,15 @@ This is the core refactoring - changing `DaemonService` from owning service inst
 
 #### 3.1 New DaemonService Signature
 
-**Current** (`crates/vx-daemon/src/lib.rs`):
-```rust
-pub struct DaemonService {
-    cas: Arc<CasService>,
-    exec: ExecService<Arc<CasService>>,
-    db: Arc<Mutex<Database>>,
-    // ...
-}
+**Change**: Make `DaemonService` generic over `C: Cas` and `E: Exec` traits instead of owning concrete types.
 
-impl DaemonService {
-    pub fn new(vx_home: Utf8PathBuf) -> std::io::Result<Self> {
-        let cas = CasService::new(cas_root);
-        let exec = ExecService::new(Arc::clone(&cas), ...);
-        // ...
-    }
-}
-```
-
-**New**:
-```rust
-pub struct DaemonService<C, E> 
-where
-    C: Cas + CasToolchain + CasRegistry + Send + Sync,
-    E: Exec + Send + Sync,
-{
-    cas: C,
-    exec: E,
-    db: Arc<Mutex<Database>>,
-    // ...
-}
-
-impl<C, E> DaemonService<C, E>
-where
-    C: Cas + CasToolchain + CasRegistry + Send + Sync + Clone,
-    E: Exec + Send + Sync,
-{
-    pub fn new(vx_home: Utf8PathBuf, cas: C, exec: E) -> std::io::Result<Self> {
-        // No longer creates CasService or ExecService
-        // ...
-    }
-}
-
-// Type alias for in-process mode (backward compat for tests)
-pub type InProcessDaemonService = DaemonService<Arc<CasService>, ExecService<Arc<CasService>>>;
-
-// Type alias for IPC mode
-pub type IpcDaemonService = DaemonService<CasClient, ExecClient>;
-```
+**Type aliases**:
+- `InProcessDaemonService = DaemonService<Arc<CasService>, ExecService<...>>` - for tests
+- `IpcDaemonService = DaemonService<CasClient, ExecClient>` - for production IPC mode
 
 #### 3.2 Remove Direct Command::new Calls
 
-**In `build_rlib()` and `build_bin_with_deps()`**, replace:
-
-```rust
-// BEFORE (line ~1902):
-let output = Command::new("rustc")
-    .args(&invocation.args)
-    .current_dir(&invocation.cwd)
-    .output()
-    .map_err(|e| format!("failed to execute rustc: {}", e))?;
-
-// AFTER:
-let result = self.exec.execute_rustc(invocation.clone()).await;
-if result.exit_code != 0 {
-    return Err(format!("rustc failed for {}: {}", crate_name, result.stderr));
-}
-```
-
-This requires that the `RustcInvocation` already has the toolchain manifest set (which it does from `plan_compile_*` queries).
-
-#### 3.3 Update Build Script Execution
-
-The build script execution in `vx-rs/src/build_script.rs` also needs to go through Exec service.
-
-**Option A**: Add `execute_build_script` to Exec trait
-**Option B**: Build scripts are compiled/run as special rustc invocations
-
-Recommend **Option A** - add to `vx-exec-proto`:
-```rust
-#[derive(Debug, Clone, Facet)]
-pub struct BuildScriptInvocation {
-    pub toolchain_manifest: ManifestHash,
-    pub build_script_path: String,  // workspace-relative
-    pub manifest_dir: String,
-    pub out_dir: String,
-    pub target: String,
-    pub host: String,
-    pub crate_name: String,
-    pub env: Vec<(String, String)>,
-}
-
-#[derive(Debug, Clone, Facet)]
-pub struct BuildScriptResult {
-    pub exit_code: i32,
-    pub stdout: String,
-    pub stderr: String,
-    pub duration_ms: u64,
-    /// Parsed cargo: directives
-    pub cfgs: Vec<String>,
-    pub envs: Vec<(String, String)>,
-    pub link_libs: Vec<String>,
-    pub link_search: Vec<String>,
-}
-
-#[rapace::service]
-pub trait Exec {
-    // ... existing methods ...
-    
-    /// Execute a build script (compile + run)
-    async fn execute_build_script(&self, invocation: BuildScriptInvocation) -> BuildScriptResult;
-}
-```
+**In `build_rlib()` and `build_bin_with_deps()`**: Replace `Command::new("rustc")` with `self.exec.execute_rustc(invocation).await`
 
 ---
 
@@ -505,86 +234,16 @@ pub trait Exec {
 
 #### 4.1 Replace In-Process Daemon with Client
 
-**Current** (`crates/vx/src/main.rs`):
-```rust
-async fn cmd_build(release: bool) -> Result<()> {
-    let vx_home = get_vx_home()?;
-    let daemon = DaemonService::new(vx_home)?;  // In-process!
-    
-    let result = daemon.build(request).await;
-    // ...
-}
-```
+**Change**: Replace `DaemonService::new(vx_home)` with `get_or_spawn_daemon().await` that returns `DaemonClient`
 
-**New**:
-```rust
-use vx_daemon_proto::DaemonClient;
-
-async fn cmd_build(release: bool) -> Result<()> {
-    let daemon = get_or_spawn_daemon().await?;
-    
-    let result = daemon.build(request).await;
-    // ...
-}
-
-async fn get_or_spawn_daemon() -> Result<DaemonClient> {
-    let endpoint = get_daemon_endpoint();
-    
-    // Try to connect
-    match DaemonClient::connect(&endpoint).await {
-        Ok(client) => return Ok(client),
-        Err(e) => {
-            tracing::debug!(error = %e, "daemon not running, spawning");
-        }
-    }
-    
-    // Spawn daemon
-    spawn_process("vx-daemon", &["--endpoint", &endpoint])?;
-    
-    // Retry with backoff
-    for delay in [10, 50, 100, 500, 1000] {
-        tokio::time::sleep(Duration::from_millis(delay)).await;
-        if let Ok(client) = DaemonClient::connect(&endpoint).await {
-            return Ok(client);
-        }
-    }
-    
-    bail!("failed to connect to daemon after spawn")
-}
-
-fn spawn_process(binary: &str, args: &[&str]) -> Result<()> {
-    use std::process::Command;
-    
-    Command::new(binary)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit())  // Show startup errors
-        .spawn()?;
-    
-    Ok(())
-}
-```
+**Auto-spawn logic**:
+1. Try to connect to endpoint (from `VX_DAEMON` env or default `tcp://127.0.0.1:9001`)
+2. If connection fails, spawn `vx-daemon` binary
+3. Retry connection with exponential backoff [10, 50, 100, 500, 1000]ms
 
 #### 4.2 Add `vx kill` Implementation
 
-```rust
-async fn cmd_kill() -> Result<()> {
-    let endpoint = get_daemon_endpoint();
-    
-    match DaemonClient::connect(&endpoint).await {
-        Ok(client) => {
-            client.shutdown().await?;
-            println!("Daemon stopped");
-        }
-        Err(_) => {
-            println!("Daemon not running");
-        }
-    }
-    
-    Ok(())
-}
-```
+Try to connect to daemon, call `shutdown()` if connected, handle "not running" gracefully
 
 ---
 
@@ -592,51 +251,17 @@ async fn cmd_kill() -> Result<()> {
 
 #### 5.1 Complete `vx-daemon/src/main.rs`
 
-```rust
-use vx_cas_proto::CasClient;
-use vx_exec_proto::ExecClient;
-use vx_daemon::{DaemonService, IpcDaemonService};
-use vx_daemon_proto::DaemonServer;
+**Flow**:
+1. Parse CLI args for endpoints (daemon, cas, exec)
+2. Call `get_or_spawn_cas()` to get `CasClient` (auto-spawns if needed)
+3. Call `get_or_spawn_exec()` to get `ExecClient` (auto-spawns if needed, passes cas endpoint)
+4. Create `DaemonService::new(vx_home, cas_client, exec_client)`
+5. Start TCP server loop (same pattern as Phase 2.3)
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    init_tracing();
-    let cli: Cli = args::from_std_args()?;
-    
-    let vx_home = get_vx_home()?;
-    let endpoint = cli.endpoint.unwrap_or_else(|| format!("shm://{}/daemon.sock", vx_home));
-    let cas_endpoint = cli.cas_endpoint.unwrap_or_else(|| format!("shm://{}/cas.sock", vx_home));
-    let exec_endpoint = cli.exec_endpoint.unwrap_or_else(|| format!("shm://{}/exec.sock", vx_home));
-    
-    // Ensure CAS is running (auto-spawn if needed)
-    let cas = get_or_spawn_cas(&cas_endpoint).await?;
-    
-    // Ensure Exec is running (auto-spawn if needed)
-    let exec = get_or_spawn_exec(&exec_endpoint, &cas_endpoint).await?;
-    
-    // Create daemon service with clients
-    let service = DaemonService::new(vx_home, cas, exec)?;
-    
-    // Load picante cache
-    let _ = service.load_cache().await;
-    
-    // Serve
-    tracing::info!(endpoint = %endpoint, "daemon ready");
-    let server = DaemonServer::new(service);
-    let transport = Transport::shm_listen(&endpoint).await?;
-    server.serve(transport).await?;
-    
-    Ok(())
-}
+**Client connection pattern** (for `try_connect_cas/exec`):
+- `TcpStream::connect(addr)` → `Transport::stream()` → `RpcSession::new()` → `ClientStruct::new(session)`
 
-async fn get_or_spawn_cas(endpoint: &str) -> Result<CasClient> {
-    // Similar pattern to get_or_spawn_daemon in vx CLI
-}
-
-async fn get_or_spawn_exec(endpoint: &str, cas_endpoint: &str) -> Result<ExecClient> {
-    // Similar pattern, passes --cas-endpoint to execd
-}
-```
+**Track spawns**: Store `spawned_casd: bool` and `spawned_execd: bool` for shutdown logic
 
 ---
 
@@ -644,31 +269,17 @@ async fn get_or_spawn_exec(endpoint: &str, cas_endpoint: &str) -> Result<ExecCli
 
 #### 6.1 Extend Protocol Traits
 
-**`vx-daemon-proto/src/lib.rs`**:
-```rust
-#[rapace::service]
-pub trait Daemon {
-    async fn build(&self, request: BuildRequest) -> BuildResult;
-    async fn shutdown(&self);
-}
-```
-
-**`vx-exec-proto/src/lib.rs`**:
-```rust
-#[rapace::service]
-pub trait Exec {
-    // ... existing ...
-    async fn shutdown(&self);
-}
-```
+Add `async fn shutdown(&self)` to `Daemon` and `Exec` traits.
 
 #### 6.2 Implement Shutdown in Services
 
-Each service binary will have a `shutdown()` method that:
-1. Sets a shutdown flag
-2. Stops accepting new requests
-3. Waits for in-flight requests to complete
-4. Exits cleanly
+Each service implements `shutdown()`:
+1. Set shutdown flag
+2. Stop accepting new requests
+3. Wait for in-flight requests to complete
+4. Exit cleanly
+
+Daemon's shutdown checks spawn records and only shuts down locally-spawned services (not remote ones)
 
 ---
 
@@ -692,9 +303,7 @@ Each service binary will have a `shutdown()` method that:
 | `crates/vx-daemon/src/lib.rs` | Generify over Cas/Exec clients, remove direct Command::new |
 | `crates/vx/src/main.rs` | Replace in-process daemon with rapace client |
 | `crates/vx-daemon-proto/src/lib.rs` | Add `shutdown()` to trait |
-| `crates/vx-exec-proto/src/lib.rs` | Add `shutdown()` and `execute_build_script()` to trait |
-| `crates/vx-execd/src/lib.rs` | Implement new trait methods |
-| `crates/vx-rs/src/build_script.rs` | Remove direct Command::new (move to execd) |
+| `crates/vx-exec-proto/src/lib.rs` | Add `shutdown()` to trait |
 
 ---
 
@@ -729,11 +338,9 @@ Each service binary will have a `shutdown()` method that:
 
 2. **`/Users/amos/bearcove/vertex/crates/vx/src/main.rs`** - Replace in-process DaemonService with rapace DaemonClient, add auto-spawn logic
 
-3. **`/Users/amos/bearcove/vertex/crates/vx-exec-proto/src/lib.rs`** - Add `execute_build_script()` method to Exec trait for hermetic build script execution
+3. **`/Users/amos/bearcove/vertex/crates/vx-daemon-proto/src/lib.rs`** - Add `shutdown()` method to Daemon trait
 
-4. **`/Users/amos/bearcove/vertex/crates/vx-execd/src/lib.rs`** - Already implements Exec trait; will need new `execute_build_script()` implementation
-
-5. **`/Users/amos/bearcove/vertex/crates/vx-daemon-proto/src/lib.rs`** - Add `shutdown()` method to Daemon trait
+4. **`/Users/amos/bearcove/vertex/crates/vx-exec-proto/src/lib.rs`** - Add `shutdown()` method to Exec trait
 
 ---
 
@@ -741,22 +348,23 @@ Each service binary will have a `shutdown()` method that:
 
 | Risk | Mitigation |
 |------|------------|
-| rapace SHM transport not ready | Start with TCP transport, migrate to SHM later |
-| Performance regression from IPC overhead | SHM is near-zero overhead; benchmark before/after |
+| Port conflicts with other services | Use ephemeral port range (9000+) unlikely to conflict; allow override via env vars |
+| Performance regression from IPC overhead | TCP localhost is very fast (~µs latency); can migrate to Unix sockets or SHM later if needed |
 | Auto-spawn race conditions | Use file locks or PID files for mutual exclusion |
 | Backward compatibility | Keep `InProcessDaemonService` type alias for tests |
+| Services not accessible remotely by default | 127.0.0.1 binding is intentional for security; remote workers can use `VX_DAEMON=tcp://build-server:9001` |
 
 ---
 
-## Open Questions
+## Decisions
 
-1. **Should CAS persist across `vx kill`?** Current plan says yes (shared resource). Confirm this is desired.
+1. **CAS persists across `vx kill`**: Yes. It's a shared resource that may serve multiple projects or remote workers. Use `vx clean --all` to shut down everything.
 
-2. **How to handle version skew?** If `vx` binary is newer than running daemon, should it restart the daemon?
+2. **Version skew handling**: For V1, no version checking. Future: could add version header to RPC protocol and auto-restart if mismatch detected.
 
-3. **PID file location?** Suggest `$VX_HOME/daemon.pid`, `$VX_HOME/exec.pid` for process management.
+3. **PID files**: Not needed initially. Services bind to TCP ports; port binding acts as natural lock. Future: add `$VX_HOME/daemon.pid` if needed for tooling.
 
-4. **Logging destination for spawned services?** Currently stderr; consider `$VX_HOME/logs/` directory.
+4. **Service logging**: Initially stderr (inherited by spawning process). Future: Consider `$VX_HOME/logs/{daemon,casd,execd}.log` with rotation.
 # Implementation Plan: Move All Execution from vx-daemon to Exec Service
 
 ## Executive Summary
