@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 blake3 = { workspace = true }
 camino = { workspace = true }
+tracing = { workspace = true }
 facet = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }

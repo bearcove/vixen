@@ -251,6 +251,23 @@ pub struct CrateNode {
     pub crate_type: CrateType,
     /// Dependencies, sorted by extern_name
     pub deps: Vec<DepEdge>,
+    /// Path to build.rs relative to workspace root (if this crate has one)
+    pub build_script_rel: Option<Utf8PathBuf>,
+    /// Build script outputs (cfg flags, env vars, etc.) - populated after running build script
+    pub build_script_output: Option<BuildScriptOutput>,
+}
+
+/// Output from running a build script
+#[derive(Debug, Clone, Default)]
+pub struct BuildScriptOutput {
+    /// `cargo:rustc-cfg=...` flags to pass to rustc
+    pub cfgs: Vec<String>,
+    /// `cargo:rustc-env=NAME=VALUE` environment variables
+    pub envs: Vec<(String, String)>,
+    /// `cargo:rustc-link-lib=...` libraries to link
+    pub link_libs: Vec<String>,
+    /// `cargo:rustc-link-search=...` library search paths
+    pub link_search: Vec<String>,
 }
 
 /// Information about a registry crate needed for materialization
@@ -384,7 +401,9 @@ impl CrateGraph {
                 crate_root_rel,
                 edition: manifest.edition,
                 crate_type,
-                deps: Vec::new(), // Filled in next phase
+                deps: Vec::new(),       // Filled in next phase
+                build_script_rel: None, // Path crates don't support build scripts yet
+                build_script_output: None,
             };
 
             dir_to_id.insert(crate_dir.clone(), id);
@@ -534,19 +553,22 @@ impl CrateGraph {
 
         // Phase 2: Parse lockfile if we have version deps
         let (reachable_packages, registry_crates) = if has_version_deps {
-            let lockfile_path = invocation_dir.join("Cargo.lock");
-            if !lockfile_path.exists() {
-                // Find first version dep for error message
-                let first_version_dep = manifests
-                    .values()
-                    .flat_map(|m| m.version_deps.iter())
-                    .next()
-                    .map(|d| d.name.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                return Err(CrateGraphError::MissingLockfile {
-                    dep_name: first_version_dep,
-                });
-            }
+            // Find Cargo.lock by walking up (workspace lockfile lives at workspace root)
+            let lockfile_path = match find_lockfile(&invocation_dir) {
+                Some(path) => path,
+                None => {
+                    // Find first version dep for error message
+                    let first_version_dep = manifests
+                        .values()
+                        .flat_map(|m| m.version_deps.iter())
+                        .next()
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    return Err(CrateGraphError::MissingLockfile {
+                        dep_name: first_version_dep,
+                    });
+                }
+            };
 
             let lockfile = Lockfile::from_path(&lockfile_path)?;
             let root_name = manifests[&invocation_dir].name.as_str();
@@ -605,6 +627,8 @@ impl CrateGraph {
                 edition: manifest.edition,
                 crate_type,
                 deps: Vec::new(),
+                build_script_rel: None, // Path crates don't support build scripts yet
+                build_script_output: None,
             };
 
             dir_to_id.insert(crate_dir.clone(), id);
@@ -716,13 +740,8 @@ impl CrateGraph {
                 });
             }
 
-            // Check for build.rs - we don't support build scripts yet
-            if crate_dir.join("build.rs").exists() {
-                return Err(CrateGraphError::RegistryBuildScript {
-                    name: info.name.clone(),
-                    version: info.version.clone(),
-                });
-            }
+            // Track if this crate has a build script (will be run later)
+            let has_build_script = crate_dir.join("build.rs").exists();
 
             // Determine lib path
             let lib_path = if let Some(ref lib) = manifest.lib {
@@ -760,6 +779,17 @@ impl CrateGraph {
             let id = CrateId::for_registry(&info.name, &info.version, &info.checksum);
 
             let crate_name = package_name.replace('-', "_");
+
+            // Compute build script path if present
+            let build_script_rel = if has_build_script {
+                Some(normalize_path(
+                    &crate_dir.join("build.rs"),
+                    &self.workspace_root,
+                )?)
+            } else {
+                None
+            };
+
             let node = CrateNode {
                 id,
                 package_name: package_name.clone(),
@@ -770,6 +800,8 @@ impl CrateGraph {
                 edition,
                 crate_type: CrateType::Lib,
                 deps: Vec::new(), // Filled in next phase
+                build_script_rel,
+                build_script_output: None, // Filled in by build script runner
             };
 
             registry_id_map.insert(key, id);
@@ -867,6 +899,26 @@ impl CrateGraph {
         self.topo_order = topological_sort(&self.nodes, self.root_crate)?;
 
         Ok(())
+    }
+}
+
+/// Find `Cargo.lock` by walking up from the starting directory.
+///
+/// In a workspace, `Cargo.lock` lives at the workspace root, not in each member crate.
+/// This function walks up from `start_dir` until it finds a `Cargo.lock` file.
+fn find_lockfile(start_dir: &Utf8Path) -> Option<Utf8PathBuf> {
+    let mut current = start_dir.to_owned();
+    loop {
+        let lockfile_path = current.join("Cargo.lock");
+        if lockfile_path.exists() {
+            return Some(lockfile_path);
+        }
+        match current.parent() {
+            Some(parent) if !parent.as_str().is_empty() => {
+                current = parent.to_owned();
+            }
+            _ => return None,
+        }
     }
 }
 

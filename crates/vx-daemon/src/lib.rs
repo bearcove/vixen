@@ -1603,6 +1603,13 @@ impl DaemonService {
                     deps.sort_by(|a, b| a.extern_name.cmp(&b.extern_name));
                     dep_extern_paths.sort_by(|a, b| a.0.cmp(&b.0));
 
+                    // Extract cfg flags from build script output
+                    let cfg_flags = crate_node
+                        .build_script_output
+                        .as_ref()
+                        .map(|o| o.cfgs.clone())
+                        .unwrap_or_default();
+
                     // Build library crate
                     let (rlib_hash, rlib_path, node_report) = self
                         .build_rlib(
@@ -1610,6 +1617,7 @@ impl DaemonService {
                             rust_crate.clone(),
                             deps,
                             dep_extern_paths,
+                            cfg_flags,
                             &graph.workspace_root,
                             &target_triple,
                             profile,
@@ -1656,6 +1664,13 @@ impl DaemonService {
                     deps.sort_by(|a, b| a.extern_name.cmp(&b.extern_name));
                     dep_extern_paths.sort_by(|a, b| a.0.cmp(&b.0));
 
+                    // Extract cfg flags from build script output
+                    let cfg_flags = crate_node
+                        .build_script_output
+                        .as_ref()
+                        .map(|o| o.cfgs.clone())
+                        .unwrap_or_default();
+
                     // Build binary crate
                     let (output_path, node_report) = self
                         .build_bin_with_deps(
@@ -1663,6 +1678,7 @@ impl DaemonService {
                             rust_crate.clone(),
                             deps,
                             dep_extern_paths,
+                            cfg_flags,
                             &graph.workspace_root,
                             &target_triple,
                             profile,
@@ -1726,6 +1742,7 @@ impl DaemonService {
         rust_crate: RustCrate,
         deps: Vec<DepOutput>,
         dep_extern_paths: Vec<(String, String)>,
+        cfg_flags: Vec<String>, // --cfg flags from build script
         workspace_root: &Utf8PathBuf,
         target_triple: &str,
         profile: &str,
@@ -1747,7 +1764,7 @@ impl DaemonService {
             .collect();
 
         // Compute cache key (use _with_deps version if there are dependencies)
-        let cache_key = if dep_rlib_hashes.is_empty() {
+        let base_cache_key = if dep_rlib_hashes.is_empty() {
             cache_key_compile_rlib(db, rust_crate.clone())
                 .await
                 .map_err(|e| format!("failed to compute rlib cache key: {}", e))?
@@ -1755,6 +1772,20 @@ impl DaemonService {
             cache_key_compile_rlib_with_deps(db, rust_crate.clone(), dep_rlib_hashes.clone())
                 .await
                 .map_err(|e| format!("failed to compute rlib cache key: {}", e))?
+        };
+
+        // If there are cfg flags from build script, mix them into the cache key
+        let cache_key = if cfg_flags.is_empty() {
+            base_cache_key
+        } else {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&base_cache_key.0);
+            hasher.update(b"\ncfg_flags:");
+            for flag in &cfg_flags {
+                hasher.update(flag.as_bytes());
+                hasher.update(b"\n");
+            }
+            Blake3Hash(*hasher.finalize().as_bytes())
         };
 
         let node_id = node_id_compile_rlib(db, rust_crate.clone())
@@ -1851,7 +1882,7 @@ impl DaemonService {
         }
 
         // Cache miss - build (use _with_deps version if there are dependencies)
-        let invocation = if dep_extern_paths.is_empty() {
+        let mut invocation = if dep_extern_paths.is_empty() {
             plan_compile_rlib(db, rust_crate)
                 .await
                 .map_err(|e| format!("failed to plan rlib build: {}", e))?
@@ -1860,6 +1891,12 @@ impl DaemonService {
                 .await
                 .map_err(|e| format!("failed to plan rlib build: {}", e))?
         };
+
+        // Add cfg flags from build script
+        for cfg in &cfg_flags {
+            invocation.args.push("--cfg".to_string());
+            invocation.args.push(cfg.clone());
+        }
 
         let start = std::time::Instant::now();
         let output = Command::new("rustc")
@@ -1936,6 +1973,7 @@ impl DaemonService {
         rust_crate: RustCrate,
         deps: Vec<DepOutput>,
         dep_extern_paths: Vec<(String, String)>,
+        cfg_flags: Vec<String>, // --cfg flags from build script
         workspace_root: &Utf8PathBuf,
         target_triple: &str,
         profile: &str,
@@ -1954,10 +1992,24 @@ impl DaemonService {
             .collect();
 
         // Compute cache key (includes dep hashes!)
-        let cache_key =
+        let base_cache_key =
             cache_key_compile_bin_with_deps(db, rust_crate.clone(), dep_rlib_hashes.clone())
                 .await
                 .map_err(|e| format!("failed to compute bin cache key: {}", e))?;
+
+        // If there are cfg flags from build script, mix them into the cache key
+        let cache_key = if cfg_flags.is_empty() {
+            base_cache_key
+        } else {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&base_cache_key.0);
+            hasher.update(b"\ncfg_flags:");
+            for flag in &cfg_flags {
+                hasher.update(flag.as_bytes());
+                hasher.update(b"\n");
+            }
+            Blake3Hash(*hasher.finalize().as_bytes())
+        };
 
         let node_id = node_id_compile_bin_with_deps(db, rust_crate.clone())
             .await
@@ -2047,9 +2099,15 @@ impl DaemonService {
         }
 
         // Cache miss - build
-        let invocation = plan_compile_bin_with_deps(db, rust_crate, dep_extern_paths)
+        let mut invocation = plan_compile_bin_with_deps(db, rust_crate, dep_extern_paths)
             .await
             .map_err(|e| format!("failed to plan bin build: {}", e))?;
+
+        // Add cfg flags from build script
+        for cfg in &cfg_flags {
+            invocation.args.push("--cfg".to_string());
+            invocation.args.push(cfg.clone());
+        }
 
         let start = std::time::Instant::now();
         let output = Command::new("rustc")

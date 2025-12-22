@@ -129,6 +129,8 @@ pub struct PathDependency {
     pub name: String,
     /// Path to the dependency (relative to manifest directory)
     pub path: Utf8PathBuf,
+    /// Features to enable
+    pub features: Vec<String>,
 }
 
 /// A versioned (registry) dependency
@@ -138,6 +140,8 @@ pub struct VersionDependency {
     pub name: String,
     /// Version requirement string (e.g., "1.0", "^1.2.3")
     pub version: String,
+    /// Features to enable
+    pub features: Vec<String>,
 }
 
 /// Parsed and validated manifest
@@ -347,6 +351,7 @@ fn parse_dependencies(
                 version_deps.push(VersionDependency {
                     name: name.clone(),
                     version: version.clone(),
+                    features: Vec::new(),
                 });
             }
             full::Dependency::Workspace(_) => {
@@ -386,15 +391,7 @@ fn parse_dependencies(
                         span: Some(SourceSpan::new(span.offset.into(), span.len)),
                     });
                 }
-                if let Some(ref features) = detail.features {
-                    let span = features.span();
-                    return Err(ManifestError::InvalidDependency {
-                        name: name.clone(),
-                        reason: "features are not supported".into(),
-                        src: Some(make_source()),
-                        span: Some(SourceSpan::new(span.offset.into(), span.len)),
-                    });
-                }
+
                 if let Some(ref optional) = detail.optional {
                     if *optional.value() {
                         let span = optional.span();
@@ -425,6 +422,13 @@ fn parse_dependencies(
                     });
                 }
 
+                // Extract features if present
+                let features = detail
+                    .features
+                    .as_ref()
+                    .map(|f| f.value().clone())
+                    .unwrap_or_default();
+
                 // Determine dependency type: path or version
                 // Note: path + version is valid (version used for crates.io, path for local dev)
                 // When both are present, we prefer path for local builds (like Cargo does)
@@ -434,6 +438,7 @@ fn parse_dependencies(
                         path_deps.push(PathDependency {
                             name: name.clone(),
                             path: Utf8PathBuf::from(path),
+                            features,
                         });
                     }
                     (None, Some(version)) => {
@@ -441,6 +446,7 @@ fn parse_dependencies(
                         version_deps.push(VersionDependency {
                             name: name.clone(),
                             version: version.clone(),
+                            features,
                         });
                     }
                     (None, None) => {
@@ -730,7 +736,7 @@ foo = { git = "https://github.com/example/foo" }
     }
 
     #[test]
-    fn reject_features_in_dependency() {
+    fn parse_features_in_dependency() {
         let dir = tempfile::tempdir().unwrap();
         let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
         std::fs::create_dir_all(base.join("src")).unwrap();
@@ -741,13 +747,12 @@ foo = { git = "https://github.com/example/foo" }
 name = "app"
 
 [dependencies]
-util = { path = "../util", features = ["foo"] }
+util = { path = "../util", features = ["foo", "bar"] }
 "#;
-        let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
-        assert!(
-            matches!(err, ManifestError::InvalidDependency { name, reason, .. }
-            if name == "util" && reason.contains("features"))
-        );
+        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        assert_eq!(manifest.deps.len(), 1);
+        assert_eq!(manifest.deps[0].name, "util");
+        assert_eq!(manifest.deps[0].features, vec!["foo", "bar"]);
     }
 
     #[test]

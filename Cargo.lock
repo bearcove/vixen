@@ -3353,6 +3353,7 @@ dependencies = [
  "ra-ap-rustc_lexer",
  "tempfile",
  "thiserror",
+ "tracing",
  "vx-cas-proto",
  "vx-manifest",
 ]
