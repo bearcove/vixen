@@ -23,11 +23,11 @@ vx-toolchain = { path = "crates/vx-toolchain" }
 vx-toolchain-proto = { path = "crates/vx-toolchain-proto" }
 
 # facet ecosystem
-facet = { git = "https://github.com/facet-rs/facet" }
-facet-args = { git = "https://github.com/facet-rs/facet" }
-facet-json = { git = "https://github.com/facet-rs/facet" }
-facet-toml = { git = "https://github.com/facet-rs/facet" }
-facet-value = { git = "https://github.com/facet-rs/facet" }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-args = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-json = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-toml = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-value = { git = "https://github.com/facet-rs/facet", branch = "main" }
 
 # incremental computation
 picante = { path = "../picante/crates/picante", features = ["macros"] }
@@ -74,15 +74,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opt-level = 2
 
 [patch.crates-io]
-facet = { git = "https://github.com/facet-rs/facet" }
-facet-core = { git = "https://github.com/facet-rs/facet" }
-facet-macros = { git = "https://github.com/facet-rs/facet" }
-facet-macros-impl = { git = "https://github.com/facet-rs/facet" }
-facet-macro-parse = { git = "https://github.com/facet-rs/facet" }
-facet-macro-types = { git = "https://github.com/facet-rs/facet" }
-facet-reflect = { git = "https://github.com/facet-rs/facet" }
-facet-json = { git = "https://github.com/facet-rs/facet" }
-facet-toml = { git = "https://github.com/facet-rs/facet" }
-facet-args = { git = "https://github.com/facet-rs/facet" }
-facet-postcard = { git = "https://github.com/facet-rs/facet" }
-facet-value = { git = "https://github.com/facet-rs/facet" }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-core = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-macros = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-macros-impl = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-macro-parse = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-macro-types = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-reflect = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-json = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-toml = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-args = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-value = { git = "https://github.com/facet-rs/facet", branch = "main" }

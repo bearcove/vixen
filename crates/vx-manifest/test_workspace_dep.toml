@@ -1,0 +1,10 @@
+[package]
+name = "test"
+edition = "2021"
+
+[dependencies]
+# This should match Workspace variant
+dioxus = { workspace = true, features = ["router"] }
+
+# This should match Detailed variant
+backtrace = { path = "../..", features = ["std"] }

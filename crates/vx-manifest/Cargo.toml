@@ -12,3 +12,8 @@ camino = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+datatest-stable = "0.2"
+
+[[test]]
+name = "bearcove_manifests"
+harness = false
