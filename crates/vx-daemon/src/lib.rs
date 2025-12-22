@@ -30,12 +30,12 @@ use vx_report::{
 };
 use vx_rs::{CrateGraph, CrateGraphError, CrateId, CrateType, ModuleError};
 
-/// Format a diagnostic error using miette's graphical handler.
-/// This preserves source spans and produces nice terminal output.
+/// Format a diagnostic error using miette's graphical handler with syntax highlighting.
+/// This preserves source spans and produces nice terminal output with colors.
 fn format_diagnostic(err: &dyn miette::Diagnostic) -> String {
     let mut buf = String::new();
-    let handler =
-        miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::unicode_nocolor());
+    let handler = miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::unicode())
+        .with_syntax_highlighting(miette_arborium::MietteHighlighter::new());
     // Ignore rendering errors and fall back to Display
     if handler.render_report(&mut buf, err).is_ok() {
         buf

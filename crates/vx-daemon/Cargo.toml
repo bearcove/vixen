@@ -13,6 +13,7 @@ camino = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
+miette-arborium = { path = "/Users/amos/bearcove/arborium/crates/miette-arborium", features = ["lang-toml", "lang-rust"] }
 
 vx-cas-proto = { workspace = true }
 vx-cc = { path = "../vx-cc" }
