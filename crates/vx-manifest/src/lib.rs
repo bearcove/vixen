@@ -1,22 +1,25 @@
-//! Cargo.toml parsing for vx
+//! Cargo.toml and Cargo.lock parsing for vx
 //!
-//! Parses `Cargo.toml` into a typed internal model and validates
-//! that only the v0-supported subset is used.
+//! This crate provides:
+//! - `Manifest`: Cargo.toml parsing using the full parser with policy validation
+//! - `Lockfile`: Cargo.lock parsing with reachability analysis
 //!
-//! ## v0.3 Subset
+//! ## Policy Validation
 //!
-//! - Package with [lib] or [[bin]] targets (at least one required)
-//! - Path dependencies only: `foo = { path = "../foo" }`
-//! - No features, no optional deps, no dev-deps/build-deps
-//! - No build.rs, proc-macros, tests/benches/examples
+//! While the parser accepts all valid Cargo.toml files, the `Manifest` type
+//! enforces vx's current support level:
+//! - Path dependencies and registry dependencies
+//! - No git dependencies, features, optional deps, dev-deps/build-deps
+//! - No build.rs, proc-macros, tests/benches/examples (for now)
+
+pub mod lockfile;
 
 pub mod full;
 
-use std::collections::HashMap;
-
 use camino::{Utf8Path, Utf8PathBuf};
-use facet::Facet;
 use thiserror::Error;
+
+pub use full::CargoManifest;
 
 /// Errors that can occur during manifest parsing
 #[derive(Debug, Error)]
@@ -47,7 +50,7 @@ pub enum ManifestError {
 }
 
 /// Edition of Rust to use
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Facet)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, facet::Facet)]
 #[repr(u8)]
 pub enum Edition {
     #[facet(rename = "2015")]
@@ -68,6 +71,17 @@ impl Edition {
             Edition::E2018 => "2018",
             Edition::E2021 => "2021",
             Edition::E2024 => "2024",
+        }
+    }
+}
+
+impl From<full::Edition> for Edition {
+    fn from(e: full::Edition) -> Self {
+        match e {
+            full::Edition::E2015 => Edition::E2015,
+            full::Edition::E2018 => Edition::E2018,
+            full::Edition::E2021 => Edition::E2021,
+            full::Edition::E2024 => Edition::E2024,
         }
     }
 }
@@ -95,7 +109,16 @@ pub struct PathDependency {
     pub path: Utf8PathBuf,
 }
 
-/// Parsed and validated manifest (v0.3 subset)
+/// A versioned (registry) dependency
+#[derive(Debug, Clone)]
+pub struct VersionDependency {
+    /// Dependency name (used as extern crate name)
+    pub name: String,
+    /// Version requirement string (e.g., "1.0", "^1.2.3")
+    pub version: String,
+}
+
+/// Parsed and validated manifest
 #[derive(Debug, Clone)]
 pub struct Manifest {
     pub name: String,
@@ -106,6 +129,8 @@ pub struct Manifest {
     pub bin: Option<BinTarget>,
     /// Path dependencies
     pub deps: Vec<PathDependency>,
+    /// Versioned (registry) dependencies - require Cargo.lock
+    pub version_deps: Vec<VersionDependency>,
 }
 
 impl Manifest {
@@ -123,94 +148,14 @@ impl Manifest {
     pub fn crate_name(&self) -> String {
         self.name.replace('-', "_")
     }
-}
 
-/// Raw TOML structure for parsing (before validation)
-#[derive(Facet, Debug)]
-#[facet(rename_all = "kebab-case")]
-struct RawManifest {
-    package: Option<RawPackage>,
-    bin: Option<Vec<RawBinTarget>>,
-    lib: Option<RawLibTarget>,
-    test: Option<Vec<TargetEntry>>,
-    bench: Option<Vec<TargetEntry>>,
-    example: Option<Vec<TargetEntry>>,
+    /// Returns true if this manifest has versioned (registry) dependencies.
+    /// If true, a Cargo.lock file is required.
+    pub fn has_version_deps(&self) -> bool {
+        !self.version_deps.is_empty()
+    }
 
-    /// Dependencies as a map of name -> dependency spec
-    dependencies: Option<HashMap<String, RawDependency>>,
-    dev_dependencies: Option<HashMap<String, RawDependency>>,
-    build_dependencies: Option<HashMap<String, RawDependency>>,
-    workspace: Option<RawWorkspace>,
-    features: Option<HashMap<String, Vec<String>>>,
-}
-
-/// A dependency specification - can be a version string or a table
-#[derive(Facet, Debug)]
-#[repr(u8)]
-#[facet(untagged)]
-enum RawDependency {
-    /// Simple version string: `foo = "1.0"` - we reject these but need to parse them
-    #[allow(dead_code)]
-    Version(String),
-    /// Table form: `foo = { path = "...", version = "...", etc }`
-    Table(RawDependencyTable),
-}
-
-/// Detailed dependency table
-#[derive(Facet, Debug, Default)]
-#[facet(rename_all = "kebab-case")]
-struct RawDependencyTable {
-    path: Option<String>,
-    version: Option<String>,
-    git: Option<String>,
-    branch: Option<String>,
-    tag: Option<String>,
-    rev: Option<String>,
-    registry: Option<String>,
-    features: Option<Vec<String>>,
-    optional: Option<bool>,
-    default_features: Option<bool>,
-    package: Option<String>,
-}
-
-/// Placeholder for workspace (just to detect it exists)
-#[derive(Facet, Debug)]
-struct RawWorkspace {
-    members: Option<Vec<String>>,
-}
-
-#[derive(Facet, Debug)]
-struct RawPackage {
-    name: Option<String>,
-    version: Option<String>,
-    edition: Option<Edition>,
-    build: Option<String>,
-}
-
-#[derive(Facet, Debug)]
-struct RawBinTarget {
-    name: Option<String>,
-    path: Option<String>,
-}
-
-#[derive(Facet, Debug)]
-#[facet(rename_all = "kebab-case")]
-struct RawLibTarget {
-    name: Option<String>,
-    path: Option<String>,
-    proc_macro: Option<bool>,
-}
-
-/// Placeholder for target entries in [[test]], [[bench]], [[example]]
-/// We just need to know they exist
-#[derive(Facet, Debug)]
-struct TargetEntry {
-    name: Option<String>,
-    path: Option<String>,
-}
-
-impl Manifest {
-    /// Parse a Cargo.toml file and validate it against v0.3 constraints
+    /// Parse a Cargo.toml file and validate it against current policy
     pub fn from_path(path: &Utf8Path) -> Result<Self, ManifestError> {
         let contents = std::fs::read_to_string(path).map_err(|e| ManifestError::ReadError {
             path: path.to_owned(),
@@ -222,102 +167,125 @@ impl Manifest {
 
     /// Parse Cargo.toml content with a base directory for resolving paths
     pub fn from_str(contents: &str, base_dir: Option<&Utf8Path>) -> Result<Self, ManifestError> {
-        let raw: RawManifest =
-            facet_toml::from_str(contents).map_err(|e| ManifestError::ParseError(e.to_string()))?;
+        let cargo: full::CargoManifest =
+            full::CargoManifest::from_str(contents).map_err(ManifestError::ParseError)?;
+
+        // Extract package
+        let package = cargo
+            .package
+            .as_ref()
+            .ok_or(ManifestError::MissingField("package"))?;
 
         // Validate unsupported features
-        if raw.dev_dependencies.is_some() && !raw.dev_dependencies.as_ref().unwrap().is_empty() {
-            return Err(ManifestError::Unsupported {
-                feature: "[dev-dependencies]",
-                details: "dev-dependencies are not supported yet".into(),
-            });
+        if let Some(ref dev_deps) = cargo.dev_dependencies {
+            if !dev_deps.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[dev-dependencies]",
+                    details: "dev-dependencies are not supported yet".into(),
+                });
+            }
         }
-        if raw.build_dependencies.is_some() && !raw.build_dependencies.as_ref().unwrap().is_empty()
-        {
-            return Err(ManifestError::Unsupported {
-                feature: "[build-dependencies]",
-                details: "build-dependencies are not supported yet".into(),
-            });
+        if let Some(ref build_deps) = cargo.build_dependencies {
+            if !build_deps.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[build-dependencies]",
+                    details: "build-dependencies are not supported yet".into(),
+                });
+            }
         }
-        if raw.workspace.is_some() {
+        if cargo.workspace.is_some() {
             return Err(ManifestError::Unsupported {
                 feature: "[workspace]",
                 details: "workspaces are not supported yet".into(),
             });
         }
-        if raw.features.is_some() && !raw.features.as_ref().unwrap().is_empty() {
-            return Err(ManifestError::Unsupported {
-                feature: "[features]",
-                details: "features are not supported yet".into(),
-            });
+        if let Some(ref features) = cargo.features {
+            if !features.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[features]",
+                    details: "features are not supported yet".into(),
+                });
+            }
         }
 
         // Check for proc-macro crates
-        if let Some(ref lib) = raw.lib
-            && lib.proc_macro == Some(true)
-        {
-            return Err(ManifestError::Unsupported {
-                feature: "proc-macro crates",
-                details: "[lib] proc-macro = true is not supported yet".into(),
-            });
+        if let Some(ref lib) = cargo.lib {
+            if lib.proc_macro == Some(true) {
+                return Err(ManifestError::Unsupported {
+                    feature: "proc-macro crates",
+                    details: "[lib] proc-macro = true is not supported yet".into(),
+                });
+            }
         }
 
         // Check for test/bench/example targets
-        if let Some(ref tests) = raw.test
-            && !tests.is_empty()
-        {
-            return Err(ManifestError::Unsupported {
-                feature: "[[test]] targets",
-                details: "test targets are not supported yet".into(),
-            });
+        if let Some(ref tests) = cargo.test {
+            if !tests.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[[test]] targets",
+                    details: "test targets are not supported yet".into(),
+                });
+            }
         }
-        if let Some(ref benches) = raw.bench
-            && !benches.is_empty()
-        {
-            return Err(ManifestError::Unsupported {
-                feature: "[[bench]] targets",
-                details: "bench targets are not supported yet".into(),
-            });
+        if let Some(ref benches) = cargo.bench {
+            if !benches.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[[bench]] targets",
+                    details: "bench targets are not supported yet".into(),
+                });
+            }
         }
-        if let Some(ref examples) = raw.example
-            && !examples.is_empty()
-        {
-            return Err(ManifestError::Unsupported {
-                feature: "[[example]] targets",
-                details: "example targets are not supported yet".into(),
-            });
+        if let Some(ref examples) = cargo.example {
+            if !examples.is_empty() {
+                return Err(ManifestError::Unsupported {
+                    feature: "[[example]] targets",
+                    details: "example targets are not supported yet".into(),
+                });
+            }
         }
 
         // Check for multiple binary targets
-        if let Some(ref bins) = raw.bin
-            && bins.len() > 1
-        {
-            return Err(ManifestError::Unsupported {
-                feature: "multiple [[bin]] targets",
-                details: format!("found {} binary targets, only 1 is supported", bins.len()),
-            });
+        if let Some(ref bins) = cargo.bin {
+            if bins.len() > 1 {
+                return Err(ManifestError::Unsupported {
+                    feature: "multiple [[bin]] targets",
+                    details: format!("found {} binary targets, only 1 is supported", bins.len()),
+                });
+            }
         }
 
-        let package = raw.package.ok_or(ManifestError::MissingField("name"))?;
-
-        if package.build.is_some() {
-            return Err(ManifestError::Unsupported {
-                feature: "build scripts",
-                details: "build = \"...\" is not supported yet".into(),
-            });
+        // Check for build script
+        if let Some(ref build) = package.build {
+            let has_build = match build {
+                full::StringOrBool::String(_) => true,
+                full::StringOrBool::Bool(b) => *b,
+            };
+            if has_build {
+                return Err(ManifestError::Unsupported {
+                    feature: "build scripts",
+                    details: "build = \"...\" is not supported yet".into(),
+                });
+            }
         }
 
-        let name = package.name.ok_or(ManifestError::MissingField("name"))?;
-        let edition = package.edition.unwrap_or_default();
+        let name = package
+            .name
+            .clone()
+            .ok_or(ManifestError::MissingField("name"))?;
+
+        let edition = match &package.edition {
+            Some(full::EditionOrWorkspace::Edition(e)) => Edition::from(*e),
+            _ => Edition::default(),
+        };
 
         // Parse dependencies
-        let deps = parse_dependencies(raw.dependencies)?;
+        let (path_deps, version_deps) = parse_dependencies(&cargo)?;
 
         // Determine library target
-        let lib = determine_lib_target(&name, raw.lib, base_dir);
+        let lib = determine_lib_target(&name, cargo.lib.as_ref(), base_dir);
 
         // Determine binary target
-        let bin = determine_bin_target(&name, raw.bin, base_dir);
+        let bin = determine_bin_target(&name, cargo.bin.as_ref(), base_dir);
 
         // Must have at least one target
         if lib.is_none() && bin.is_none() {
@@ -329,177 +297,194 @@ impl Manifest {
             edition,
             lib,
             bin,
-            deps,
+            deps: path_deps,
+            version_deps,
         })
     }
 }
 
-/// Parse [dependencies] table, extracting only path dependencies
+/// Parse [dependencies] table, extracting path and version dependencies
 fn parse_dependencies(
-    deps_map: Option<HashMap<String, RawDependency>>,
-) -> Result<Vec<PathDependency>, ManifestError> {
-    let Some(deps) = deps_map else {
-        return Ok(Vec::new());
+    cargo: &full::CargoManifest,
+) -> Result<(Vec<PathDependency>, Vec<VersionDependency>), ManifestError> {
+    let Some(ref deps) = cargo.dependencies else {
+        return Ok((Vec::new(), Vec::new()));
     };
 
-    let mut result = Vec::new();
+    let mut path_deps = Vec::new();
+    let mut version_deps = Vec::new();
 
     for (name, dep) in deps {
         match dep {
-            RawDependency::Version(_) => {
-                return Err(ManifestError::InvalidDependency {
-                    name,
-                    reason: "version dependencies are not supported, only path = \"...\"".into(),
+            full::Dependency::Version(version) => {
+                // Simple version string: `foo = "1.0"`
+                version_deps.push(VersionDependency {
+                    name: name.clone(),
+                    version: version.clone(),
                 });
             }
-            RawDependency::Table(table) => {
-                // Check for unsupported fields
-                if table.version.is_some() {
+            full::Dependency::Workspace(_) => {
+                return Err(ManifestError::InvalidDependency {
+                    name: name.clone(),
+                    reason: "workspace dependencies are not supported".into(),
+                });
+            }
+            full::Dependency::Detailed(detail) => {
+                // Check for unsupported fields first
+                if detail.git.is_some() {
                     return Err(ManifestError::InvalidDependency {
-                        name,
-                        reason: "version field is not supported, only path dependencies".into(),
+                        name: name.clone(),
+                        reason: "git dependencies are not supported".into(),
                     });
                 }
-                if table.git.is_some() {
+                if detail.registry.is_some() || detail.registry_index.is_some() {
                     return Err(ManifestError::InvalidDependency {
-                        name,
-                        reason: "git dependencies are not supported, only path dependencies".into(),
+                        name: name.clone(),
+                        reason: "custom registry dependencies are not supported".into(),
                     });
                 }
-                if table.registry.is_some() {
+                if detail.features.is_some() {
                     return Err(ManifestError::InvalidDependency {
-                        name,
-                        reason: "registry dependencies are not supported".into(),
-                    });
-                }
-                if table.features.is_some() {
-                    return Err(ManifestError::InvalidDependency {
-                        name,
+                        name: name.clone(),
                         reason: "features are not supported".into(),
                     });
                 }
-                if table.optional.is_some() {
+                if detail.optional == Some(true) {
                     return Err(ManifestError::InvalidDependency {
-                        name,
+                        name: name.clone(),
                         reason: "optional dependencies are not supported".into(),
                     });
                 }
-                if table.default_features.is_some() {
+                if detail.default_features.is_some() {
                     return Err(ManifestError::InvalidDependency {
-                        name,
+                        name: name.clone(),
                         reason: "default-features is not supported".into(),
                     });
                 }
-                if table.package.is_some() {
+                if detail.package.is_some() {
                     return Err(ManifestError::InvalidDependency {
-                        name,
+                        name: name.clone(),
                         reason: "package rename is not supported".into(),
                     });
                 }
 
-                // Extract path (required)
-                let Some(path) = table.path else {
-                    return Err(ManifestError::InvalidDependency {
-                        name,
-                        reason: "missing 'path' field, only path dependencies are supported".into(),
-                    });
-                };
-
-                result.push(PathDependency {
-                    name,
-                    path: Utf8PathBuf::from(path),
-                });
+                // Determine dependency type: path or version
+                match (&detail.path, &detail.version) {
+                    (Some(path), None) => {
+                        // Path dependency: `foo = { path = "../foo" }`
+                        path_deps.push(PathDependency {
+                            name: name.clone(),
+                            path: Utf8PathBuf::from(path),
+                        });
+                    }
+                    (None, Some(version)) => {
+                        // Version dependency: `foo = { version = "1.0" }`
+                        version_deps.push(VersionDependency {
+                            name: name.clone(),
+                            version: version.clone(),
+                        });
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(ManifestError::InvalidDependency {
+                            name: name.clone(),
+                            reason: "cannot specify both 'path' and 'version'".into(),
+                        });
+                    }
+                    (None, None) => {
+                        return Err(ManifestError::InvalidDependency {
+                            name: name.clone(),
+                            reason: "missing 'path' or 'version' field".into(),
+                        });
+                    }
+                }
             }
         }
     }
 
-    Ok(result)
+    Ok((path_deps, version_deps))
 }
 
-/// Determine the library target from raw manifest data
+/// Determine the library target from parsed manifest data
 fn determine_lib_target(
     package_name: &str,
-    raw_lib: Option<RawLibTarget>,
+    lib: Option<&full::LibTarget>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<LibTarget> {
-    if let Some(lib) = raw_lib {
-        // Explicit [lib] section
-        let path = if let Some(p) = lib.path {
+    if let Some(lib) = lib {
+        // Explicit [lib] section - always trust it
+        let path = if let Some(ref p) = lib.path {
             if let Some(base) = base_dir {
-                base.join(&p)
+                base.join(p)
             } else {
                 Utf8PathBuf::from(p)
             }
+        } else if let Some(base) = base_dir {
+            base.join("src/lib.rs")
         } else {
-            // No explicit path, use default
-            if let Some(base) = base_dir {
-                base.join("src/lib.rs")
-            } else {
-                Utf8PathBuf::from("src/lib.rs")
-            }
+            Utf8PathBuf::from("src/lib.rs")
         };
 
-        let name = lib.name.unwrap_or_else(|| package_name.replace('-', "_"));
+        let name = lib
+            .name
+            .clone()
+            .unwrap_or_else(|| package_name.replace('-', "_"));
         Some(LibTarget { name, path })
     } else if let Some(base) = base_dir {
-        // Only auto-detect src/lib.rs when we have a base_dir
-        let default_lib_path = base.join("src/lib.rs");
-        if default_lib_path.exists() {
+        // Auto-detect src/lib.rs only when we have a known base directory
+        let lib_path = base.join("src/lib.rs");
+        if lib_path.exists() {
             Some(LibTarget {
                 name: package_name.replace('-', "_"),
-                path: default_lib_path,
+                path: lib_path,
             })
         } else {
             None
         }
     } else {
-        // No base_dir means we can't auto-detect targets
+        // No explicit [lib] and no base_dir - cannot auto-detect
         None
     }
 }
 
-/// Determine the binary target from raw manifest data
+/// Determine the binary target from parsed manifest data
 fn determine_bin_target(
     package_name: &str,
-    raw_bins: Option<Vec<RawBinTarget>>,
+    bins: Option<&Vec<full::BinTarget>>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<BinTarget> {
-    if let Some(bins) = raw_bins {
+    if let Some(bins) = bins {
         // Explicit [[bin]] section(s) - we only support one (validated earlier)
-        if let Some(bin) = bins.into_iter().next() {
-            let path = if let Some(p) = bin.path {
+        if let Some(bin) = bins.first() {
+            let path = if let Some(ref p) = bin.path {
                 if let Some(base) = base_dir {
-                    base.join(&p)
+                    base.join(p)
                 } else {
                     Utf8PathBuf::from(p)
                 }
+            } else if let Some(base) = base_dir {
+                base.join("src/main.rs")
             } else {
-                // No explicit path, use default
-                if let Some(base) = base_dir {
-                    base.join("src/main.rs")
-                } else {
-                    Utf8PathBuf::from("src/main.rs")
-                }
+                Utf8PathBuf::from("src/main.rs")
             };
 
-            let name = bin.name.unwrap_or_else(|| package_name.to_string());
+            let name = bin.name.clone().unwrap_or_else(|| package_name.to_string());
             return Some(BinTarget { name, path });
         }
     }
 
-    // Only auto-detect src/main.rs when we have a base_dir
+    // Auto-detect src/main.rs only when we have a known base directory
     if let Some(base) = base_dir {
-        let default_main_path = base.join("src/main.rs");
-        if default_main_path.exists() {
+        let main_path = base.join("src/main.rs");
+        if main_path.exists() {
             Some(BinTarget {
                 name: package_name.to_string(),
-                path: default_main_path,
+                path: main_path,
             })
         } else {
             None
         }
     } else {
-        // No base_dir means we can't auto-detect targets
+        // No explicit [[bin]] and no base_dir - cannot auto-detect
         None
     }
 }
@@ -606,7 +591,7 @@ common = { path = "../common" }
     }
 
     #[test]
-    fn reject_version_dependency() {
+    fn parse_version_dependency_simple() {
         let dir = tempfile::tempdir().unwrap();
         let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
         std::fs::create_dir_all(base.join("src")).unwrap();
@@ -619,8 +604,53 @@ name = "app"
 [dependencies]
 serde = "1.0"
 "#;
-        let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
-        assert!(matches!(err, ManifestError::InvalidDependency { name, .. } if name == "serde"));
+        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        assert_eq!(manifest.version_deps.len(), 1);
+        assert_eq!(manifest.version_deps[0].name, "serde");
+        assert_eq!(manifest.version_deps[0].version, "1.0");
+        assert!(manifest.has_version_deps());
+    }
+
+    #[test]
+    fn parse_version_dependency_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let toml = r#"
+[package]
+name = "app"
+
+[dependencies]
+serde = { version = "1.0.197" }
+"#;
+        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        assert_eq!(manifest.version_deps.len(), 1);
+        assert_eq!(manifest.version_deps[0].name, "serde");
+        assert_eq!(manifest.version_deps[0].version, "1.0.197");
+    }
+
+    #[test]
+    fn parse_mixed_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let toml = r#"
+[package]
+name = "app"
+
+[dependencies]
+serde = "1.0"
+mylib = { path = "../mylib" }
+"#;
+        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        assert_eq!(manifest.deps.len(), 1);
+        assert_eq!(manifest.deps[0].name, "mylib");
+        assert_eq!(manifest.version_deps.len(), 1);
+        assert_eq!(manifest.version_deps[0].name, "serde");
     }
 
     #[test]

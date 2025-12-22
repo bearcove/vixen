@@ -115,6 +115,7 @@ pub struct FinishBlobResult {
 ///
 /// CAS stores immutable content. Clients produce working directories.
 #[rapace::service]
+#[allow(async_fn_in_trait)]
 pub trait Cas {
     // =========================================================================
     // Cache key operations
@@ -166,4 +167,50 @@ pub trait Cas {
 
     /// Finish the upload, returns the final blob hash
     async fn finish_blob(&self, id: BlobUploadId) -> FinishBlobResult;
+}
+
+// =============================================================================
+// Blanket implementation for Arc<T>
+// =============================================================================
+
+impl<T: Cas + Send + Sync> Cas for std::sync::Arc<T> {
+    async fn lookup(&self, cache_key: CacheKey) -> Option<ManifestHash> {
+        (**self).lookup(cache_key).await
+    }
+
+    async fn publish(&self, cache_key: CacheKey, manifest_hash: ManifestHash) -> PublishResult {
+        (**self).publish(cache_key, manifest_hash).await
+    }
+
+    async fn put_manifest(&self, manifest: NodeManifest) -> ManifestHash {
+        (**self).put_manifest(manifest).await
+    }
+
+    async fn get_manifest(&self, hash: ManifestHash) -> Option<NodeManifest> {
+        (**self).get_manifest(hash).await
+    }
+
+    async fn put_blob(&self, data: Vec<u8>) -> BlobHash {
+        (**self).put_blob(data).await
+    }
+
+    async fn get_blob(&self, hash: BlobHash) -> Option<Vec<u8>> {
+        (**self).get_blob(hash).await
+    }
+
+    async fn has_blob(&self, hash: BlobHash) -> bool {
+        (**self).has_blob(hash).await
+    }
+
+    async fn begin_blob(&self) -> BlobUploadId {
+        (**self).begin_blob().await
+    }
+
+    async fn blob_chunk(&self, id: BlobUploadId, chunk: Vec<u8>) {
+        (**self).blob_chunk(id, chunk).await
+    }
+
+    async fn finish_blob(&self, id: BlobUploadId) -> FinishBlobResult {
+        (**self).finish_blob(id).await
+    }
 }

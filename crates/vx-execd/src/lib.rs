@@ -2,7 +2,11 @@
 //!
 //! Implements the Exec rapace service trait.
 //! Runs rustc and zig cc, streams outputs to CAS.
-//! Materializes toolchains on-demand from CAS.
+//! Materializes toolchains and registry crates on-demand from CAS.
+
+mod registry;
+
+pub use registry::RegistryMaterializer;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
@@ -15,26 +19,30 @@ use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, Cas};
 use vx_cc::depfile::{canonicalize_deps, parse_depfile_path};
 use vx_exec_proto::*;
+use vx_registry_proto::CasRegistry;
 use vx_toolchain_proto::{CasToolchain, MaterializeStep};
 
 /// Exec service implementation
-pub struct ExecService<C: Cas + CasToolchain> {
+pub struct ExecService<C: Cas + CasToolchain + CasRegistry> {
     /// CAS client for storing outputs and fetching toolchains
     cas: C,
     /// Toolchain materialization directory
     toolchains_dir: Utf8PathBuf,
-    /// In-flight materializations (keyed by manifest_hash)
+    /// In-flight toolchain materializations (keyed by manifest_hash)
     /// Uses Arc<tokio::sync::Mutex> for async locking
     materializing: Arc<
         tokio::sync::Mutex<
             HashMap<Blake3Hash, Arc<tokio::sync::OnceCell<Result<Utf8PathBuf, String>>>>,
         >,
     >,
+    /// Registry crate materializer
+    registry_materializer: RegistryMaterializer<C>,
 }
 
-impl<C: Cas + CasToolchain> ExecService<C> {
-    pub fn new(cas: C, toolchains_dir: Utf8PathBuf) -> Self {
+impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
+    pub fn new(cas: C, toolchains_dir: Utf8PathBuf, registry_cache_dir: Utf8PathBuf) -> Self {
         Self {
+            registry_materializer: RegistryMaterializer::new(cas.clone(), registry_cache_dir),
             cas,
             toolchains_dir,
             materializing: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -233,9 +241,12 @@ impl<C: Cas + CasToolchain> ExecService<C> {
             )
             .map_err(|_| "non-UTF8 path in tarball".to_string())?;
 
-            // Security: validate no path traversal or symlink escape
-            if stripped_path.as_str().contains("..") {
-                return Err(format!("invalid path in tarball: {}", stripped_path));
+            // Security: validate no path traversal (use component-based check to avoid
+            // false positives on valid filenames like "foo..rs")
+            for component in stripped_path.components() {
+                if matches!(component, camino::Utf8Component::ParentDir) {
+                    return Err(format!("path traversal in tarball: {}", stripped_path));
+                }
             }
 
             let target_path = dest.join(&stripped_path);
@@ -271,7 +282,7 @@ impl<C: Cas + CasToolchain> ExecService<C> {
     }
 }
 
-impl<C: Cas + CasToolchain + Send + Sync> Exec for ExecService<C> {
+impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> Exec for ExecService<C> {
     async fn execute_rustc(&self, invocation: RustcInvocation) -> ExecuteResult {
         let start = Instant::now();
 
@@ -553,6 +564,54 @@ impl<C: Cas + CasToolchain + Send + Sync> Exec for ExecService<C> {
             outputs,
             discovered_deps,
             manifest_hash: None, // Daemon will create and store the manifest
+        }
+    }
+
+    async fn materialize_registry_crate(
+        &self,
+        request: RegistryMaterializeRequest,
+    ) -> RegistryMaterializeResult {
+        // Validate workspace_root: must be non-empty and absolute
+        if request.workspace_root.is_empty() {
+            return RegistryMaterializeResult {
+                workspace_rel_path: String::new(),
+                was_cached: false,
+                status: MaterializeStatus::Failed,
+                error: Some("workspace_root cannot be empty".to_string()),
+            };
+        }
+
+        let workspace_root = Utf8Path::new(&request.workspace_root);
+
+        if !workspace_root.is_absolute() {
+            return RegistryMaterializeResult {
+                workspace_rel_path: String::new(),
+                was_cached: false,
+                status: MaterializeStatus::Failed,
+                error: Some(format!(
+                    "workspace_root must be absolute, got: {}",
+                    workspace_root
+                )),
+            };
+        }
+
+        match self
+            .registry_materializer
+            .materialize(request.manifest_hash, workspace_root)
+            .await
+        {
+            Ok(result) => RegistryMaterializeResult {
+                workspace_rel_path: result.workspace_rel_path,
+                was_cached: result.was_cached,
+                status: MaterializeStatus::Ok,
+                error: None,
+            },
+            Err(e) => RegistryMaterializeResult {
+                workspace_rel_path: String::new(),
+                was_cached: false,
+                status: MaterializeStatus::Failed,
+                error: Some(e),
+            },
         }
     }
 }

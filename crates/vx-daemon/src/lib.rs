@@ -19,8 +19,11 @@ use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, CacheKey, Cas, NodeId, NodeManifest, OutputEntry};
 use vx_casd::CasService;
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
+use vx_exec_proto::{Exec, MaterializeStatus, RegistryMaterializeRequest};
 use vx_exec_proto::{ExpectedOutput, RustcInvocation};
+use vx_execd::ExecService;
 use vx_manifest::Edition;
+use vx_registry_proto::{CasRegistry, RegistrySpec};
 use vx_report::{
     BuildReport, CacheOutcome, DiagnosticsRecord, InputRecord, InvocationRecord, MissReason,
     NodeReport, NodeTiming, OutputRecord, ReportStore, ToolchainRef, ToolchainsUsed,
@@ -1168,8 +1171,10 @@ pub struct AcquiredToolchains {
 
 /// The daemon service implementation
 pub struct DaemonService {
-    /// CAS service for content-addressed storage
-    cas: CasService,
+    /// CAS service for content-addressed storage (Arc for sharing with exec)
+    cas: Arc<CasService>,
+    /// Exec service for materialization and compilation
+    exec: ExecService<Arc<CasService>>,
     /// The picante incremental database (shared across builds)
     db: Arc<Mutex<Database>>,
     /// Path to the picante cache file
@@ -1186,12 +1191,22 @@ impl DaemonService {
         let cas_root = vx_home.clone();
         let cas = CasService::new(cas_root);
         cas.init()?;
+        let cas = Arc::new(cas);
+
+        // Set up directories for exec service
+        let toolchains_dir = vx_home.join("toolchains");
+        let registry_cache_dir = vx_home.join("registry");
+        std::fs::create_dir_all(&toolchains_dir)?;
+        std::fs::create_dir_all(&registry_cache_dir)?;
+
+        let exec = ExecService::new(Arc::clone(&cas), toolchains_dir, registry_cache_dir);
 
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
 
         Ok(Self {
             cas,
+            exec,
             db: Arc::new(Mutex::new(db)),
             cache_path,
             vx_home,
@@ -1329,6 +1344,76 @@ impl DaemonService {
         Ok(())
     }
 
+    /// Materialize all registry crates needed by the build.
+    ///
+    /// This method:
+    /// 1. Ensures each registry crate exists in CAS (downloads if needed)
+    /// 2. Materializes to workspace-local staging
+    /// 3. Returns a map of (name, version) -> workspace-relative path
+    async fn materialize_registry_crates(
+        &self,
+        graph: &CrateGraph,
+    ) -> Result<HashMap<(String, String), Utf8PathBuf>, String> {
+        let mut materialized_paths: HashMap<(String, String), Utf8PathBuf> = HashMap::new();
+
+        for info in graph.iter_registry_crates() {
+            // Build RegistrySpec for CAS lookup
+            let spec = RegistrySpec::crates_io(&info.name, &info.version, &info.checksum);
+
+            // Ensure the crate exists in CAS (downloads tarball if needed)
+            let ensure_result = self.cas.ensure_registry_crate(spec).await;
+
+            if ensure_result.status == vx_registry_proto::EnsureStatus::Failed {
+                return Err(format!(
+                    "failed to acquire registry crate {} {}: {}",
+                    info.name,
+                    info.version,
+                    ensure_result
+                        .error
+                        .unwrap_or_else(|| "unknown error".into())
+                ));
+            }
+
+            let manifest_hash = ensure_result.manifest_hash.ok_or_else(|| {
+                format!(
+                    "registry crate {} {} acquired but no manifest hash",
+                    info.name, info.version
+                )
+            })?;
+
+            // Materialize to workspace via execd
+            let request = RegistryMaterializeRequest {
+                manifest_hash,
+                workspace_root: graph.workspace_root.to_string(),
+            };
+            let mat_result = self.exec.materialize_registry_crate(request).await;
+
+            if mat_result.status == MaterializeStatus::Failed {
+                return Err(format!(
+                    "failed to materialize {} {}: {}",
+                    info.name,
+                    info.version,
+                    mat_result.error.unwrap_or_else(|| "unknown error".into())
+                ));
+            }
+
+            info!(
+                name = %info.name,
+                version = %info.version,
+                path = %mat_result.workspace_rel_path,
+                cached = mat_result.was_cached,
+                "materialized registry crate"
+            );
+
+            materialized_paths.insert(
+                (info.name.clone(), info.version.clone()),
+                Utf8PathBuf::from(mat_result.workspace_rel_path),
+            );
+        }
+
+        Ok(materialized_paths)
+    }
+
     /// Build a Rust project (single or multi-crate with path dependencies).
     ///
     /// This method:
@@ -1355,12 +1440,28 @@ impl DaemonService {
             .map_err(|e| format!("failed to detect host triple: {}", e))?;
 
         // Build the crate graph (this parses all Cargo.toml files and computes LCA)
-        let graph = CrateGraph::build(project_path)
+        // Use build_with_lockfile to detect and handle registry dependencies
+        let mut graph = CrateGraph::build_with_lockfile(project_path)
             .map_err(|e| format!("failed to build crate graph: {}", e))?;
+
+        // If there are registry dependencies, materialize them and finalize the graph
+        if graph.has_registry_deps() {
+            info!(
+                registry_crate_count = graph.registry_crates.len(),
+                "materializing registry crates"
+            );
+
+            let materialized_paths = self.materialize_registry_crates(&graph).await?;
+
+            graph
+                .finalize_with_registry(&materialized_paths)
+                .map_err(|e| format!("failed to finalize registry graph: {}", e))?;
+        }
 
         info!(
             workspace_root = %graph.workspace_root,
             crate_count = graph.nodes.len(),
+            registry_crate_count = graph.registry_crates.len(),
             toolchain_id = %rust_toolchain.toolchain_id.short_hex(),
             "resolved crate graph"
         );

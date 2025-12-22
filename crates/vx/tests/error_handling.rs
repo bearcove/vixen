@@ -8,16 +8,20 @@ use harness::{
 };
 
 #[test]
-fn rejects_dependencies() {
+fn rejects_registry_deps_without_lockfile() {
     let env = TestEnv::new();
     create_project_with_deps(&env);
 
+    // No Cargo.lock file - should fail with a clear error message
     let result = env.build(false);
 
-    assert!(!result.success, "build should fail with dependencies");
     assert!(
-        result.contains("dependencies") || result.contains("not supported"),
-        "error should mention dependencies: {}\n{}",
+        !result.success,
+        "build should fail with registry deps but no Cargo.lock"
+    );
+    assert!(
+        result.contains("Cargo.lock") || result.contains("lockfile"),
+        "error should mention Cargo.lock requirement: {}\n{}",
         result.stdout,
         result.stderr
     );
