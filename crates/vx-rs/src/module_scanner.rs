@@ -13,8 +13,11 @@
 //!
 //! - `#[path = "..."] mod foo;` - custom paths
 //! - `#[cfg(...)] mod foo;` - conditional compilation
-//! - `mod foo { ... }` - inline modules (for now)
 //! - Any other attributes on mod items
+//!
+//! ## Tolerated syntax
+//!
+//! - `mod foo { ... }` - inline modules (don't affect file discovery)
 //!
 //! ## Known limitations (v0.2)
 //!
@@ -397,19 +400,17 @@ pub fn scan_mod_decls(source: &str) -> Vec<ModDecl> {
     out
 }
 
-/// Validate mod declarations according to vx v0.2 policy.
+/// Validate mod declarations according to vx policy.
 ///
 /// This rejects:
-/// - Inline modules (`mod foo { ... }`)
 /// - Any attributes on mod items (including #[cfg], #[path], etc.)
+///
+/// Inline modules (`mod foo { ... }`) are allowed - they don't affect file discovery.
 pub fn validate_mod_decls(mods: &[ModDecl], file: &Utf8Path) -> Result<(), ModuleError> {
     for m in mods {
+        // Inline modules are fine - they don't add extra files
         if m.is_inline {
-            return Err(ModuleError::InlineModule {
-                name: m.name.clone(),
-                file: file.to_owned(),
-                line: m.line,
-            });
+            continue;
         }
         if m.has_attrs {
             return Err(ModuleError::AttributeOnMod {
@@ -544,8 +545,12 @@ pub fn rust_source_closure(
         validate_mod_decls(&mods, &current_abs)?;
 
         // Resolve each mod declaration and add to queue
+        // Skip inline modules - they don't have separate files
         let source_dir = current_abs.parent().unwrap_or(Utf8Path::new("."));
         for decl in mods {
+            if decl.is_inline {
+                continue;
+            }
             let mod_path = resolve_mod_path(&decl.name, &current_abs, source_dir).map_err(|e| {
                 // Enrich the error with line info if it's a ModuleNotFound
                 if let ModuleError::ModuleNotFound {
@@ -819,7 +824,8 @@ mod complex;
     }
 
     #[test]
-    fn test_validate_rejects_inline() {
+    fn test_validate_accepts_inline() {
+        // Inline modules are fine - they don't add extra files
         let mods = vec![ModDecl {
             name: "inline".to_string(),
             span_lo: 0,
@@ -830,8 +836,7 @@ mod complex;
             is_inline: true,
         }];
 
-        let err = validate_mod_decls(&mods, Utf8Path::new("src/lib.rs")).unwrap_err();
-        assert!(matches!(err, ModuleError::InlineModule { .. }));
+        validate_mod_decls(&mods, Utf8Path::new("src/lib.rs")).unwrap();
     }
 
     #[test]
@@ -1000,11 +1005,13 @@ mod bar; // line 6
     }
 
     #[test]
-    fn test_source_closure_rejects_inline_module() {
+    fn test_source_closure_accepts_inline_module() {
+        // Inline modules are fine - they don't add extra files to discover
         let (_dir, base) = setup_test_crate(&[("src/lib.rs", "mod inline { fn inner() {} }")]);
 
-        let err = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap_err();
-        assert!(matches!(err, ModuleError::InlineModule { name, .. } if name == "inline"));
+        let closure = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+        assert_eq!(closure.len(), 1);
+        assert_eq!(closure[0], Utf8PathBuf::from("src/lib.rs"));
     }
 
     #[test]
