@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use vx_cas_proto::{Blake3Hash, Cas};
-use vx_registry_proto::*;
+use vx_cas_proto::{CRATES_IO_REGISTRY, EnsureRegistryCrateResult, EnsureStatus, REGISTRY_MANIFEST_SCHEMA_VERSION, RegistryCrateManifest, RegistrySpec, RegistrySpecKey};
 
 use crate::CasService;
 
@@ -296,8 +296,8 @@ impl CasService {
         }
     }
 
-    /// Lookup manifest_hash by registry spec_key.
-    fn lookup_registry_spec(&self, spec_key: &SpecKey) -> Option<Blake3Hash> {
+    /// Lookup manifest_hash by registry spec_key (internal helper).
+    fn lookup_registry_spec_local(&self, spec_key: &SpecKey) -> Option<Blake3Hash> {
         let path = self.registry_spec_path(spec_key);
         let content = std::fs::read_to_string(&path).ok()?;
         Blake3Hash::from_hex(content.trim())
@@ -327,7 +327,11 @@ impl CasService {
     }
 }
 
-impl CasRegistry for CasService {
+// =============================================================================
+// Registry methods (Cas trait impl continuation)
+// =============================================================================
+
+impl Cas for CasService {
     #[tracing::instrument(skip(self), fields(name = %spec.name, version = %spec.version))]
     async fn ensure_registry_crate(&self, spec: RegistrySpec) -> EnsureRegistryCrateResult {
         // Validate spec and compute spec_key
@@ -359,7 +363,7 @@ impl CasRegistry for CasService {
         self.registry_manager
             .ensure(
                 spec_key,
-                || async move { self.lookup_registry_spec(&spec_key) },
+                || async move { self.lookup_registry_spec_local(&spec_key) },
                 || async {
                     // Download tarball
                     let tarball_bytes =
@@ -429,6 +433,6 @@ impl CasRegistry for CasService {
     }
 
     async fn lookup_registry_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash> {
-        self.lookup_registry_spec(&spec_key)
+        self.lookup_registry_spec_local(&spec_key)
     }
 }

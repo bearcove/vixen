@@ -11,8 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, Cas};
-use vx_registry_proto::{CasRegistry, RegistryCrateManifest, RegistryMaterializationResult};
-use vx_toolchain_proto::CasToolchain;
+use vx_cas_proto::{RegistryCrateManifest, RegistryMaterializationResult};
 
 /// Registry materialization manager.
 ///
@@ -29,7 +28,7 @@ pub struct RegistryMaterializer<C> {
     >,
 }
 
-impl<C: Cas + CasRegistry + CasToolchain + Send + Sync> RegistryMaterializer<C> {
+impl<C: Cas + Send + Sync> RegistryMaterializer<C> {
     pub fn new(cas: C, global_cache_dir: Utf8PathBuf) -> Self {
         Self {
             cas,
@@ -239,7 +238,7 @@ impl<C: Cas + CasRegistry + CasToolchain + Send + Sync> RegistryMaterializer<C> 
 
 /// Extract a .crate tarball (gzipped tar) from CAS to a destination directory.
 /// Uses strip_components=1 to remove the top-level <name>-<version>/ directory.
-async fn extract_crate_tarball<C: Cas + CasToolchain>(
+async fn extract_crate_tarball<C: Cas>(
     cas: &C,
     blob_hash: Blake3Hash,
     dest: &Utf8Path,

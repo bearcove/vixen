@@ -1,11 +1,11 @@
 //! Toolchain protocol types shared between daemon, CAS, and execd.
 //!
-//! This crate defines the protocol for toolchain acquisition and materialization.
+//! This crate defines data types for toolchain acquisition and materialization.
 //! The key types are:
 //! - Specs (RustToolchainSpec, ZigToolchainSpec) - what is requested
 //! - ToolchainManifest - what was acquired (stored in CAS)
 //! - MaterializationPlan - how to materialize on disk
-//! - CasToolchain trait - RPC interface for toolchain operations
+//! - EnsureToolchainResult - result of toolchain acquisition
 
 use facet::Facet;
 use vx_cas_proto::Blake3Hash;
@@ -240,7 +240,7 @@ pub enum MaterializeStep {
 }
 
 // =============================================================================
-// CAS Toolchain RPCs
+// RPC Result Types
 // =============================================================================
 
 #[derive(Debug, Clone, Facet)]
@@ -261,70 +261,4 @@ pub enum EnsureStatus {
     Hit,        // Already in CAS
     Downloaded, // Just acquired
     Failed,     // Acquisition failed
-}
-
-/// CAS Toolchain service trait.
-///
-/// CAS is the sole component that downloads and stores toolchains.
-/// Daemon and execd communicate only with CAS via these RPCs.
-#[rapace::service]
-#[allow(async_fn_in_trait)]
-pub trait CasToolchain {
-    /// Ensure Rust toolchain exists in CAS. CAS downloads if needed.
-    async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult;
-
-    /// Ensure Zig toolchain exists in CAS.
-    async fn ensure_zig_toolchain(&self, spec: ZigToolchainSpec) -> EnsureToolchainResult;
-
-    /// Get toolchain manifest by its hash
-    async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest>;
-
-    /// Lookup manifest hash by spec key
-    async fn lookup_toolchain_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash>;
-
-    /// Get materialization plan for a toolchain
-    async fn get_materialization_plan(
-        &self,
-        manifest_hash: Blake3Hash,
-    ) -> Option<MaterializationPlan>;
-
-    /// Stream blob chunks for extraction.
-    ///
-    /// NOTE: This is chunked delivery (Vec<u8> per chunk), not zero-copy.
-    /// Each chunk involves allocation. Fine for v1 but don't assume this is
-    /// free for multi-GB transfers.
-    async fn stream_blob(&self, blob: Blake3Hash) -> rapace::Streaming<Vec<u8>>;
-}
-
-// =============================================================================
-// Blanket implementation for Arc<T>
-// =============================================================================
-
-impl<T: CasToolchain + Send + Sync> CasToolchain for std::sync::Arc<T> {
-    async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
-        (**self).ensure_rust_toolchain(spec).await
-    }
-
-    async fn ensure_zig_toolchain(&self, spec: ZigToolchainSpec) -> EnsureToolchainResult {
-        (**self).ensure_zig_toolchain(spec).await
-    }
-
-    async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest> {
-        (**self).get_toolchain_manifest(manifest_hash).await
-    }
-
-    async fn lookup_toolchain_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash> {
-        (**self).lookup_toolchain_spec(spec_key).await
-    }
-
-    async fn get_materialization_plan(
-        &self,
-        manifest_hash: Blake3Hash,
-    ) -> Option<MaterializationPlan> {
-        (**self).get_materialization_plan(manifest_hash).await
-    }
-
-    async fn stream_blob(&self, blob: Blake3Hash) -> rapace::Streaming<Vec<u8>> {
-        (**self).stream_blob(blob).await
-    }
 }

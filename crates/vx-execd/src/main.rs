@@ -51,14 +51,16 @@ impl Args {
 }
 
 /// Connect to CAS and return a client handle
-async fn connect_to_cas(endpoint: &str) -> Result<impl vx_cas_proto::Cas + vx_cas_proto::CasToolchain + vx_cas_proto::CasRegistry + Clone + Send + Sync + 'static> {
+async fn connect_to_cas(endpoint: &str) -> Result<vx_cas_proto::CasClient> {
+    use std::sync::Arc;
     use vx_cas_proto::CasClient;
 
     let stream = TcpStream::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 
-    // Create client and spawn session.run() in background
-    let (client, session) = CasClient::new(transport);
+    // Create RPC session and client
+    let session = Arc::new(rapace::RpcSession::new(transport));
+    let client = CasClient::new(session.clone());
 
     // CRITICAL: spawn session.run() in background
     // rapace requires explicit receive loop

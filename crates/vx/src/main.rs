@@ -192,10 +192,14 @@ async fn get_or_spawn_daemon() -> Result<DaemonClient> {
 }
 
 async fn try_connect_daemon(endpoint: &str) -> Result<DaemonClient> {
+    use std::sync::Arc;
+
     let stream = tokio::net::TcpStream::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 
-    let (client, session) = DaemonClient::new(transport);
+    // Create RPC session and client
+    let session = Arc::new(rapace::RpcSession::new(transport));
+    let client = DaemonClient::new(session.clone());
 
     // CRITICAL: spawn session.run() in background (rapace requires explicit receive loop)
     tokio::spawn(async move {
@@ -221,7 +225,7 @@ async fn cmd_build(release: bool) -> Result<()> {
     // Print building message
     println!("{} ({})", "Building".green().bold(), cwd);
 
-    let result = daemon.build(request).await;
+    let result = daemon.build(request).await?;
 
     if result.success {
         if result.cached {

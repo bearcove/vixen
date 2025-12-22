@@ -1,10 +1,10 @@
 //! Registry crate protocol types shared between daemon, CAS, and execd.
 //!
-//! This crate defines the protocol for crates.io registry crate acquisition
+//! This crate defines data types for crates.io registry crate acquisition
 //! and materialization. The key types are:
 //! - RegistrySpec - identifies a specific crate version from a registry
 //! - RegistryCrateManifest - what was acquired (stored in CAS)
-//! - CasRegistry trait - RPC interface for registry operations
+//! - EnsureRegistryCrateResult - result of registry crate acquisition
 
 use facet::Facet;
 use vx_cas_proto::Blake3Hash;
@@ -158,54 +158,6 @@ pub struct RegistryMaterializationResult {
     pub was_cached: bool,
 }
 
-// =============================================================================
-// CAS Registry RPCs
-// =============================================================================
-
-/// CAS Registry service trait.
-///
-/// CAS is the sole component that downloads and stores registry crates.
-/// Daemon and execd communicate only with CAS via these RPCs.
-#[rapace::service]
-#[allow(async_fn_in_trait)]
-pub trait CasRegistry {
-    /// Ensure a registry crate exists in CAS. CAS downloads if needed.
-    ///
-    /// This downloads the .crate tarball from crates.io, verifies the SHA256
-    /// checksum, validates the tarball structure, stores the bytes as a blob,
-    /// and creates a RegistryCrateManifest.
-    async fn ensure_registry_crate(&self, spec: RegistrySpec) -> EnsureRegistryCrateResult;
-
-    /// Get a registry crate manifest by its hash.
-    async fn get_registry_manifest(
-        &self,
-        manifest_hash: Blake3Hash,
-    ) -> Option<RegistryCrateManifest>;
-
-    /// Lookup manifest hash by spec key.
-    async fn lookup_registry_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash>;
-}
-
-// =============================================================================
-// Blanket implementation for Arc<T>
-// =============================================================================
-
-impl<T: CasRegistry + Send + Sync> CasRegistry for std::sync::Arc<T> {
-    async fn ensure_registry_crate(&self, spec: RegistrySpec) -> EnsureRegistryCrateResult {
-        (**self).ensure_registry_crate(spec).await
-    }
-
-    async fn get_registry_manifest(
-        &self,
-        manifest_hash: Blake3Hash,
-    ) -> Option<RegistryCrateManifest> {
-        (**self).get_registry_manifest(manifest_hash).await
-    }
-
-    async fn lookup_registry_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash> {
-        (**self).lookup_registry_spec(spec_key).await
-    }
-}
 
 #[cfg(test)]
 mod tests {

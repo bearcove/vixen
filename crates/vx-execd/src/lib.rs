@@ -19,11 +19,10 @@ use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, Cas};
 use vx_cc::depfile::{canonicalize_deps, parse_depfile_path};
 use vx_exec_proto::*;
-use vx_registry_proto::CasRegistry;
-use vx_toolchain_proto::{CasToolchain, MaterializeStep};
+use vx_cas_proto::MaterializeStep;
 
 /// Exec service implementation
-pub struct ExecService<C: Cas + CasToolchain + CasRegistry> {
+pub struct ExecService<C: Cas> {
     /// CAS client for storing outputs and fetching toolchains
     cas: C,
     /// Toolchain materialization directory
@@ -39,7 +38,7 @@ pub struct ExecService<C: Cas + CasToolchain + CasRegistry> {
     registry_materializer: RegistryMaterializer<C>,
 }
 
-impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
+impl<C: Cas + Clone + Send + Sync> ExecService<C> {
     pub fn new(cas: C, toolchains_dir: Utf8PathBuf, registry_cache_dir: Utf8PathBuf) -> Self {
         Self {
             registry_materializer: RegistryMaterializer::new(cas.clone(), registry_cache_dir),
@@ -300,7 +299,7 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
     }
 }
 
-impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> Exec for ExecService<C> {
+impl<C: Cas + Clone + Send + Sync> Exec for ExecService<C> {
     async fn execute_rustc(&self, invocation: RustcInvocation) -> ExecuteResult {
         let start = Instant::now();
 

@@ -1898,6 +1898,10 @@ impl DaemonService {
             invocation.args.push(cfg.clone());
         }
 
+        // Save invocation details before moving
+        let invocation_args = invocation.args.clone();
+        let invocation_cwd = invocation.cwd.clone();
+
         // Execute rustc via exec service (V1: RPC)
         let exec_result = self.exec.execute_rustc(invocation).await;
 
@@ -1952,8 +1956,8 @@ impl DaemonService {
             }],
             invocation: Some(InvocationRecord {
                 program: "rustc".to_string(),
-                args: invocation.args,
-                cwd: invocation.cwd,
+                args: invocation_args,
+                cwd: invocation_cwd,
                 exit_code: 0,
             }),
             diagnostics: DiagnosticsRecord::default(),
@@ -2107,6 +2111,10 @@ impl DaemonService {
             invocation.args.push(cfg.clone());
         }
 
+        // Save invocation details before moving
+        let invocation_args = invocation.args.clone();
+        let invocation_cwd = invocation.cwd.clone();
+
         // Execute rustc via exec service (V1: RPC)
         let exec_result = self.exec.execute_rustc(invocation).await;
 
@@ -2161,8 +2169,8 @@ impl DaemonService {
             }],
             invocation: Some(InvocationRecord {
                 program: "rustc".to_string(),
-                args: invocation.args,
-                cwd: invocation.cwd,
+                args: invocation_args,
+                cwd: invocation_cwd,
                 exit_code: 0,
             }),
             diagnostics: DiagnosticsRecord::default(),
@@ -2195,6 +2203,12 @@ impl Daemon for DaemonService {
                 error: Some(e),
             },
         }
+    }
+
+    async fn shutdown(&self) {
+        // DaemonService doesn't track spawned children - that's done by DaemonWrapper in main.rs
+        // This implementation is only used in tests where shutdown is a no-op
+        warn!("shutdown() called on DaemonService without spawn tracking");
     }
 }
 

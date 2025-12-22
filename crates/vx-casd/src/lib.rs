@@ -11,9 +11,9 @@ use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use vx_cas_proto::*;
-use vx_toolchain_proto::{
-    CasToolchain, EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult,
-    MATERIALIZATION_LAYOUT_VERSION, MaterializationPlan, MaterializeStep, RustChannel, RustToolchainSpec, SpecKey as ToolchainSpecKey,
+use vx_cas_proto::{
+    EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult,
+    MATERIALIZATION_LAYOUT_VERSION, MaterializationPlan, MaterializeStep, RustChannel, RustToolchainSpec, ToolchainSpecKey,
     TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentBlob, ToolchainKind, ToolchainManifest,
     ZigToolchainSpec,
 };
@@ -385,6 +385,10 @@ impl Cas for CasService {
             error: None,
         }
     }
+
+    // NOTE: The remaining Cas trait methods (stream_blob, get_toolchain_manifest, etc.)
+    // are implemented in separate impl blocks below for organizational purposes.
+    // Rust allows splitting trait implementations across multiple blocks.
 }
 
 // =============================================================================
@@ -454,10 +458,10 @@ impl ToolchainManager {
 }
 
 // =============================================================================
-// CasToolchain Implementation
+// Toolchain methods (Cas trait impl continuation)
 // =============================================================================
 
-impl CasToolchain for CasService {
+impl Cas for CasService {
     #[tracing::instrument(skip(self), fields(spec_key = tracing::field::Empty))]
     async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
         // Validate and compute spec_key first
