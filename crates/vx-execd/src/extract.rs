@@ -17,7 +17,11 @@ impl ExecService {
         debug!(blob = %blob_hash, dest = %dest, strip = strip_components, "extracting tar.xz");
 
         // Stream blob from CAS
-        let mut stream = self.cas.stream_blob(blob_hash).await;
+        let mut stream = self
+            .cas
+            .stream_blob(blob_hash)
+            .await
+            .map_err(|e| format!("failed to start blob stream: {:?}", e))?;
         let mut compressed_data = Vec::new();
 
         while let Some(chunk_result) = stream.next().await {

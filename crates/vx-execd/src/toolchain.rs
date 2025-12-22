@@ -7,7 +7,7 @@ use crate::ExecService;
 
 impl ExecService {
     /// Materialize a toolchain from CAS to local directory
-    async fn materialize_toolchain_impl(
+    pub(crate) async fn materialize_toolchain_impl(
         &self,
         manifest_hash: Blake3Hash,
     ) -> Result<Utf8PathBuf, String> {
@@ -18,6 +18,7 @@ impl ExecService {
             .cas
             .get_toolchain_manifest(manifest_hash)
             .await
+            .map_err(|e| format!("failed to fetch toolchain manifest: {:?}", e))?
             .ok_or_else(|| format!("toolchain manifest {} not found in CAS", manifest_hash))?;
 
         // Fetch materialization plan
@@ -25,6 +26,7 @@ impl ExecService {
             .cas
             .get_materialization_plan(manifest_hash)
             .await
+            .map_err(|e| format!("failed to fetch materialization plan: {:?}", e))?
             .ok_or_else(|| {
                 format!(
                     "materialization plan for {} not found in CAS",
@@ -67,7 +69,7 @@ impl ExecService {
                         .await
                         .map_err(|e| format!("failed to create dest dir {}: {}", dest, e))?;
 
-                    self.extract_tar_xz_from_cas(*blob, &dest, *strip_components)
+                    self.extract_tar_xz_from_cas(blob, &dest, strip_components)
                         .await?;
                 }
                 MaterializeStep::EnsureDir { relpath } => {
@@ -89,7 +91,11 @@ impl ExecService {
                     }
 
                     // Fetch blob from CAS
-                    let mut stream = self.cas.stream_blob(*blob).await;
+                    let mut stream = self
+                        .cas
+                        .stream_blob(blob)
+                        .await
+                        .map_err(|e| format!("failed to start blob stream: {:?}", e))?;
                     let mut data = Vec::new();
                     while let Some(chunk_result) = stream.next().await {
                         let chunk =
@@ -105,7 +111,7 @@ impl ExecService {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let perms = std::fs::Permissions::from_mode(*mode);
+                        let perms = std::fs::Permissions::from_mode(mode);
                         tokio::fs::set_permissions(&dest, perms)
                             .await
                             .map_err(|e| format!("failed to set permissions on {}: {}", dest, e))?;

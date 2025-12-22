@@ -1,16 +1,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
-use eyre::Result;
-use futures_util::StreamExt;
-use std::collections::HashMap;
-use std::io::Read as _;
 use std::process::Command;
-use std::sync::Arc;
 use std::time::Instant;
-use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, info, warn};
-use vx_cas_proto::{Blake3Hash, Cas};
-use vx_cas_proto::{CasClient, MaterializeStep};
-use vx_cc::depfile::{canonicalize_deps, parse_depfile_path};
+use tracing::{debug, warn};
 use vx_exec_proto::{
     CcExecuteResult, CcInvocation, Exec, ExecuteResult, MaterializeStatus, ProducedOutput,
     RegistryMaterializeRequest, RegistryMaterializeResult, RustcInvocation,
@@ -116,7 +107,19 @@ impl Exec for ExecService {
                 }
             };
 
-            let blob_hash = self.cas.put_blob(data).await;
+            let blob_hash = match self.cas.put_blob(data).await {
+                Ok(h) => h,
+                Err(e) => {
+                    return ExecuteResult {
+                        exit_code: -1,
+                        stdout,
+                        stderr: format!("failed to store output {} in CAS: {:?}", expected.path, e),
+                        duration_ms,
+                        outputs: vec![],
+                        manifest_hash: None,
+                    };
+                }
+            };
 
             outputs.push(ProducedOutput {
                 logical: expected.logical.clone(),
@@ -276,7 +279,20 @@ impl Exec for ExecService {
                 }
             };
 
-            let blob_hash = self.cas.put_blob(data).await;
+            let blob_hash = match self.cas.put_blob(data).await {
+                Ok(h) => h,
+                Err(e) => {
+                    return CcExecuteResult {
+                        exit_code: -1,
+                        stdout,
+                        stderr: format!("failed to store output {} in CAS: {:?}", expected.path, e),
+                        duration_ms,
+                        outputs: vec![],
+                        discovered_deps: vec![],
+                        manifest_hash: None,
+                    };
+                }
+            };
 
             outputs.push(ProducedOutput {
                 logical: expected.logical.clone(),

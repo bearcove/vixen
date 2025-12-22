@@ -9,7 +9,7 @@ use std::sync::Arc;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
-use vx_cas_proto::{Blake3Hash, Cas, CasClient};
+use vx_cas_proto::{Blake3Hash, CasClient};
 use vx_cas_proto::{RegistryCrateManifest, RegistryMaterializationResult};
 use vx_tarball::Compression;
 
@@ -54,6 +54,7 @@ impl RegistryMaterializer {
             .cas
             .get_registry_manifest(manifest_hash)
             .await
+            .map_err(|e| format!("failed to fetch registry manifest: {:?}", e))?
             .ok_or_else(|| format!("registry manifest {} not found in CAS", manifest_hash))?;
 
         let spec = &manifest.spec;
@@ -240,15 +241,18 @@ impl RegistryMaterializer {
 
 /// Extract a .crate tarball (gzipped tar) from CAS to a destination directory.
 /// Uses strip_components=1 to remove the top-level <name>-<version>/ directory.
-async fn extract_crate_tarball<C: Cas>(
-    cas: &C,
+async fn extract_crate_tarball(
+    cas: &CasClient,
     blob_hash: Blake3Hash,
     dest: &Utf8Path,
 ) -> Result<(), String> {
     debug!(blob = %blob_hash, dest = %dest, "extracting .crate tarball");
 
     // Stream blob from CAS
-    let mut stream = cas.stream_blob(blob_hash).await;
+    let mut stream = cas
+        .stream_blob(blob_hash)
+        .await
+        .map_err(|e| format!("failed to start blob stream: {:?}", e))?;
     let mut compressed_data = Vec::new();
 
     while let Some(chunk_result) = stream.next().await {

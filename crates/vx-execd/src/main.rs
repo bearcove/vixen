@@ -11,13 +11,11 @@ pub(crate) mod toolchain;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::Result;
-use futures_util::StreamExt;
-use std::io::Read as _;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{collections::HashMap, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, info, warn};
-use vx_cas_proto::{Blake3Hash, CasClient, MaterializeStep};
+use tracing::warn;
+use vx_cas_proto::{Blake3Hash, CasClient};
 use vx_cc::depfile::{canonicalize_deps, parse_depfile_path};
 use vx_exec_proto::ExecServer;
 
