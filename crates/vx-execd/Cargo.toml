@@ -22,11 +22,8 @@ futures-util = { workspace = true }
 vx-cas-proto = { workspace = true }
 vx-cc = { workspace = true }
 vx-exec-proto = { workspace = true }
+vx-tarball = { workspace = true }
 
-# For tar.xz streaming extraction
-tar = "0.4"
-xz2 = "0.1"
-flate2 = "1"
 
 # For copy-on-write/reflink file copying
 clonetree = "0.0.2"

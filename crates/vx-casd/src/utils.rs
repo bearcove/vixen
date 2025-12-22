@@ -11,19 +11,16 @@ pub(crate) async fn atomic_write(path: &Utf8Path, contents: &[u8]) -> Result<(),
     let temp_file = tempfile::Builder::new()
         .prefix(".tmp-")
         .tempfile_in(parent_dir)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     // Get the temporary path and write contents to it
     let temp_path = temp_file.into_temp_path();
     tokio::fs::write(&temp_path, contents).await?;
 
     // Atomically persist the temporary file to the final location
-    temp_path.persist(&path).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Failed to persist temp file: {}", e),
-        )
-    })?;
+    temp_path
+        .persist(path)
+        .map_err(|e| std::io::Error::other(format!("Failed to persist temp file: {}", e)))?;
 
     Ok(())
 }

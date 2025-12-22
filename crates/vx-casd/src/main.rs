@@ -4,7 +4,6 @@
 
 pub(crate) mod registry;
 pub(crate) mod service;
-pub(crate) mod tarball;
 pub(crate) mod toolchain;
 pub(crate) mod types;
 pub(crate) mod utils;

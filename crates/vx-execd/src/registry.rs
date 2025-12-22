@@ -4,7 +4,6 @@
 //! and copying them to workspace-local staging directories.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::sync::Arc;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -12,6 +11,7 @@ use futures_util::StreamExt;
 use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, Cas, CasClient};
 use vx_cas_proto::{RegistryCrateManifest, RegistryMaterializationResult};
+use vx_tarball::Compression;
 
 /// Registry materialization manager.
 ///
@@ -256,75 +256,10 @@ async fn extract_crate_tarball<C: Cas>(
         compressed_data.extend_from_slice(&chunk);
     }
 
-    // .crate files are gzipped tarballs
-    let mut decoder = flate2::read::GzDecoder::new(&compressed_data[..]);
-    let mut tarball_data = Vec::new();
-    decoder
-        .read_to_end(&mut tarball_data)
-        .map_err(|e| format!("failed to decompress gzip: {}", e))?;
-
-    // Extract tar with strip_components=1
-    let mut archive = tar::Archive::new(&tarball_data[..]);
-    for entry in archive
-        .entries()
-        .map_err(|e| format!("failed to read tar entries: {}", e))?
-    {
-        let mut entry = entry.map_err(|e| format!("failed to read tar entry: {}", e))?;
-        let path = entry
-            .path()
-            .map_err(|e| format!("failed to get entry path: {}", e))?;
-
-        // Strip first component
-        let components: Vec<_> = path.components().collect();
-        if components.len() <= 1 {
-            continue;
-        }
-        let stripped_path =
-            Utf8PathBuf::from_path_buf(components[1..].iter().collect::<std::path::PathBuf>())
-                .map_err(|_| "non-UTF8 path in tarball".to_string())?;
-
-        // Security: validate no path traversal
-        if stripped_path.as_str().contains("..") {
-            return Err(format!("invalid path in tarball: {}", stripped_path));
-        }
-
-        let target_path = dest.join(&stripped_path);
-
-        // Handle directories
-        if entry.header().entry_type().is_dir() {
-            std::fs::create_dir_all(&target_path)
-                .map_err(|e| format!("failed to create directory {}: {}", target_path, e))?;
-            continue;
-        }
-
-        // Create parent directories
-        if let Some(parent) = target_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create directory {}: {}", parent, e))?;
-        }
-
-        // Extract file
-        let mut output_file = std::fs::File::create(&target_path)
-            .map_err(|e| format!("failed to create file {}: {}", target_path, e))?;
-        std::io::copy(&mut entry, &mut output_file)
-            .map_err(|e| format!("failed to write file {}: {}", target_path, e))?;
-
-        // Set executable bit if needed
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(mode) = entry.header().mode() {
-                if mode & 0o111 != 0 {
-                    let perms = std::fs::Permissions::from_mode(mode);
-                    std::fs::set_permissions(&target_path, perms).map_err(|e| {
-                        format!("failed to set permissions on {}: {}", target_path, e)
-                    })?;
-                }
-            }
-        }
-    }
-
-    Ok(())
+    // .crate files are gzipped tarballs with strip_components=1
+    vx_tarball::extract(compressed_data, dest.to_owned(), Compression::Gzip, 1)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Simple file-based lock guard

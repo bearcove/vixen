@@ -3290,18 +3290,16 @@ dependencies = [
  "clonetree",
  "eyre",
  "facet",
- "flate2",
  "futures-util",
  "jiff",
  "rapace",
- "tar",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "vx-cas-proto",
  "vx-cc",
  "vx-exec-proto",
- "xz2",
+ "vx-tarball",
 ]
 
 [[package]]
@@ -3350,6 +3348,7 @@ name = "vx-tarball"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "flate2",
  "tar",
  "thiserror",
  "tokio",

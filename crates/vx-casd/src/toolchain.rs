@@ -10,7 +10,6 @@ use vx_cas_proto::{
     ToolchainSpecKey, ZigToolchainSpec,
 };
 
-use crate::tarball::validate_tarball_structure;
 use crate::types::CasService;
 
 type InflightFuture = Arc<tokio::sync::OnceCell<EnsureToolchainResult>>;
@@ -133,27 +132,6 @@ impl CasService {
                             };
                         }
                     };
-
-                    // Validate tarball structure (PERF: double decompression, see note)
-                    // FIXME: omg perf OMG - plus blocking the runtime!
-                    if let Err(e) = validate_tarball_structure(&acquired.rustc_tarball) {
-                        return EnsureToolchainResult {
-                            spec_key: Some(spec_key),
-                            toolchain_id: None,
-                            manifest_hash: None,
-                            status: ToolchainEnsureStatus::Failed,
-                            error: Some(format!("rustc tarball invalid: {}", e)),
-                        };
-                    }
-                    if let Err(e) = validate_tarball_structure(&acquired.rust_std_tarball) {
-                        return EnsureToolchainResult {
-                            spec_key: Some(spec_key),
-                            toolchain_id: None,
-                            manifest_hash: None,
-                            status: ToolchainEnsureStatus::Failed,
-                            error: Some(format!("rust-std tarball invalid: {}", e)),
-                        };
-                    }
 
                     // Store component blobs
                     let rustc_blob = this2.put_blob(acquired.rustc_tarball.clone()).await;

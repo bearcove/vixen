@@ -8,5 +8,6 @@ camino = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
+flate2 = "1"
 tar = "0.4"
 xz2 = "0.1"

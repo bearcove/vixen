@@ -7,7 +7,7 @@ use vx_cas_proto::{
     ToolchainManifest, ToolchainSpecKey, ZigToolchainSpec,
 };
 
-use crate::registry::{download_crate, validate_crate_tarball};
+use crate::registry::download_crate;
 use crate::types::CasService;
 use crate::utils::atomic_write;
 
@@ -134,16 +134,6 @@ impl Cas for CasService {
                                 };
                             }
                         };
-
-                    // Validate tarball structure
-                    if let Err(e) = validate_crate_tarball(&tarball_bytes) {
-                        return EnsureRegistryCrateResult {
-                            spec_key: Some(spec_key),
-                            manifest_hash: None,
-                            status: EnsureStatus::Failed,
-                            error: Some(format!("tarball validation failed: {}", e)),
-                        };
-                    }
 
                     // Store tarball as blob
                     let tarball_blob = this2.put_blob(tarball_bytes).await;
