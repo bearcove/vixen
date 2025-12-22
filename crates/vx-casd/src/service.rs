@@ -1,5 +1,4 @@
-use std::fs;
-
+use jiff::Timestamp;
 use vx_cas_proto::Cas;
 use vx_cas_proto::{
     Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, ManifestHash,
@@ -62,39 +61,27 @@ impl Cas for CasService {
 
     async fn get_manifest(&self, hash: ManifestHash) -> Option<NodeManifest> {
         let path = self.manifest_path(&hash);
-        tokio::task::spawn_blocking(move || {
-            let json = fs::read_to_string(&path).ok()?;
-            facet_json::from_str(&json).ok()
-        })
-        .await
-        .ok()
-        .flatten()
+        let json = tokio::fs::read_to_string(&path).await.ok()?;
+        facet_json::from_str(&json).ok()
     }
 
     async fn put_blob(&self, data: Vec<u8>) -> BlobHash {
         let hash = BlobHash::from_bytes(&data);
         let dest = self.blob_path(&hash);
 
-        if !dest.exists() {
-            let _ = atomic_write(&dest, &data).await;
-        }
+        let _ = atomic_write(&dest, &data).await;
 
         hash
     }
 
     async fn get_blob(&self, hash: BlobHash) -> Option<Vec<u8>> {
         let path = self.blob_path(&hash);
-        tokio::task::spawn_blocking(move || fs::read(&path).ok())
-            .await
-            .ok()
-            .flatten()
+        tokio::fs::read(&path).await.ok()
     }
 
     async fn has_blob(&self, hash: BlobHash) -> bool {
         let path = self.blob_path(&hash);
-        tokio::task::spawn_blocking(move || path.exists())
-            .await
-            .unwrap_or(false)
+        tokio::fs::try_exists(&path).await.unwrap_or(false)
     }
 
     #[tracing::instrument(skip(self), fields(name = %spec.name, version = %spec.version))]
@@ -162,7 +149,7 @@ impl Cas for CasService {
                         schema_version: REGISTRY_MANIFEST_SCHEMA_VERSION,
                         spec: spec.clone(),
                         crate_tarball_blob: tarball_blob,
-                        created_at: chrono::Utc::now().to_rfc3339(),
+                        created_at: Timestamp::now().in_tz("UTC").unwrap().datetime(),
                     };
 
                     // Store manifest
@@ -203,7 +190,7 @@ impl Cas for CasService {
 
     async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest> {
         let path = self.manifest_path(&manifest_hash);
-        let json = fs::read_to_string(&path).ok()?;
+        let json = tokio::fs::read_to_string(&path).await.ok()?;
         facet_json::from_str(&json).ok()
     }
 

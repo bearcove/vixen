@@ -11,7 +11,7 @@ pub(crate) mod utils;
 
 use crate::registry::RegistryManager;
 use crate::toolchain::ToolchainManager;
-use crate::types::CasService;
+use crate::types::{CasService, CasServiceInner};
 use crate::utils::atomic_write;
 use camino::Utf8PathBuf;
 use eyre::Result;
@@ -62,8 +62,8 @@ async fn main() -> Result<()> {
 
     // Initialize CAS service
     tracing::info!("Initializing CAS at {}", args.root);
-    let cas = Arc::new(CasService::new(args.root));
-    cas.init()?;
+    let cas = CasService::new(args.root);
+    cas.init().await?;
 
     // Start TCP server
     let listener = TcpListener::bind(&args.bind).await?;
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
 
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let cas = Arc::clone(&cas);
+        let cas = cas.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
@@ -95,10 +95,12 @@ async fn main() -> Result<()> {
 impl CasService {
     fn new(root: Utf8PathBuf) -> Self {
         Self {
-            root,
-            next_upload_id: AtomicU64::new(1),
-            toolchain_manager: ToolchainManager::new(),
-            registry_manager: RegistryManager::new(),
+            inner: Arc::new(CasServiceInner {
+                root,
+                next_upload_id: AtomicU64::new(1),
+                toolchain_manager: ToolchainManager::new(),
+                registry_manager: RegistryManager::new(),
+            }),
         }
     }
 

@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 blake3 = { workspace = true }
 camino = { workspace = true }
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+jiff = { workspace = true }
 eyre = { workspace = true }
 facet = { workspace = true }
 facet-json = { workspace = true }

@@ -45,7 +45,7 @@ impl RegistryManager {
     }
 
     /// Ensure a registry crate, deduplicating concurrent requests.
-    pub async fn ensure<L, LFut, A, AFut>(
+    pub async fn ensure(
         &self,
         spec_key: RegistrySpecKey,
         lookup_fn: impl AsyncFn() -> Option<Blake3Hash>,

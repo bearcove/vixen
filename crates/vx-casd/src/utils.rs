@@ -1,3 +1,5 @@
+use camino::Utf8Path;
+
 pub(crate) async fn atomic_write(path: &Utf8Path, contents: &[u8]) -> Result<(), std::io::Error> {
     // Create a temporary file in the same directory as the target path
     let parent_dir = path.parent().unwrap_or_else(|| camino::Utf8Path::new("."));

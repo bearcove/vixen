@@ -3198,6 +3198,7 @@ dependencies = [
  "blake3",
  "camino",
  "facet",
+ "jiff",
  "rapace",
 ]
 
@@ -3207,12 +3208,12 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "camino",
- "chrono",
  "eyre",
  "facet",
  "facet-json",
  "flate2",
  "hex",
+ "jiff",
  "rapace",
  "reqwest",
  "sha2",

@@ -1,15 +1,17 @@
 //! Toolchain Manager (Inflight Deduplication)
 
+use jiff::Timestamp;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vx_cas_proto::*;
 use vx_cas_proto::{
-    EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult, MATERIALIZATION_LAYOUT_VERSION,
-    MaterializationPlan, MaterializeStep, RustChannel, RustToolchainSpec,
+    EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult, RustChannel, RustToolchainSpec,
     TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentBlob, ToolchainKind, ToolchainManifest,
     ToolchainSpecKey, ZigToolchainSpec,
 };
+
+use crate::tarball::validate_tarball_structure;
+use crate::types::CasService;
 
 type InflightFuture = Arc<tokio::sync::OnceCell<EnsureToolchainResult>>;
 
@@ -33,18 +35,12 @@ impl ToolchainManager {
     /// Ensure a toolchain, deduplicating concurrent requests.
     ///
     /// `lookup_fn` is async because CAS is remote in production.
-    pub(crate) async fn ensure<L, LFut, A, AFut>(
+    pub(crate) async fn ensure(
         &self,
         spec_key: ToolchainSpecKey,
-        lookup_fn: L,
-        acquire_fn: A,
-    ) -> EnsureToolchainResult
-    where
-        L: Fn() -> LFut,
-        LFut: std::future::Future<Output = Option<Blake3Hash>>,
-        A: FnOnce() -> AFut,
-        AFut: std::future::Future<Output = EnsureToolchainResult>,
-    {
+        lookup_fn: impl AsyncFn() -> Option<Blake3Hash>,
+        acquire_fn: impl AsyncFn() -> EnsureToolchainResult,
+    ) -> EnsureToolchainResult {
         // Fast path: check if already in CAS (async RPC)
         if let Some(manifest_hash) = lookup_fn().await {
             return EnsureToolchainResult {
@@ -67,9 +63,6 @@ impl ToolchainManager {
 
         // Initialize if we're first, otherwise wait
         cell.get_or_init(|| acquire_fn()).await.clone()
-
-        // NOTE: We intentionally do NOT remove entries from inflight.
-        // See struct doc comment for rationale.
     }
 }
 
@@ -102,8 +95,8 @@ impl CasService {
             .ensure(
                 spec_key,
                 // Async lookup (CAS is remote in production)
-                || async move { self.lookup_spec(&spec_key) },
-                || async {
+                async || self.lookup_spec(&spec_key).await,
+                async || {
                     // Convert proto spec to vx_toolchain types
                     let channel = match &spec.channel {
                         RustChannel::Stable => vx_toolchain::Channel::Stable,
@@ -139,6 +132,7 @@ impl CasService {
                     };
 
                     // Validate tarball structure (PERF: double decompression, see note)
+                    // FIXME: omg perf OMG - plus blocking the runtime!
                     if let Err(e) = validate_tarball_structure(&acquired.rustc_tarball) {
                         return EnsureToolchainResult {
                             spec_key: Some(spec_key),
@@ -168,7 +162,7 @@ impl CasService {
                         kind: ToolchainKind::Rust,
                         spec_key,
                         toolchain_id: acquired.id.0,
-                        created_at: chrono::Utc::now().to_rfc3339(),
+                        created_at: Timestamp::now().in_tz("UTC").unwrap().datetime(),
                         rust_manifest_date: Some(acquired.manifest_date.clone()),
                         rust_version: Some(acquired.rustc_version.clone()),
                         zig_version: None,
@@ -227,10 +221,5 @@ impl CasService {
             status: ToolchainEnsureStatus::Failed,
             error: Some("Zig toolchain acquisition not yet implemented".to_string()),
         }
-    }
-
-    /// Lookup manifest_hash by toolchain spec_key (internal helper, not an RPC method).
-    pub fn lookup_toolchain_spec(&self, spec_key: &ToolchainSpecKey) -> Option<Blake3Hash> {
-        self.lookup_spec(spec_key)
     }
 }
