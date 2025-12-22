@@ -10,16 +10,18 @@ use std::sync::Arc;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
-use vx_cas_proto::{Blake3Hash, Cas};
+use vx_cas_proto::{Blake3Hash, Cas, CasClient};
 use vx_cas_proto::{RegistryCrateManifest, RegistryMaterializationResult};
 
 /// Registry materialization manager.
 ///
 /// Handles global cache extraction and workspace-local copying.
-pub struct RegistryMaterializer<C> {
-    cas: C,
+pub struct RegistryMaterializer {
+    cas: Arc<CasClient>,
+
     /// Global cache directory (~/.vx/registry)
     global_cache_dir: Utf8PathBuf,
+
     /// In-flight global cache materializations (keyed by manifest_hash)
     materializing: Arc<
         tokio::sync::Mutex<
@@ -28,8 +30,8 @@ pub struct RegistryMaterializer<C> {
     >,
 }
 
-impl<C: Cas + Send + Sync> RegistryMaterializer<C> {
-    pub fn new(cas: C, global_cache_dir: Utf8PathBuf) -> Self {
+impl RegistryMaterializer {
+    pub fn new(cas: Arc<CasClient>, global_cache_dir: Utf8PathBuf) -> Self {
         Self {
             cas,
             global_cache_dir,
