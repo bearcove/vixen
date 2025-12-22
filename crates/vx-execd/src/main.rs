@@ -4,8 +4,10 @@
 //! Runs rustc and zig cc, streams outputs to CAS.
 //! Materializes toolchains and registry crates on-demand from CAS.
 
+pub(crate) mod extract;
 pub(crate) mod registry;
 pub(crate) mod service;
+pub(crate) mod toolchain;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::Result;
@@ -105,16 +107,8 @@ async fn main() -> Result<()> {
     tracing::info!("  Registry:   {}", args.registry_cache_dir);
 
     // Ensure directories exist
-    tokio::task::spawn_blocking({
-        let toolchains_dir = args.toolchains_dir.clone();
-        let registry_cache_dir = args.registry_cache_dir.clone();
-        move || -> Result<()> {
-            std::fs::create_dir_all(&toolchains_dir)?;
-            std::fs::create_dir_all(&registry_cache_dir)?;
-            Ok(())
-        }
-    })
-    .await??;
+    tokio::fs::create_dir_all(&args.toolchains_dir).await?;
+    tokio::fs::create_dir_all(&args.registry_cache_dir).await?;
 
     let exec = ExecService::new(Arc::new(cas), args.toolchains_dir, args.registry_cache_dir);
 
@@ -124,7 +118,7 @@ async fn main() -> Result<()> {
 
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let exec = Arc::clone(&exec);
+        let exec = exec.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
@@ -143,8 +137,8 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Exec service implementation
-pub struct ExecService {
+/// Inner Exec service implementation
+struct ExecServiceInner {
     /// CAS client for storing outputs and fetching toolchains
     cas: Arc<CasClient>,
 
@@ -163,6 +157,20 @@ pub struct ExecService {
     registry_materializer: RegistryMaterializer,
 }
 
+/// Exec service handle - cloneable wrapper around shared inner state
+#[derive(Clone)]
+pub struct ExecService {
+    inner: Arc<ExecServiceInner>,
+}
+
+impl std::ops::Deref for ExecService {
+    type Target = ExecServiceInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
 impl ExecService {
     pub fn new(
         cas: Arc<CasClient>,
@@ -170,10 +178,12 @@ impl ExecService {
         registry_cache_dir: Utf8PathBuf,
     ) -> Self {
         Self {
-            registry_materializer: RegistryMaterializer::new(cas.clone(), registry_cache_dir),
-            cas,
-            toolchains_dir,
-            materializing: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            inner: Arc::new(ExecServiceInner {
+                registry_materializer: RegistryMaterializer::new(cas.clone(), registry_cache_dir),
+                cas,
+                toolchains_dir,
+                materializing: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            }),
         }
     }
 
@@ -199,228 +209,7 @@ impl ExecService {
         &self,
         manifest_hash: Blake3Hash,
     ) -> Result<Utf8PathBuf, String> {
-        info!(manifest_hash = %manifest_hash, "materializing toolchain");
-
-        // Fetch manifest from CAS
-        let _manifest = self
-            .cas
-            .get_toolchain_manifest(manifest_hash)
-            .await
-            .ok_or_else(|| format!("toolchain manifest {} not found in CAS", manifest_hash))?;
-
-        // Fetch materialization plan
-        let plan = self
-            .cas
-            .get_materialization_plan(manifest_hash)
-            .await
-            .ok_or_else(|| {
-                format!(
-                    "materialization plan for {} not found in CAS",
-                    manifest_hash
-                )
-            })?;
-
-        // Target directory: toolchains/<manifest_hash_hex>
-        let target_dir = self.toolchains_dir.join(manifest_hash.to_hex());
-
-        // Check if already materialized (using tokio::fs)
-        if tokio::fs::try_exists(&target_dir).await.unwrap_or(false) {
-            debug!(target_dir = %target_dir, "toolchain already materialized");
-            return Ok(target_dir);
-        }
-
-        // Create temp directory for atomic materialization
-        let temp_dir = self
-            .toolchains_dir
-            .join(format!("{}.tmp", manifest_hash.to_hex()));
-        if tokio::fs::try_exists(&temp_dir).await.unwrap_or(false) {
-            tokio::fs::remove_dir_all(&temp_dir)
-                .await
-                .map_err(|e| format!("failed to remove stale temp dir {}: {}", temp_dir, e))?;
-        }
-        tokio::fs::create_dir_all(&temp_dir)
-            .await
-            .map_err(|e| format!("failed to create temp dir {}: {}", temp_dir, e))?;
-
-        // Execute materialization plan
-        for step in &plan.steps {
-            match step {
-                MaterializeStep::ExtractTarXz {
-                    blob,
-                    dest_subdir,
-                    strip_components,
-                } => {
-                    let dest = temp_dir.join(dest_subdir);
-                    tokio::fs::create_dir_all(&dest)
-                        .await
-                        .map_err(|e| format!("failed to create dest dir {}: {}", dest, e))?;
-
-                    self.extract_tar_xz_from_cas(*blob, &dest, *strip_components)
-                        .await?;
-                }
-                MaterializeStep::EnsureDir { relpath } => {
-                    let dest = temp_dir.join(relpath);
-                    tokio::fs::create_dir_all(&dest)
-                        .await
-                        .map_err(|e| format!("failed to create directory {}: {}", dest, e))?;
-                }
-                MaterializeStep::WriteFile {
-                    relpath,
-                    blob,
-                    mode,
-                } => {
-                    let dest = temp_dir.join(relpath);
-                    if let Some(parent) = dest.parent() {
-                        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                            format!("failed to create parent directory {}: {}", parent, e)
-                        })?;
-                    }
-
-                    // Fetch blob from CAS
-                    let mut stream = self.cas.stream_blob(*blob).await;
-                    let mut data = Vec::new();
-                    while let Some(chunk_result) = stream.next().await {
-                        let chunk =
-                            chunk_result.map_err(|e| format!("failed to stream blob: {:?}", e))?;
-                        data.extend_from_slice(&chunk);
-                    }
-
-                    tokio::fs::write(&dest, data)
-                        .await
-                        .map_err(|e| format!("failed to write file {}: {}", dest, e))?;
-
-                    // Set permissions
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let perms = std::fs::Permissions::from_mode(*mode);
-                        tokio::fs::set_permissions(&dest, perms)
-                            .await
-                            .map_err(|e| format!("failed to set permissions on {}: {}", dest, e))?;
-                    }
-                }
-                MaterializeStep::Symlink { relpath, target } => {
-                    let dest = temp_dir.join(relpath);
-                    if let Some(parent) = dest.parent() {
-                        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                            format!("failed to create parent directory {}: {}", parent, e)
-                        })?;
-                    }
-                    #[cfg(unix)]
-                    {
-                        tokio::fs::symlink(target, &dest)
-                            .await
-                            .map_err(|e| format!("failed to create symlink {}: {}", dest, e))?;
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        return Err(format!("symlinks not supported on this platform"));
-                    }
-                }
-            }
-        }
-
-        // Atomic rename to final location
-        tokio::fs::rename(&temp_dir, &target_dir)
-            .await
-            .map_err(|e| format!("failed to rename {} to {}: {}", temp_dir, target_dir, e))?;
-
-        info!(target_dir = %target_dir, "toolchain materialized successfully");
-        Ok(target_dir)
-    }
-
-    /// Extract a tar.xz blob from CAS to a destination directory
-    async fn extract_tar_xz_from_cas(
-        &self,
-        blob_hash: Blake3Hash,
-        dest: &Utf8Path,
-        strip_components: u32,
-    ) -> Result<(), String> {
-        debug!(blob = %blob_hash, dest = %dest, strip = strip_components, "extracting tar.xz");
-
-        // Stream blob from CAS
-        let mut stream = self.cas.stream_blob(blob_hash).await;
-        let mut compressed_data = Vec::new();
-
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(|e| format!("failed to stream blob: {:?}", e))?;
-            compressed_data.extend_from_slice(&chunk);
-        }
-
-        // CPU-bound: decompress and extract in spawn_blocking
-        let dest = dest.to_owned();
-        tokio::task::spawn_blocking(move || {
-            // Decompress with xz2
-            let mut decompressor = xz2::read::XzDecoder::new(&compressed_data[..]);
-            let mut tarball_data = Vec::new();
-            decompressor
-                .read_to_end(&mut tarball_data)
-                .map_err(|e| format!("failed to decompress tar.xz: {}", e))?;
-
-            // Extract tar
-            let mut archive = tar::Archive::new(&tarball_data[..]);
-            for entry in archive
-                .entries()
-                .map_err(|e| format!("failed to read tar entries: {}", e))?
-            {
-                let mut entry = entry.map_err(|e| format!("failed to read tar entry: {}", e))?;
-                let path = entry
-                    .path()
-                    .map_err(|e| format!("failed to get entry path: {}", e))?;
-
-                // Strip components
-                let components: Vec<_> = path.components().collect();
-                if components.len() <= strip_components as usize {
-                    continue;
-                }
-                let stripped_path = Utf8PathBuf::from_path_buf(
-                    components[strip_components as usize..]
-                        .iter()
-                        .collect::<std::path::PathBuf>(),
-                )
-                .map_err(|_| "non-UTF8 path in tarball".to_string())?;
-
-                // Security: validate no path traversal (use component-based check to avoid
-                // false positives on valid filenames like "foo..rs")
-                for component in stripped_path.components() {
-                    if matches!(component, camino::Utf8Component::ParentDir) {
-                        return Err(format!("path traversal in tarball: {}", stripped_path));
-                    }
-                }
-
-                let target_path = dest.join(&stripped_path);
-
-                // Create parent directories
-                if let Some(parent) = target_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("failed to create directory {}: {}", parent, e))?;
-                }
-
-                // Extract file
-                let mut output_file = std::fs::File::create(&target_path)
-                    .map_err(|e| format!("failed to create file {}: {}", target_path, e))?;
-                std::io::copy(&mut entry, &mut output_file)
-                    .map_err(|e| format!("failed to write file {}: {}", target_path, e))?;
-
-                // Set executable bit if needed
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(mode) = entry.header().mode() {
-                        if mode & 0o111 != 0 {
-                            let perms = std::fs::Permissions::from_mode(mode);
-                            std::fs::set_permissions(&target_path, perms).map_err(|e| {
-                                format!("failed to set permissions on {}: {}", target_path, e)
-                            })?;
-                        }
-                    }
-                }
-            }
-
-            Ok(())
-        })
-        .await
-        .map_err(|e| format!("spawn_blocking failed: {}", e))?
+        self.materialize_toolchain_impl(manifest_hash).await
     }
 }
 

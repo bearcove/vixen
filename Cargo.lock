@@ -3346,6 +3346,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vx-tarball"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "tar",
+ "thiserror",
+ "tokio",
+ "xz2",
+]
+
+[[package]]
 name = "vx-toolchain"
 version = "0.1.0"
 dependencies = [

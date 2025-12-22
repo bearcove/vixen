@@ -1,0 +1,12 @@
+[package]
+name = "vx-tarball"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+camino = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+tar = "0.4"
+xz2 = "0.1"
