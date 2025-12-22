@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use facet::Facet;
+use facet_toml::Spanned;
 
 // ============================================================================
 // Top-level manifest structure
@@ -254,8 +255,8 @@ pub struct DependencyDetail {
     /// Path to local dependency
     pub path: Option<String>,
 
-    /// Git repository URL
-    pub git: Option<String>,
+    /// Git repository URL (wrapped in Spanned for error reporting)
+    pub git: Option<Spanned<String>>,
 
     /// Git branch
     pub branch: Option<String>,
@@ -266,23 +267,23 @@ pub struct DependencyDetail {
     /// Git revision (commit hash)
     pub rev: Option<String>,
 
-    /// Alternative registry
-    pub registry: Option<String>,
+    /// Alternative registry (wrapped in Spanned for error reporting)
+    pub registry: Option<Spanned<String>>,
 
-    /// Registry index URL
-    pub registry_index: Option<String>,
+    /// Registry index URL (wrapped in Spanned for error reporting)
+    pub registry_index: Option<Spanned<String>>,
 
-    /// Package name if different from dependency key
-    pub package: Option<String>,
+    /// Package name if different from dependency key (wrapped in Spanned for error reporting)
+    pub package: Option<Spanned<String>>,
 
-    /// Enable specific features
-    pub features: Option<Vec<String>>,
+    /// Enable specific features (wrapped in Spanned for error reporting)
+    pub features: Option<Spanned<Vec<String>>>,
 
-    /// Disable default features
-    pub default_features: Option<bool>,
+    /// Disable default features (wrapped in Spanned for error reporting)
+    pub default_features: Option<Spanned<bool>>,
 
-    /// Optional dependency
-    pub optional: Option<bool>,
+    /// Optional dependency (wrapped in Spanned for error reporting)
+    pub optional: Option<Spanned<bool>>,
 
     /// Public dependency (used by public API)
     pub public: Option<bool>,
@@ -597,7 +598,9 @@ impl CargoManifest {
     }
 
     /// Parse Cargo.toml from a file path
-    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_path(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(path)?;
         Ok(Self::from_str(&contents)?)
     }

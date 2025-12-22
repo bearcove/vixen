@@ -16,37 +16,55 @@ pub mod lockfile;
 
 pub mod full;
 
+use std::sync::Arc;
+
 use camino::{Utf8Path, Utf8PathBuf};
+
+use miette::{Diagnostic, NamedSource, SourceSpan};
 use thiserror::Error;
 
 pub use full::CargoManifest;
 
 /// Errors that can occur during manifest parsing
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Diagnostic)]
 pub enum ManifestError {
-    #[error("failed to read {path}: {source}")]
+    #[error("failed to read {path}")]
+    #[diagnostic(code(vx_manifest::read_error))]
     ReadError {
         path: Utf8PathBuf,
+        #[source]
         source: std::io::Error,
     },
 
     #[error("failed to parse Cargo.toml: {0}")]
+    #[diagnostic(code(vx_manifest::parse_error))]
     ParseError(String),
 
     #[error("missing required field: [package].{0}")]
+    #[diagnostic(code(vx_manifest::missing_field))]
     MissingField(&'static str),
 
     #[error("unsupported: {feature} (found {details})")]
+    #[diagnostic(code(vx_manifest::unsupported))]
     Unsupported {
         feature: &'static str,
         details: String,
     },
 
     #[error("no targets found (expected [lib] or [[bin]] with src/lib.rs or src/main.rs)")]
+    #[diagnostic(code(vx_manifest::no_targets))]
     NoTargets,
 
     #[error("invalid dependency '{name}': {reason}")]
-    InvalidDependency { name: String, reason: String },
+    #[diagnostic(code(vx_manifest::invalid_dependency))]
+    InvalidDependency {
+        name: String,
+        reason: String,
+        #[source_code]
+        src: Option<NamedSource<Arc<String>>>,
+        #[label("{reason}")]
+        span: Option<SourceSpan>,
+    },
 }
 
 /// Edition of Rust to use
@@ -279,7 +297,7 @@ impl Manifest {
         };
 
         // Parse dependencies
-        let (path_deps, version_deps) = parse_dependencies(&cargo)?;
+        let (path_deps, version_deps) = parse_dependencies(&cargo, contents)?;
 
         // Determine library target
         let lib = determine_lib_target(&name, cargo.lib.as_ref(), base_dir);
@@ -306,10 +324,14 @@ impl Manifest {
 /// Parse [dependencies] table, extracting path and version dependencies
 fn parse_dependencies(
     cargo: &full::CargoManifest,
+    source: &str,
 ) -> Result<(Vec<PathDependency>, Vec<VersionDependency>), ManifestError> {
     let Some(ref deps) = cargo.dependencies else {
         return Ok((Vec::new(), Vec::new()));
     };
+
+    // Helper to create a NamedSource for error reporting
+    let make_source = || NamedSource::new("Cargo.toml", Arc::new(source.to_owned()));
 
     let mut path_deps = Vec::new();
     let mut version_deps = Vec::new();
@@ -327,44 +349,75 @@ fn parse_dependencies(
                 return Err(ManifestError::InvalidDependency {
                     name: name.clone(),
                     reason: "workspace dependencies are not supported".into(),
+                    src: None,
+                    span: None,
                 });
             }
             full::Dependency::Detailed(detail) => {
-                // Check for unsupported fields first
-                if detail.git.is_some() {
+                // Check for unsupported fields first - all with span information
+                if let Some(ref git) = detail.git {
+                    let span = git.span();
                     return Err(ManifestError::InvalidDependency {
                         name: name.clone(),
                         reason: "git dependencies are not supported".into(),
+                        src: Some(make_source()),
+                        span: Some(SourceSpan::new(span.offset.into(), span.len)),
                     });
                 }
-                if detail.registry.is_some() || detail.registry_index.is_some() {
+                if let Some(ref registry) = detail.registry {
+                    let span = registry.span();
                     return Err(ManifestError::InvalidDependency {
                         name: name.clone(),
-                        reason: "custom registry dependencies are not supported".into(),
+                        reason: "custom registries are not supported".into(),
+                        src: Some(make_source()),
+                        span: Some(SourceSpan::new(span.offset.into(), span.len)),
                     });
                 }
-                if detail.features.is_some() {
+                if let Some(ref registry_index) = detail.registry_index {
+                    let span = registry_index.span();
+                    return Err(ManifestError::InvalidDependency {
+                        name: name.clone(),
+                        reason: "custom registry index is not supported".into(),
+                        src: Some(make_source()),
+                        span: Some(SourceSpan::new(span.offset.into(), span.len)),
+                    });
+                }
+                if let Some(ref features) = detail.features {
+                    let span = features.span();
                     return Err(ManifestError::InvalidDependency {
                         name: name.clone(),
                         reason: "features are not supported".into(),
+                        src: Some(make_source()),
+                        span: Some(SourceSpan::new(span.offset.into(), span.len)),
                     });
                 }
-                if detail.optional == Some(true) {
-                    return Err(ManifestError::InvalidDependency {
-                        name: name.clone(),
-                        reason: "optional dependencies are not supported".into(),
-                    });
+                if let Some(ref optional) = detail.optional {
+                    if *optional.value() {
+                        let span = optional.span();
+                        return Err(ManifestError::InvalidDependency {
+                            name: name.clone(),
+                            reason: "optional dependencies are not supported".into(),
+                            src: Some(make_source()),
+                            span: Some(SourceSpan::new(span.offset.into(), span.len)),
+                        });
+                    }
                 }
-                if detail.default_features.is_some() {
+                if let Some(ref default_features) = detail.default_features {
+                    let span = default_features.span();
                     return Err(ManifestError::InvalidDependency {
                         name: name.clone(),
                         reason: "default-features is not supported".into(),
+                        src: Some(make_source()),
+                        span: Some(SourceSpan::new(span.offset.into(), span.len)),
                     });
                 }
-                if detail.package.is_some() {
+                if let Some(ref package) = detail.package {
+                    let span = package.span();
                     return Err(ManifestError::InvalidDependency {
                         name: name.clone(),
                         reason: "package rename is not supported".into(),
+                        src: Some(make_source()),
+                        span: Some(SourceSpan::new(span.offset.into(), span.len)),
                     });
                 }
 
@@ -388,12 +441,16 @@ fn parse_dependencies(
                         return Err(ManifestError::InvalidDependency {
                             name: name.clone(),
                             reason: "cannot specify both 'path' and 'version'".into(),
+                            src: None,
+                            span: None,
                         });
                     }
                     (None, None) => {
                         return Err(ManifestError::InvalidDependency {
                             name: name.clone(),
                             reason: "missing 'path' or 'version' field".into(),
+                            src: None,
+                            span: None,
                         });
                     }
                 }
@@ -669,7 +726,7 @@ foo = { git = "https://github.com/example/foo" }
 "#;
         let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
         assert!(
-            matches!(err, ManifestError::InvalidDependency { name, reason }
+            matches!(err, ManifestError::InvalidDependency { name, reason, .. }
             if name == "foo" && reason.contains("git"))
         );
     }
@@ -690,7 +747,7 @@ util = { path = "../util", features = ["foo"] }
 "#;
         let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
         assert!(
-            matches!(err, ManifestError::InvalidDependency { name, reason }
+            matches!(err, ManifestError::InvalidDependency { name, reason, .. }
             if name == "util" && reason.contains("features"))
         );
     }
@@ -711,7 +768,7 @@ util = { path = "../util", optional = true }
 "#;
         let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
         assert!(
-            matches!(err, ManifestError::InvalidDependency { name, reason }
+            matches!(err, ManifestError::InvalidDependency { name, reason, .. }
             if name == "util" && reason.contains("optional"))
         );
     }

@@ -11,6 +11,7 @@ camino = { workspace = true }
 facet = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
+miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
 ra-ap-rustc_lexer = "0.144.0"
 vx-cas-proto = { path = "../vx-cas-proto" }
 vx-manifest = { path = "../vx-manifest" }

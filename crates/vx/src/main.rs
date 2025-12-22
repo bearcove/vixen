@@ -194,7 +194,9 @@ async fn cmd_build(release: bool) -> Result<()> {
         Ok(())
     } else {
         if let Some(error) = &result.error {
+            // Error already contains formatted diagnostic, just print and exit
             eprintln!("{}", error);
+            std::process::exit(1);
         }
         bail!("{}", result.message)
     }

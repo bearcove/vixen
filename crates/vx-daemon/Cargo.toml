@@ -12,6 +12,7 @@ blake3 = { workspace = true }
 camino = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
+miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
 
 vx-cas-proto = { workspace = true }
 vx-cc = { path = "../vx-cc" }

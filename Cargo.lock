@@ -3120,6 +3120,7 @@ dependencies = [
  "camino",
  "eyre",
  "facet",
+ "miette",
  "picante",
  "rapace",
  "tokio",
@@ -3189,6 +3190,7 @@ dependencies = [
  "facet",
  "facet-toml",
  "facet-value",
+ "miette",
  "tempfile",
  "thiserror",
 ]
@@ -3221,6 +3223,7 @@ dependencies = [
  "camino",
  "facet",
  "hex",
+ "miette",
  "ra-ap-rustc_lexer",
  "tempfile",
  "thiserror",

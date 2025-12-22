@@ -28,7 +28,21 @@ use vx_report::{
     BuildReport, CacheOutcome, DiagnosticsRecord, InputRecord, InvocationRecord, MissReason,
     NodeReport, NodeTiming, OutputRecord, ReportStore, ToolchainRef, ToolchainsUsed,
 };
-use vx_rs::{CrateGraph, CrateId, CrateType, ModuleError};
+use vx_rs::{CrateGraph, CrateGraphError, CrateId, CrateType, ModuleError};
+
+/// Format a diagnostic error using miette's graphical handler.
+/// This preserves source spans and produces nice terminal output.
+fn format_diagnostic(err: &dyn miette::Diagnostic) -> String {
+    let mut buf = String::new();
+    let handler =
+        miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::unicode_nocolor());
+    // Ignore rendering errors and fall back to Display
+    if handler.render_report(&mut buf, err).is_ok() {
+        buf
+    } else {
+        format!("{}", err)
+    }
+}
 use vx_toolchain_proto::{CasToolchain, RustChannel, RustComponent, RustToolchainSpec};
 
 // =============================================================================
@@ -1442,7 +1456,7 @@ impl DaemonService {
         // Build the crate graph (this parses all Cargo.toml files and computes LCA)
         // Use build_with_lockfile to detect and handle registry dependencies
         let mut graph = CrateGraph::build_with_lockfile(project_path)
-            .map_err(|e| format!("failed to build crate graph: {}", e))?;
+            .map_err(|e: CrateGraphError| format_diagnostic(&e))?;
 
         // If there are registry dependencies, materialize them and finalize the graph
         if graph.has_registry_deps() {
@@ -1455,7 +1469,7 @@ impl DaemonService {
 
             graph
                 .finalize_with_registry(&materialized_paths)
-                .map_err(|e| format!("failed to finalize registry graph: {}", e))?;
+                .map_err(|e: CrateGraphError| format_diagnostic(&e))?;
         }
 
         info!(

@@ -21,6 +21,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use miette::Diagnostic;
 use thiserror::Error;
 use vx_cas_proto::Blake3Hash;
 use vx_manifest::full::CargoManifest;
@@ -28,15 +29,18 @@ use vx_manifest::lockfile::{Lockfile, LockfileError, ReachablePackages};
 use vx_manifest::{Edition, Manifest, ManifestError};
 
 /// Errors during crate graph construction
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Diagnostic)]
 pub enum CrateGraphError {
-    #[error("failed to parse manifest: {0}")]
+    #[error("failed to parse manifest")]
+    #[diagnostic(transparent)]
     ManifestError(#[from] ManifestError),
 
     #[error("failed to parse lockfile: {0}")]
+    #[diagnostic(code(vx_rs::lockfile_error))]
     LockfileError(#[from] LockfileError),
 
     #[error("failed to canonicalize path {path}: {source}")]
+    #[diagnostic(code(vx_rs::canonicalization_error))]
     CanonicalizationError {
         path: Utf8PathBuf,
         #[source]
@@ -44,15 +48,19 @@ pub enum CrateGraphError {
     },
 
     #[error("dependency cycle detected: {0}")]
+    #[diagnostic(code(vx_rs::cycle_detected))]
     CycleDetected(String),
 
     #[error("dependency not found: {name} at path {path}")]
+    #[diagnostic(code(vx_rs::dependency_not_found))]
     DependencyNotFound { name: String, path: Utf8PathBuf },
 
     #[error("crate has no lib target but is used as dependency: {name}")]
+    #[diagnostic(code(vx_rs::not_a_library))]
     NotALibrary { name: String },
 
     #[error("path {path} is not under workspace root {workspace_root}")]
+    #[diagnostic(code(vx_rs::path_outside_workspace))]
     PathOutsideWorkspace {
         path: Utf8PathBuf,
         workspace_root: Utf8PathBuf,
@@ -61,18 +69,23 @@ pub enum CrateGraphError {
     #[error(
         "registry dependencies require Cargo.lock (found '{dep_name}' with version in [dependencies])"
     )]
+    #[diagnostic(code(vx_rs::missing_lockfile))]
     MissingLockfile { dep_name: String },
 
     #[error("registry dependency '{name}' version '{version}' not found in Cargo.lock")]
+    #[diagnostic(code(vx_rs::registry_dep_not_in_lockfile))]
     RegistryDepNotInLockfile { name: String, version: String },
 
     #[error("registry crate '{name}' {version} has build.rs, which is not supported yet")]
+    #[diagnostic(code(vx_rs::registry_build_script))]
     RegistryBuildScript { name: String, version: String },
 
     #[error("registry crate '{name}' {version} is a proc-macro, which is not supported yet")]
+    #[diagnostic(code(vx_rs::registry_proc_macro))]
     RegistryProcMacro { name: String, version: String },
 
     #[error("registry crate '{name}' {version} has unsupported features: {details}")]
+    #[diagnostic(code(vx_rs::registry_unsupported))]
     RegistryUnsupported {
         name: String,
         version: String,
@@ -80,11 +93,13 @@ pub enum CrateGraphError {
     },
 
     #[error("registry crate not materialized: {name} {version}")]
+    #[diagnostic(code(vx_rs::registry_not_materialized))]
     RegistryNotMaterialized { name: String, version: String },
 
     #[error(
         "registry crate '{name}' {version} depends on path crate '{dep_name}', which is not supported"
     )]
+    #[diagnostic(code(vx_rs::registry_depends_on_path))]
     RegistryDependsOnPath {
         name: String,
         version: String,
