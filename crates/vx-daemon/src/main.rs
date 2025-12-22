@@ -8,20 +8,18 @@ use eyre::Result;
 use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
 use picante::{HasRuntime, PicanteResult};
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::process::Child;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use vx_cas_proto::{
-    Blake3Hash, CacheKey, Cas, CasClient, EnsureStatus, NodeId, NodeManifest, OutputEntry,
-    RegistrySpec, RustChannel, RustComponent, RustToolchainSpec,
+    Blake3Hash, CacheKey, CasClient, EnsureStatus, NodeId, NodeManifest, OutputEntry, RegistrySpec,
+    RustChannel, RustComponent, RustToolchainSpec,
 };
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon, DaemonServer};
 use vx_exec_proto::{
-    Exec, ExecClient, ExpectedOutput, MaterializeStatus, RegistryMaterializeRequest,
-    RustcInvocation,
+    ExecClient, ExpectedOutput, MaterializeStatus, RegistryMaterializeRequest, RustcInvocation,
 };
 use vx_manifest::Edition;
 use vx_report::{
@@ -93,25 +91,6 @@ impl SpawnTracker {
 struct DaemonWrapper {
     inner: DaemonService,
     spawn_tracker: Arc<Mutex<SpawnTracker>>,
-}
-
-impl Daemon for DaemonWrapper {
-    async fn build(&self, request: BuildRequest) -> BuildResult {
-        self.inner.build(request).await
-    }
-
-    async fn shutdown(&self) {
-        tracing::info!("Shutdown requested");
-
-        // Kill spawned children
-        let mut tracker = self.spawn_tracker.lock().await;
-        tracker.kill_all();
-        drop(tracker);
-
-        // Exit process (V1: no graceful drain)
-        tracing::info!("Exiting");
-        std::process::exit(0);
-    }
 }
 
 /// Try to connect to a service endpoint
@@ -224,24 +203,24 @@ async fn main() -> Result<()> {
     tracing::info!("Connecting to CAS at {}", args.cas_endpoint);
     let cas_stream = TcpStream::connect(&args.cas_endpoint).await?;
     let cas_transport = rapace::Transport::stream(cas_stream);
-    let cas_session = rapace::RpcSession::new(cas_transport);
+    let cas_session = Arc::new(rapace::RpcSession::new(cas_transport));
     let cas_client = Arc::new(CasClient::new(cas_session));
 
     tracing::info!("Connecting to Exec at {}", args.exec_endpoint);
     let exec_stream = TcpStream::connect(&args.exec_endpoint).await?;
     let exec_transport = rapace::Transport::stream(exec_stream);
-    let exec_session = rapace::RpcSession::new(exec_transport);
+    let exec_session = Arc::new(rapace::RpcSession::new(exec_transport));
     let exec_client = Arc::new(ExecClient::new(exec_session));
 
     // Spawn session runners
-    let cas_session_runner = cas_client.session().clone();
+    let cas_session_runner = cas_session.clone();
     tokio::spawn(async move {
         if let Err(e) = cas_session_runner.run().await {
             tracing::error!("CAS session error: {}", e);
         }
     });
 
-    let exec_session_runner = exec_client.session().clone();
+    let exec_session_runner = exec_session.clone();
     tokio::spawn(async move {
         if let Err(e) = exec_session_runner.run().await {
             tracing::error!("Exec session error: {}", e);
@@ -250,12 +229,12 @@ async fn main() -> Result<()> {
 
     // Initialize daemon service with rapace clients
     tracing::info!("Initializing daemon service");
-    let daemon_service = DaemonService::new(cas_client, exec_client, args.vx_home);
-
-    let daemon = Arc::new(DaemonWrapper {
-        inner: daemon_service,
-        spawn_tracker: spawn_tracker.clone(),
-    });
+    let daemon = Arc::new(DaemonService::new(
+        cas_client,
+        exec_client,
+        args.vx_home,
+        spawn_tracker,
+    ));
 
     // Start TCP server
     let listener = TcpListener::bind(&args.bind).await?;
@@ -1441,20 +1420,6 @@ pub struct AcquiredToolchains {
 /// The daemon service implementation
 #[derive(Clone)]
 pub struct DaemonService {
-    /// innards
-    inner: Arc<DaemonServiceInner>,
-}
-
-impl Deref for DaemonService {
-    type Target = DaemonServiceInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-/// The daemon service implementation (inner)
-pub struct DaemonServiceInner {
     /// CAS client for content-addressed storage
     cas: Arc<CasClient>,
 
@@ -1472,26 +1437,49 @@ pub struct DaemonServiceInner {
 
     /// Acquired toolchains (manifest references only, no materialization)
     toolchains: Arc<Mutex<AcquiredToolchains>>,
+
+    /// Spawn tracker for child services
+    spawn_tracker: Arc<Mutex<SpawnTracker>>,
+}
+
+impl Daemon for Arc<DaemonService> {
+    async fn build(&self, request: BuildRequest) -> BuildResult {
+        match self.do_build(request).await {
+            Ok(result) => result,
+            Err(e) => BuildResult {
+                success: false,
+                message: "Build failed".to_string(),
+                cached: false,
+                duration_ms: 0,
+                output_path: None,
+                error: Some(e),
+            },
+        }
+    }
 }
 
 impl DaemonService {
     /// Create a new daemon service with rapace clients
-    pub fn new(cas: Arc<CasClient>, exec: Arc<ExecClient>, vx_home: Utf8PathBuf) -> Self {
+    pub fn new(
+        cas: Arc<CasClient>,
+        exec: Arc<ExecClient>,
+        vx_home: Utf8PathBuf,
+        spawn_tracker: Arc<Mutex<SpawnTracker>>,
+    ) -> Self {
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
 
         Self {
-            inner: Arc::new(DaemonServiceInner {
-                cas,
-                exec,
-                db: Arc::new(Mutex::new(db)),
-                cache_path,
-                vx_home,
-                toolchains: Arc::new(Mutex::new(AcquiredToolchains {
-                    rust: None,
-                    zig: None,
-                })),
-            }),
+            cas,
+            exec,
+            db: Arc::new(Mutex::new(db)),
+            cache_path,
+            vx_home,
+            toolchains: Arc::new(Mutex::new(AcquiredToolchains {
+                rust: None,
+                zig: None,
+            })),
+            spawn_tracker,
         }
     }
 
@@ -1718,9 +1706,7 @@ impl DaemonService {
         reject_ambient_rustflags()?;
 
         // Acquire hermetic Rust toolchain (stable channel for now)
-        let rust_toolchain = self
-            .ensure_rust_toolchain(RustChannel::Stable)
-            .await?;
+        let rust_toolchain = self.ensure_rust_toolchain(RustChannel::Stable).await?;
 
         // Target triple comes from the toolchain spec (host = target for native builds)
         let target_triple = vx_toolchain::detect_host_triple()
@@ -2495,28 +2481,6 @@ impl DaemonService {
         } else {
             debug!(run_id = %report.run_id, "saved build report");
         }
-    }
-}
-
-impl Daemon for DaemonService {
-    async fn build(&self, request: BuildRequest) -> BuildResult {
-        match self.do_build(request).await {
-            Ok(result) => result,
-            Err(e) => BuildResult {
-                success: false,
-                message: "internal error".to_string(),
-                cached: false,
-                duration_ms: 0,
-                output_path: None,
-                error: Some(e),
-            },
-        }
-    }
-
-    async fn shutdown(&self) {
-        // DaemonService doesn't track spawned children - that's done by DaemonWrapper in main.rs
-        // This implementation is only used in tests where shutdown is a no-op
-        warn!("shutdown() called on DaemonService without spawn tracking");
     }
 }
 

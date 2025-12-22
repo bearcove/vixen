@@ -10,7 +10,7 @@ use owo_colors::OwoColorize;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-use vx_daemon_proto::{BuildRequest, Daemon, DaemonClient};
+use vx_daemon_proto::{BuildRequest,  DaemonClient};
 use vx_report::{CacheOutcome, ReportStore, RunDiff};
 
 /// vx - Build execution engine with deterministic caching
@@ -160,8 +160,7 @@ fn short_hex(hash: &str, verbose: bool) -> String {
 
 /// Connect to the daemon, spawning it if necessary
 async fn get_or_spawn_daemon() -> Result<DaemonClient> {
-    let endpoint = std::env::var("VX_DAEMON")
-        .unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    let endpoint = std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
 
     let backoff_ms = [10, 50, 100, 500, 1000];
 
@@ -250,8 +249,7 @@ async fn cmd_build(release: bool) -> Result<()> {
 }
 
 async fn cmd_kill() -> Result<()> {
-    let endpoint = std::env::var("VX_DAEMON")
-        .unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    let endpoint = std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
 
     // Try to connect to daemon
     match try_connect_daemon(&endpoint).await {

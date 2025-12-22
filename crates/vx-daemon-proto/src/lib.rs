@@ -42,9 +42,4 @@ pub struct BuildResult {
 pub trait Daemon {
     /// Build a project
     async fn build(&self, request: BuildRequest) -> BuildResult;
-
-    /// Shutdown the daemon
-    /// Kills spawned child services (casd, execd) and exits.
-    /// V1: No graceful drain, immediate process exit.
-    async fn shutdown(&self);
 }
