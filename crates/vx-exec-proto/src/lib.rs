@@ -1,160 +1,182 @@
 //! Exec service protocol definitions
 //!
-//! Defines the rapace service trait and types for rustc and zig cc execution.
+//! The Exec service is a remote-capable worker that compiles code.
+//! All inputs and outputs go through CAS - no filesystem paths are shared.
+//!
+//! Execd responsibilities:
+//! - Materialize toolchains from CAS (cached locally)
+//! - Materialize source trees from CAS
+//! - Materialize dependency artifacts from CAS
+//! - Run rustc/zig
+//! - Ingest outputs to CAS
+//! - Return output manifest hashes
+//!
+//! Daemon responsibilities:
+//! - Ingest source files to CAS
+//! - Orchestrate build order
+//! - Compute cache keys
+//! - Check cache hits
+//! - Materialize final outputs locally (if needed)
 
 use facet::Facet;
-use vx_cas_proto::{BlobHash, ManifestHash};
+use vx_cas_proto::ManifestHash;
 
-/// Structured rustc invocation (not a shell string!)
-#[derive(Debug, Clone, Facet)]
-pub struct RustcInvocation {
-    /// Toolchain manifest hash (execd fetches manifest, materializes, runs)
-    pub toolchain_manifest: ManifestHash,
-    /// Command line arguments
-    pub args: Vec<String>,
-    /// Environment variables (explicit, minimal)
-    pub env: Vec<(String, String)>,
-    /// Working directory
-    pub cwd: String,
-    /// Expected outputs
-    pub expected_outputs: Vec<ExpectedOutput>,
-}
+// =============================================================================
+// Rust Compilation
+// =============================================================================
 
-/// Structured zig cc invocation for C/C++ compilation
+/// A dependency for Rust compilation
 #[derive(Debug, Clone, Facet)]
-pub struct CcInvocation {
-    /// Toolchain manifest hash (execd fetches manifest, materializes, runs)
-    pub toolchain_manifest: ManifestHash,
-    /// Command line arguments (["cc", "-c", "main.c", "-o", "main.o", ...])
-    pub args: Vec<String>,
-    /// Environment variables (minimal, controlled)
-    pub env: Vec<(String, String)>,
-    /// Working directory
-    pub cwd: String,
-    /// Expected outputs
-    pub expected_outputs: Vec<ExpectedOutput>,
-    /// Path to depfile (if any) - will be parsed and returned in result
-    pub depfile_path: Option<String>,
-    /// Workspace root for canonicalizing depfile paths
-    pub workspace_root: String,
-}
-
-/// An expected output file
-#[derive(Debug, Clone, Facet)]
-pub struct ExpectedOutput {
-    /// Logical name ("bin", "rlib", "obj", "depfile", etc.)
-    pub logical: String,
-    /// Relative path where output will be written
-    pub path: String,
-    /// Whether the file should be executable
-    pub executable: bool,
-}
-
-/// A produced output file
-#[derive(Debug, Clone, Facet)]
-pub struct ProducedOutput {
-    /// Logical name
-    pub logical: String,
-    /// Relative path
-    pub path: String,
-    /// Hash of the blob (exec pushed to CAS)
-    pub blob_hash: BlobHash,
-    /// Whether the file is executable
-    pub executable: bool,
-}
-
-/// Result of executing rustc
-#[derive(Debug, Clone, Facet)]
-pub struct ExecuteResult {
-    /// Exit code
-    pub exit_code: i32,
-    /// Captured stdout
-    pub stdout: String,
-    /// Captured stderr
-    pub stderr: String,
-    /// Duration in milliseconds
-    pub duration_ms: u64,
-    /// Produced outputs (with blob hashes)
-    pub outputs: Vec<ProducedOutput>,
-    /// If exec pushed manifest to CAS, this is set
-    pub manifest_hash: Option<ManifestHash>,
-}
-
-/// Result of executing zig cc
-#[derive(Debug, Clone, Facet)]
-pub struct CcExecuteResult {
-    /// Exit code
-    pub exit_code: i32,
-    /// Captured stdout
-    pub stdout: String,
-    /// Captured stderr
-    pub stderr: String,
-    /// Duration in milliseconds
-    pub duration_ms: u64,
-    /// Produced outputs (with blob hashes)
-    pub outputs: Vec<ProducedOutput>,
-    /// Discovered dependencies (workspace-relative paths from depfile)
-    /// These are canonicalized, sorted, and deduplicated.
-    /// System headers (outside workspace) are filtered out.
-    pub discovered_deps: Vec<String>,
-    /// If exec pushed manifest to CAS, this is set
-    pub manifest_hash: Option<ManifestHash>,
-}
-
-/// Request to materialize a registry crate into workspace-local staging
-#[derive(Debug, Clone, Facet)]
-pub struct RegistryMaterializeRequest {
-    /// RegistryCrateManifest hash stored in CAS
+pub struct RustDep {
+    /// Extern crate name (used in --extern flag)
+    pub extern_name: String,
+    /// Manifest hash of the dependency's rlib in CAS
     pub manifest_hash: ManifestHash,
-
-    /// Absolute workspace root, used to place .vx/registry/<name>/<version>
-    pub workspace_root: String,
 }
 
-/// Result of materializing a registry crate
+/// Request to compile a Rust crate
+///
+/// All paths are relative to the source tree root.
+/// All artifacts are identified by CAS manifest hashes.
 #[derive(Debug, Clone, Facet)]
-pub struct RegistryMaterializeResult {
-    /// Workspace-relative path to staged crate, e.g. ".vx/registry/serde/1.0.197"
-    pub workspace_rel_path: String,
+pub struct RustCompileRequest {
+    /// Toolchain manifest hash (execd materializes locally)
+    pub toolchain_manifest: ManifestHash,
 
-    /// Whether the crate was already cached (no extraction needed)
-    pub was_cached: bool,
+    /// Source tree manifest hash (all source files)
+    pub source_manifest: ManifestHash,
 
-    /// Status of the materialization
-    pub status: MaterializeStatus,
+    /// Crate root within source tree (e.g., "src/lib.rs")
+    pub crate_root: String,
 
-    /// Error message if status is Failed
+    /// Crate name (with underscores, as rustc expects)
+    pub crate_name: String,
+
+    /// Crate type: "lib" or "bin"
+    pub crate_type: String,
+
+    /// Rust edition: "2015", "2018", "2021", "2024"
+    pub edition: String,
+
+    /// Target triple (e.g., "aarch64-apple-darwin")
+    pub target_triple: String,
+
+    /// Profile: "debug" or "release"
+    pub profile: String,
+
+    /// Dependencies (execd materializes rlibs from CAS)
+    pub deps: Vec<RustDep>,
+}
+
+/// Result of compiling a Rust crate
+#[derive(Debug, Clone, Facet)]
+pub struct RustCompileResult {
+    /// Whether compilation succeeded
+    pub success: bool,
+
+    /// Exit code from rustc
+    pub exit_code: i32,
+
+    /// Captured stdout
+    pub stdout: String,
+
+    /// Captured stderr
+    pub stderr: String,
+
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+
+    /// Manifest hash of the build output in CAS (if successful)
+    /// For libs: contains the rlib blob
+    /// For bins: contains the executable blob
+    pub output_manifest: Option<ManifestHash>,
+
+    /// Error message (if failed before rustc ran)
     pub error: Option<String>,
 }
 
-/// Status of registry crate materialization
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Facet)]
-#[repr(u8)]
-pub enum MaterializeStatus {
-    /// Successfully materialized (extracted or copied from cache)
-    Ok = 0,
-    /// Failed to materialize
-    Failed = 1,
+// =============================================================================
+// C/C++ Compilation
+// =============================================================================
+
+/// Request to compile a C/C++ translation unit
+#[derive(Debug, Clone, Facet)]
+pub struct CcCompileRequest {
+    /// Zig toolchain manifest hash
+    pub toolchain_manifest: ManifestHash,
+
+    /// Source tree manifest hash
+    pub source_manifest: ManifestHash,
+
+    /// Source file within tree (e.g., "src/main.c")
+    pub source_path: String,
+
+    /// Target triple
+    pub target_triple: String,
+
+    /// Profile: "debug" or "release"
+    pub profile: String,
+
+    /// Include paths (relative to source tree root)
+    pub include_paths: Vec<String>,
+
+    /// Preprocessor defines
+    pub defines: Vec<(String, Option<String>)>,
 }
 
+/// Result of compiling a C/C++ translation unit
+#[derive(Debug, Clone, Facet)]
+pub struct CcCompileResult {
+    /// Whether compilation succeeded
+    pub success: bool,
+
+    /// Exit code
+    pub exit_code: i32,
+
+    /// Captured stdout
+    pub stdout: String,
+
+    /// Captured stderr
+    pub stderr: String,
+
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+
+    /// Manifest hash of the object file in CAS
+    pub output_manifest: Option<ManifestHash>,
+
+    /// Discovered dependencies from depfile (paths relative to source tree)
+    /// Used by daemon to update incremental state
+    pub discovered_deps: Vec<String>,
+
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
+// =============================================================================
+// Exec Service Trait
+// =============================================================================
+
 /// Exec service trait
+///
+/// A remote-capable compilation service. All inputs/outputs go through CAS.
+/// No filesystem paths are shared between daemon and execd.
 #[rapace::service]
 pub trait Exec {
-    /// Execute a rustc invocation
-    async fn execute_rustc(&self, invocation: RustcInvocation) -> ExecuteResult;
-
-    /// Execute a zig cc invocation (C/C++ compilation)
+    /// Compile a Rust crate (lib or bin)
     ///
-    /// This runs zig cc, captures outputs, and parses the depfile (if any)
-    /// to return discovered dependencies for incremental builds.
-    async fn execute_cc(&self, invocation: CcInvocation) -> CcExecuteResult;
+    /// Execd will:
+    /// 1. Materialize the toolchain from CAS (cached locally)
+    /// 2. Materialize the source tree from CAS
+    /// 3. Materialize dependency rlibs from CAS
+    /// 4. Run rustc
+    /// 5. Ingest output to CAS
+    /// 6. Return the output manifest hash
+    async fn compile_rust(&self, request: RustCompileRequest) -> RustCompileResult;
 
-    /// Materialize a registry crate into workspace-local staging directory.
+    /// Compile a C/C++ translation unit
     ///
-    /// This fetches the RegistryCrateManifest from CAS, extracts the tarball
-    /// to global cache if needed, then clones into `.vx/registry/<name>/<version>`.
-    async fn materialize_registry_crate(
-        &self,
-        request: RegistryMaterializeRequest,
-    ) -> RegistryMaterializeResult;
+    /// Similar to compile_rust but for C/C++ via zig cc.
+    /// Returns discovered dependencies for incremental builds.
+    async fn compile_cc(&self, request: CcCompileRequest) -> CcCompileResult;
 }

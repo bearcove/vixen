@@ -3253,6 +3253,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vx-cache"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "vx-cas-proto",
+ "vx-exec-proto",
+]
+
+[[package]]
 name = "vx-cas-proto"
 version = "0.1.0"
 dependencies = [
@@ -3363,9 +3372,11 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "vx-cache",
  "vx-cas-proto",
  "vx-cc",
  "vx-exec-proto",
+ "vx-io",
  "vx-tarball",
 ]
 

@@ -1,22 +1,27 @@
 //! vx-execd - Execution daemon
 //!
 //! Implements the Exec rapace service trait.
-//! Runs rustc and zig cc, streams outputs to CAS.
-//! Materializes toolchains and registry crates on-demand from CAS.
+//! A remote-capable compilation service - all inputs/outputs go through CAS.
+//!
+//! Responsibilities:
+//! - Materialize toolchains from CAS (cached locally)
+//! - Materialize source trees from CAS
+//! - Materialize dependency artifacts from CAS
+//! - Run rustc/zig
+//! - Ingest outputs to CAS
+//! - Return output manifest hashes
 
 pub(crate) mod extract;
 pub(crate) mod registry;
 pub(crate) mod service;
 pub(crate) mod toolchain;
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use eyre::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::warn;
 use vx_cas_proto::{Blake3Hash, CasClient};
-use vx_cc::depfile::{canonicalize_deps, parse_depfile_path};
 use vx_exec_proto::ExecServer;
 
 use crate::registry::RegistryMaterializer;
@@ -61,9 +66,6 @@ impl Args {
 
 /// Connect to CAS and return a client handle
 async fn connect_to_cas(endpoint: &str) -> Result<vx_cas_proto::CasClient> {
-    use std::sync::Arc;
-    use vx_cas_proto::CasClient;
-
     let stream = TcpStream::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 
@@ -138,10 +140,10 @@ async fn main() -> Result<()> {
 /// Inner Exec service implementation
 pub struct ExecServiceInner {
     /// CAS client for storing outputs and fetching toolchains
-    cas: Arc<CasClient>,
+    pub(crate) cas: Arc<CasClient>,
 
     /// Toolchain materialization directory
-    toolchains_dir: Utf8PathBuf,
+    pub(crate) toolchains_dir: Utf8PathBuf,
 
     /// In-flight toolchain materializations (keyed by manifest_hash)
     /// Uses Arc<tokio::sync::Mutex> for async locking
@@ -151,7 +153,8 @@ pub struct ExecServiceInner {
         >,
     >,
 
-    /// Registry crate materializer
+    /// Registry crate materializer (kept for future use)
+    #[allow(dead_code)]
     registry_materializer: RegistryMaterializer,
 }
 
@@ -186,8 +189,11 @@ impl ExecService {
     }
 
     /// Ensures a toolchain is materialized locally, returns the materialized directory.
-    /// Uses file locking to prevent concurrent materializations.
-    async fn ensure_materialized(&self, manifest_hash: Blake3Hash) -> Result<Utf8PathBuf, String> {
+    /// Uses async locking to prevent concurrent materializations of the same toolchain.
+    pub(crate) async fn ensure_materialized(
+        &self,
+        manifest_hash: Blake3Hash,
+    ) -> Result<Utf8PathBuf, String> {
         // Check if already materializing
         let cell = {
             let mut map = self.materializing.lock().await;
@@ -208,34 +214,5 @@ impl ExecService {
         manifest_hash: Blake3Hash,
     ) -> Result<Utf8PathBuf, String> {
         self.materialize_toolchain_impl(manifest_hash).await
-    }
-}
-
-/// Parse a depfile and canonicalize its dependencies to workspace-relative paths
-fn parse_and_canonicalize_depfile(
-    depfile_path: &Utf8Path,
-    base_dir: &Utf8Path,
-    workspace_root: &Utf8Path,
-) -> Vec<String> {
-    match parse_depfile_path(depfile_path) {
-        Ok(parsed) => match canonicalize_deps(&parsed.deps, base_dir, workspace_root) {
-            Ok(canonical) => canonical.into_iter().map(|p| p.to_string()).collect(),
-            Err(e) => {
-                warn!(
-                    depfile = %depfile_path,
-                    error = %e,
-                    "failed to canonicalize depfile dependencies"
-                );
-                vec![]
-            }
-        },
-        Err(e) => {
-            warn!(
-                depfile = %depfile_path,
-                error = %e,
-                "failed to parse depfile"
-            );
-            vec![]
-        }
     }
 }

@@ -1,6 +1,6 @@
 //! Common I/O utilities for vertex crates
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 
 /// Atomically write contents to a file.
 ///
@@ -68,6 +68,33 @@ pub async fn atomic_write_executable(
         .map_err(|e| std::io::Error::other(format!("failed to persist temp file: {}", e)))?;
 
     Ok(())
+}
+
+/// Create a unique scratch directory under the given base path.
+///
+/// The directory name is derived from timestamp + PID + atomic counter,
+/// ensuring uniqueness even under concurrent access.
+///
+/// The caller is responsible for cleaning up the directory when done.
+pub async fn create_scratch_dir(base: &Utf8Path) -> Result<Utf8PathBuf, std::io::Error> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let scratch_base = base.join("scratch");
+    tokio::fs::create_dir_all(&scratch_base).await?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let id = format!("{:x}-{}-{}", timestamp, pid, count);
+    let dir = scratch_base.join(&id);
+
+    tokio::fs::create_dir_all(&dir).await?;
+
+    Ok(dir)
 }
 
 /// Synchronous version of atomic write for use in blocking contexts.

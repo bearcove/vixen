@@ -20,9 +20,11 @@ tracing = { workspace = true }
 blake3 = { workspace = true }
 futures-util = { workspace = true }
 
+vx-cache = { workspace = true }
 vx-cas-proto = { workspace = true }
 vx-cc = { workspace = true }
 vx-exec-proto = { workspace = true }
+vx-io = { workspace = true }
 vx-tarball = { workspace = true }
 
 
