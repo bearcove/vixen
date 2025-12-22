@@ -48,8 +48,8 @@ impl RegistryManager {
     pub async fn ensure(
         &self,
         spec_key: RegistrySpecKey,
-        lookup_fn: impl AsyncFn() -> Option<Blake3Hash>,
-        acquire_fn: impl AsyncFn() -> EnsureRegistryCrateResult,
+        lookup_fn: impl AsyncFn() -> Option<Blake3Hash> + 'static,
+        acquire_fn: impl AsyncFn() -> EnsureRegistryCrateResult + 'static,
     ) -> EnsureRegistryCrateResult {
         // Fast path: check if already in CAS
         if let Some(manifest_hash) = lookup_fn().await {

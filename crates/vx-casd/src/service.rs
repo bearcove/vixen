@@ -112,11 +112,14 @@ impl Cas for CasService {
             };
         }
 
+        let this = self.clone();
+        let this2 = self.clone();
+
         self.registry_manager
             .ensure(
                 spec_key,
-                async || self.lookup_registry_spec_local(&spec_key),
-                async || {
+                async move || this.lookup_registry_spec_local(&spec_key),
+                async move || {
                     // Download tarball
                     let tarball_bytes =
                         match download_crate(&spec.name, &spec.version, &spec.checksum).await {
@@ -142,7 +145,7 @@ impl Cas for CasService {
                     }
 
                     // Store tarball as blob
-                    let tarball_blob = self.put_blob(tarball_bytes).await;
+                    let tarball_blob = this2.put_blob(tarball_bytes).await;
 
                     // Create manifest
                     let manifest = RegistryCrateManifest {
@@ -153,10 +156,10 @@ impl Cas for CasService {
                     };
 
                     // Store manifest
-                    let manifest_hash = self.put_registry_manifest(&manifest).await;
+                    let manifest_hash = this2.put_registry_manifest(&manifest).await;
 
                     // Publish spec → manifest_hash mapping
-                    let _ = self.publish_registry_spec_mapping(&spec_key, &manifest_hash);
+                    let _ = this2.publish_registry_spec_mapping(&spec_key, &manifest_hash);
 
                     tracing::info!(
                         name = %spec.name,
