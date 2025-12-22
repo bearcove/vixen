@@ -3431,6 +3431,7 @@ dependencies = [
  "tokio-tar",
  "tokio-util",
  "tracing",
+ "vx-cas-proto",
 ]
 
 [[package]]

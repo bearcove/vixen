@@ -9,6 +9,7 @@ futures-util = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+vx-cas-proto = { path = "../vx-cas-proto" }
 
 async-compression = { version = "0.4", features = ["tokio", "gzip", "xz"] }
 hex = "0.4"

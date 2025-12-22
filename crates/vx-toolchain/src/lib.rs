@@ -14,6 +14,8 @@ use facet::Facet;
 use facet_value::Value;
 use thiserror::Error;
 
+use vx_cas_proto::Blake3Hash;
+
 /// Errors that can occur during toolchain operations
 #[derive(Debug, Error)]
 pub enum ToolchainError {
@@ -47,8 +49,9 @@ pub enum ToolchainError {
 }
 
 /// Rust channel specification (what the user specifies)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Channel {
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Facet)]
+#[repr(u8)]
+pub enum RustChannel {
     /// Stable channel (latest stable)
     Stable,
     /// Beta channel
@@ -57,12 +60,15 @@ pub enum Channel {
     Nightly { date: String },
 }
 
-impl Channel {
+// Type alias for backward compatibility
+pub type Channel = RustChannel;
+
+impl RustChannel {
     /// Parse a channel string like "stable", "beta", or "nightly-2024-02-01"
     pub fn parse(s: &str) -> Result<Self, ToolchainError> {
         match s {
-            "stable" => Ok(Channel::Stable),
-            "beta" => Ok(Channel::Beta),
+            "stable" => Ok(RustChannel::Stable),
+            "beta" => Ok(RustChannel::Beta),
             s if s.starts_with("nightly-") => {
                 let date = s.strip_prefix("nightly-").unwrap();
                 // Validate date format (YYYY-MM-DD)
@@ -77,7 +83,7 @@ impl Channel {
                         date
                     )));
                 }
-                Ok(Channel::Nightly {
+                Ok(RustChannel::Nightly {
                     date: date.to_string(),
                 })
             }
@@ -91,11 +97,11 @@ impl Channel {
     /// Get the manifest URL for this channel
     pub fn manifest_url(&self) -> String {
         match self {
-            Channel::Stable => {
+            RustChannel::Stable => {
                 "https://static.rust-lang.org/dist/channel-rust-stable.toml".to_string()
             }
-            Channel::Beta => "https://static.rust-lang.org/dist/channel-rust-beta.toml".to_string(),
-            Channel::Nightly { date } => {
+            RustChannel::Beta => "https://static.rust-lang.org/dist/channel-rust-beta.toml".to_string(),
+            RustChannel::Nightly { date } => {
                 format!(
                     "https://static.rust-lang.org/dist/{}/channel-rust-nightly.toml",
                     date
@@ -103,6 +109,15 @@ impl Channel {
             }
         }
     }
+}
+
+/// Rust component specification
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Facet)]
+#[repr(u8)]
+pub enum RustComponent {
+    Rustc,
+    RustStd,
+    Cargo,
 }
 
 /// Parsed channel manifest from static.rust-lang.org
@@ -364,39 +379,48 @@ use camino::{Utf8Path, Utf8PathBuf};
 use vx_cas_proto::Blake3Hash;
 
 /// Rust toolchain specification
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Facet)]
 pub struct RustToolchainSpec {
     /// Channel (stable, beta, or pinned nightly)
-    pub channel: Channel,
+    pub channel: RustChannel,
     /// Host triple (e.g., "aarch64-apple-darwin")
     pub host: String,
-    /// Target triple for cross-compilation (defaults to host if not set)
-    pub target: Option<String>,
+    /// Target triple
+    pub target: String,
+    /// Components to include
+    pub components: Vec<RustComponent>,
 }
 
 impl RustToolchainSpec {
     /// Create a spec for native compilation on the current host
-    pub fn native(channel: Channel) -> Result<Self, ToolchainError> {
+    pub fn native(channel: RustChannel) -> Result<Self, ToolchainError> {
         let host = detect_host_triple()?;
         Ok(Self {
             channel,
-            host,
-            target: None,
+            host: host.clone(),
+            target: host,
+            components: vec![RustComponent::Rustc, RustComponent::RustStd],
         })
     }
 
     /// Create a spec for cross-compilation
-    pub fn cross(channel: Channel, host: String, target: String) -> Self {
+    pub fn cross(
+        channel: RustChannel,
+        host: String,
+        target: String,
+        components: Vec<RustComponent>,
+    ) -> Self {
         Self {
             channel,
             host,
-            target: Some(target),
+            target,
+            components,
         }
     }
 
     /// Get the effective target triple
     pub fn effective_target(&self) -> &str {
-        self.target.as_deref().unwrap_or(&self.host)
+        &self.target
     }
 }
 

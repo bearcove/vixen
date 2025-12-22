@@ -1473,11 +1473,7 @@ pub struct DaemonServiceInner {
 
 impl DaemonService {
     /// Create a new daemon service with rapace clients
-    pub fn new(
-        cas: Arc<CasClient>,
-        exec: Arc<ExecClient>,
-        vx_home: Utf8PathBuf,
-    ) -> Self {
+    pub fn new(cas: Arc<CasClient>, exec: Arc<ExecClient>, vx_home: Utf8PathBuf) -> Self {
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
 
