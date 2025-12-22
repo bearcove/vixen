@@ -19,8 +19,9 @@ use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, CacheKey, Cas, NodeId, NodeManifest, OutputEntry};
 use vx_casd::CasService;
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
+use vx_exec_proto::{Exec, MaterializeStatus, RegistryMaterializeRequest};
 use vx_exec_proto::{ExpectedOutput, RustcInvocation};
-use vx_execd::RegistryMaterializer;
+use vx_execd::ExecService;
 use vx_manifest::Edition;
 use vx_registry_proto::{CasRegistry, RegistrySpec};
 use vx_report::{
@@ -1170,10 +1171,10 @@ pub struct AcquiredToolchains {
 
 /// The daemon service implementation
 pub struct DaemonService {
-    /// CAS service for content-addressed storage (Arc for sharing with materializers)
+    /// CAS service for content-addressed storage (Arc for sharing with exec)
     cas: Arc<CasService>,
-    /// Registry crate materializer
-    registry_materializer: RegistryMaterializer<Arc<CasService>>,
+    /// Exec service for materialization and compilation
+    exec: ExecService<Arc<CasService>>,
     /// The picante incremental database (shared across builds)
     db: Arc<Mutex<Database>>,
     /// Path to the picante cache file
@@ -1192,15 +1193,20 @@ impl DaemonService {
         cas.init()?;
         let cas = Arc::new(cas);
 
+        // Set up directories for exec service
+        let toolchains_dir = vx_home.join("toolchains");
         let registry_cache_dir = vx_home.join("registry");
-        let registry_materializer = RegistryMaterializer::new(Arc::clone(&cas), registry_cache_dir);
+        std::fs::create_dir_all(&toolchains_dir)?;
+        std::fs::create_dir_all(&registry_cache_dir)?;
+
+        let exec = ExecService::new(Arc::clone(&cas), toolchains_dir, registry_cache_dir);
 
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
 
         Ok(Self {
             cas,
-            registry_materializer,
+            exec,
             db: Arc::new(Mutex::new(db)),
             cache_path,
             vx_home,
@@ -1375,17 +1381,21 @@ impl DaemonService {
                 )
             })?;
 
-            // Materialize to workspace via the registry materializer
-            let mat_result = self
-                .registry_materializer
-                .materialize(manifest_hash, &graph.workspace_root)
-                .await
-                .map_err(|e| {
-                    format!(
-                        "failed to materialize {} {}: {}",
-                        info.name, info.version, e
-                    )
-                })?;
+            // Materialize to workspace via execd
+            let request = RegistryMaterializeRequest {
+                manifest_hash,
+                workspace_root: graph.workspace_root.to_string(),
+            };
+            let mat_result = self.exec.materialize_registry_crate(request).await;
+
+            if mat_result.status == MaterializeStatus::Failed {
+                return Err(format!(
+                    "failed to materialize {} {}: {}",
+                    info.name,
+                    info.version,
+                    mat_result.error.unwrap_or_else(|| "unknown error".into())
+                ));
+            }
 
             info!(
                 name = %info.name,
