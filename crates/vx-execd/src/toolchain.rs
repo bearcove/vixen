@@ -69,7 +69,7 @@ impl ExecService {
                         .await
                         .map_err(|e| format!("failed to create dest dir {}: {}", dest, e))?;
 
-                    self.extract_tar_xz_from_cas(blob, &dest, strip_components)
+                    self.extract_tar_xz_from_cas(*blob, &dest, *strip_components)
                         .await?;
                 }
                 MaterializeStep::EnsureDir { relpath } => {
@@ -93,7 +93,7 @@ impl ExecService {
                     // Fetch blob from CAS
                     let mut stream = self
                         .cas
-                        .stream_blob(blob)
+                        .stream_blob(*blob)
                         .await
                         .map_err(|e| format!("failed to start blob stream: {:?}", e))?;
                     let mut data = Vec::new();
@@ -111,7 +111,7 @@ impl ExecService {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let perms = std::fs::Permissions::from_mode(mode);
+                        let perms = std::fs::Permissions::from_mode(*mode);
                         tokio::fs::set_permissions(&dest, perms)
                             .await
                             .map_err(|e| format!("failed to set permissions on {}: {}", dest, e))?;

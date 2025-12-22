@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
 }
 
 /// Inner Exec service implementation
-struct ExecServiceInner {
+pub struct ExecServiceInner {
     /// CAS client for storing outputs and fetching toolchains
     cas: Arc<CasClient>,
 
