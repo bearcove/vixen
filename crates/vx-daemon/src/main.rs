@@ -8,15 +8,17 @@ use eyre::Result;
 use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
 use picante::{HasRuntime, PicanteResult};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::process::Child;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
-use vx_cas_proto::{Blake3Hash, CacheKey, Cas, NodeId, NodeManifest, OutputEntry};
+use vx_cas_proto::{Blake3Hash, CacheKey, Cas, CasClient, NodeId, NodeManifest, OutputEntry};
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon, DaemonServer};
 use vx_exec_proto::{
-    Exec, ExpectedOutput, MaterializeStatus, RegistryMaterializeRequest, RustcInvocation,
+    Exec, ExecClient, ExpectedOutput, MaterializeStatus, RegistryMaterializeRequest,
+    RustcInvocation,
 };
 use vx_manifest::Edition;
 use vx_report::{
@@ -215,10 +217,37 @@ async fn main() -> Result<()> {
     // Ensure services are running
     ensure_services(&args, &spawn_tracker).await?;
 
-    // Initialize daemon service (V1: still uses in-process CAS/Exec)
-    // TODO: Phase 1 Step 3 will refactor this to use TCP clients
+    // Create rapace clients for CAS and Exec
+    tracing::info!("Connecting to CAS at {}", args.cas_endpoint);
+    let cas_stream = TcpStream::connect(&args.cas_endpoint).await?;
+    let cas_transport = rapace::Transport::stream(cas_stream);
+    let cas_session = rapace::RpcSession::new(cas_transport);
+    let cas_client = Arc::new(CasClient::new(cas_session));
+
+    tracing::info!("Connecting to Exec at {}", args.exec_endpoint);
+    let exec_stream = TcpStream::connect(&args.exec_endpoint).await?;
+    let exec_transport = rapace::Transport::stream(exec_stream);
+    let exec_session = rapace::RpcSession::new(exec_transport);
+    let exec_client = Arc::new(ExecClient::new(exec_session));
+
+    // Spawn session runners
+    let cas_session_runner = cas_client.session().clone();
+    tokio::spawn(async move {
+        if let Err(e) = cas_session_runner.run().await {
+            tracing::error!("CAS session error: {}", e);
+        }
+    });
+
+    let exec_session_runner = exec_client.session().clone();
+    tokio::spawn(async move {
+        if let Err(e) = exec_session_runner.run().await {
+            tracing::error!("Exec session error: {}", e);
+        }
+    });
+
+    // Initialize daemon service with rapace clients
     tracing::info!("Initializing daemon service");
-    let daemon_service = DaemonService::new(args.vx_home)?;
+    let daemon_service = DaemonService::new(cas_client, exec_client, args.vx_home);
 
     let daemon = Arc::new(DaemonWrapper {
         inner: daemon_service,
@@ -231,7 +260,7 @@ async fn main() -> Result<()> {
 
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let daemon = Arc::clone(&daemon);
+        let daemon = daemon.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
@@ -1407,7 +1436,28 @@ pub struct AcquiredToolchains {
 }
 
 /// The daemon service implementation
+#[derive(Clone)]
 pub struct DaemonService {
+    /// innards
+    inner: Arc<DaemonServiceInner>,
+}
+
+impl Deref for DaemonService {
+    type Target = DaemonServiceInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+/// The daemon service implementation (inner)
+pub struct DaemonServiceInner {
+    /// CAS client for content-addressed storage
+    cas: Arc<CasClient>,
+
+    /// Exec client for materialization and compilation
+    exec: Arc<ExecClient>,
+
     /// The picante incremental database (shared across builds)
     db: Arc<Mutex<Database>>,
 
@@ -1422,35 +1472,28 @@ pub struct DaemonService {
 }
 
 impl DaemonService {
-    /// Create a new daemon service
-    pub fn new(vx_home: Utf8PathBuf) -> std::io::Result<Self> {
-        let cas_root = vx_home.clone();
-        let cas = CasService::new(cas_root);
-        cas.init()?;
-        let cas = Arc::new(cas);
-
-        // Set up directories for exec service
-        let toolchains_dir = vx_home.join("toolchains");
-        let registry_cache_dir = vx_home.join("registry");
-        std::fs::create_dir_all(&toolchains_dir)?;
-        std::fs::create_dir_all(&registry_cache_dir)?;
-
-        let exec = ExecService::new(Arc::clone(&cas), toolchains_dir, registry_cache_dir);
-
+    /// Create a new daemon service with rapace clients
+    pub fn new(
+        cas: Arc<CasClient>,
+        exec: Arc<ExecClient>,
+        vx_home: Utf8PathBuf,
+    ) -> Self {
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
 
-        Ok(Self {
-            cas,
-            exec,
-            db: Arc::new(Mutex::new(db)),
-            cache_path,
-            vx_home,
-            toolchains: Arc::new(Mutex::new(AcquiredToolchains {
-                rust: None,
-                zig: None,
-            })),
-        })
+        Self {
+            inner: Arc::new(DaemonServiceInner {
+                cas,
+                exec,
+                db: Arc::new(Mutex::new(db)),
+                cache_path,
+                vx_home,
+                toolchains: Arc::new(Mutex::new(AcquiredToolchains {
+                    rust: None,
+                    zig: None,
+                })),
+            }),
+        }
     }
 
     /// Ensure Rust toolchain exists in CAS. Returns info for cache keys.

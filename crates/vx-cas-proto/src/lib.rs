@@ -577,3 +577,146 @@ pub struct RegistryMaterializationResult {
     /// Whether the workspace copy was already present with matching checksum
     pub was_cached: bool,
 }
+
+// =============================================================================
+// Tree Manifest (Content-Addressed Directory)
+// =============================================================================
+
+/// A content-addressed directory tree stored in CAS.
+///
+/// Instead of storing tarballs as blobs, we extract them and store each file
+/// as a separate blob. This enables:
+/// - Deduplication across versions (e.g., unchanged files between Rust 1.83 and 1.84)
+/// - Deduplication across crates (LICENSE files, similar Cargo.toml structures)
+/// - Efficient partial materialization (only fetch missing blobs)
+///
+/// The tree manifest itself is stored as a blob, and its hash serves as the
+/// "tree hash" for the entire directory.
+#[derive(Debug, Clone, Facet)]
+pub struct TreeManifest {
+    /// Schema version for format evolution
+    pub schema_version: u32,
+    /// Entries sorted by path for deterministic hashing
+    pub entries: Vec<TreeEntry>,
+    /// Total size of all files (for progress reporting)
+    pub total_size_bytes: u64,
+    /// Number of unique blobs (for dedup stats)
+    pub unique_blobs: u32,
+}
+
+/// Current schema version for tree manifests
+pub const TREE_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+/// A single entry in a tree manifest
+#[derive(Debug, Clone, Facet)]
+pub struct TreeEntry {
+    /// Relative path within the tree (UTF-8, forward slashes)
+    pub path: String,
+    /// Entry kind and associated data
+    pub kind: TreeEntryKind,
+}
+
+/// Kind of tree entry
+#[derive(Debug, Clone, Facet)]
+#[repr(u8)]
+pub enum TreeEntryKind {
+    /// Regular file
+    File {
+        /// Blake3 hash of file contents
+        blob: Blake3Hash,
+        /// File size in bytes
+        size: u64,
+        /// Whether the file is executable (unix +x)
+        executable: bool,
+    },
+    /// Symbolic link
+    Symlink {
+        /// Link target (relative path)
+        target: String,
+    },
+    /// Directory (only needed for empty directories)
+    Directory,
+}
+
+impl TreeManifest {
+    /// Create a new empty tree manifest
+    pub fn new() -> Self {
+        Self {
+            schema_version: TREE_MANIFEST_SCHEMA_VERSION,
+            entries: Vec::new(),
+            total_size_bytes: 0,
+            unique_blobs: 0,
+        }
+    }
+
+    /// Add a file entry
+    pub fn add_file(&mut self, path: String, blob: Blake3Hash, size: u64, executable: bool) {
+        self.entries.push(TreeEntry {
+            path,
+            kind: TreeEntryKind::File {
+                blob,
+                size,
+                executable,
+            },
+        });
+        self.total_size_bytes += size;
+    }
+
+    /// Add a symlink entry
+    pub fn add_symlink(&mut self, path: String, target: String) {
+        self.entries.push(TreeEntry {
+            path,
+            kind: TreeEntryKind::Symlink { target },
+        });
+    }
+
+    /// Add an empty directory entry
+    pub fn add_directory(&mut self, path: String) {
+        self.entries.push(TreeEntry {
+            path,
+            kind: TreeEntryKind::Directory,
+        });
+    }
+
+    /// Sort entries by path and compute unique blob count
+    pub fn finalize(&mut self) {
+        self.entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // Count unique blobs
+        let mut seen = std::collections::HashSet::new();
+        for entry in &self.entries {
+            if let TreeEntryKind::File { blob, .. } = &entry.kind {
+                seen.insert(*blob);
+            }
+        }
+        self.unique_blobs = seen.len() as u32;
+    }
+
+    /// Iterate over file entries (for materialization)
+    pub fn files(&self) -> impl Iterator<Item = (&str, &Blake3Hash, u64, bool)> {
+        self.entries.iter().filter_map(|e| match &e.kind {
+            TreeEntryKind::File {
+                blob,
+                size,
+                executable,
+            } => Some((e.path.as_str(), blob, *size, *executable)),
+            _ => None,
+        })
+    }
+
+    /// Iterate over symlink entries
+    pub fn symlinks(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.entries.iter().filter_map(|e| match &e.kind {
+            TreeEntryKind::Symlink { target } => Some((e.path.as_str(), target.as_str())),
+            _ => None,
+        })
+    }
+
+    /// Iterate over directory entries (empty dirs only)
+    pub fn directories(&self) -> impl Iterator<Item = &str> {
+        self.entries.iter().filter_map(|e| match &e.kind {
+            TreeEntryKind::Directory => Some(e.path.as_str()),
+            _ => None,
+        })
+    }
+}
