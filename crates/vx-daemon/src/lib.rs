@@ -6,10 +6,8 @@
 //! - Computes cache keys via tracked queries
 //! - Orchestrates builds via CAS and Exec services
 
-use std::process::Command;
-use std::sync::Arc;
-
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use camino::Utf8PathBuf;
 use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
@@ -17,13 +15,10 @@ use picante::{HasRuntime, PicanteResult};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use vx_cas_proto::{Blake3Hash, CacheKey, Cas, NodeId, NodeManifest, OutputEntry};
-use vx_casd::CasService;
 use vx_daemon_proto::{BuildRequest, BuildResult, Daemon};
 use vx_exec_proto::{Exec, MaterializeStatus, RegistryMaterializeRequest};
 use vx_exec_proto::{ExpectedOutput, RustcInvocation};
-use vx_execd::ExecService;
 use vx_manifest::Edition;
-use vx_registry_proto::{CasRegistry, RegistrySpec};
 use vx_report::{
     BuildReport, CacheOutcome, DiagnosticsRecord, InputRecord, InvocationRecord, MissReason,
     NodeReport, NodeTiming, OutputRecord, ReportStore, ToolchainRef, ToolchainsUsed,
@@ -43,7 +38,6 @@ fn format_diagnostic(err: &dyn miette::Diagnostic) -> String {
         format!("{}", err)
     }
 }
-use vx_toolchain_proto::{CasToolchain, RustChannel, RustComponent, RustToolchainSpec};
 
 // =============================================================================
 // INPUTS
@@ -1908,7 +1902,10 @@ impl DaemonService {
         let duration = std::time::Duration::from_millis(exec_result.duration_ms);
 
         if exec_result.exit_code != 0 {
-            return Err(format!("rustc failed for {}: {}", crate_name, exec_result.stderr));
+            return Err(format!(
+                "rustc failed for {}: {}",
+                crate_name, exec_result.stderr
+            ));
         }
 
         // Extract blob hash from exec result
@@ -2121,7 +2118,10 @@ impl DaemonService {
         let duration = std::time::Duration::from_millis(exec_result.duration_ms);
 
         if exec_result.exit_code != 0 {
-            return Err(format!("rustc failed for {}: {}", crate_name, exec_result.stderr));
+            return Err(format!(
+                "rustc failed for {}: {}",
+                crate_name, exec_result.stderr
+            ));
         }
 
         // Extract blob hash from exec result
