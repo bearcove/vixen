@@ -3,7 +3,12 @@ name = "vx-execd"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "vx-execd"
+path = "src/main.rs"
+
 [dependencies]
+tracing-subscriber = { workspace = true }
 facet = { workspace = true }
 rapace = { workspace = true }
 tokio = { workspace = true }

@@ -1898,24 +1898,22 @@ impl DaemonService {
             invocation.args.push(cfg.clone());
         }
 
-        let start = std::time::Instant::now();
-        let output = Command::new("rustc")
-            .args(&invocation.args)
-            .current_dir(&invocation.cwd)
-            .output()
-            .map_err(|e| format!("failed to execute rustc: {}", e))?;
-        let duration = start.elapsed();
+        // Execute rustc via exec service (V1: RPC)
+        let exec_result = self.exec.execute_rustc(invocation).await;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("rustc failed for {}: {}", crate_name, stderr));
+        let duration = std::time::Duration::from_millis(exec_result.duration_ms);
+
+        if exec_result.exit_code != 0 {
+            return Err(format!("rustc failed for {}: {}", crate_name, exec_result.stderr));
         }
 
-        // Store output in CAS
-        let rlib_abs = workspace_root.join(&rlib_path);
-        let rlib_data = std::fs::read(&rlib_abs)
-            .map_err(|e| format!("failed to read rlib {}: {}", rlib_abs, e))?;
-        let blob_hash = self.cas.put_blob(rlib_data).await;
+        // Extract blob hash from exec result
+        let blob_hash = exec_result
+            .outputs
+            .iter()
+            .find(|o| o.logical == "rlib")
+            .ok_or_else(|| format!("exec did not return rlib output for {}", crate_name))?
+            .blob_hash;
 
         // Create manifest
         let node_manifest = NodeManifest {
@@ -2109,23 +2107,22 @@ impl DaemonService {
             invocation.args.push(cfg.clone());
         }
 
-        let start = std::time::Instant::now();
-        let output = Command::new("rustc")
-            .args(&invocation.args)
-            .current_dir(&invocation.cwd)
-            .output()
-            .map_err(|e| format!("failed to execute rustc: {}", e))?;
-        let duration = start.elapsed();
+        // Execute rustc via exec service (V1: RPC)
+        let exec_result = self.exec.execute_rustc(invocation).await;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("rustc failed for {}: {}", crate_name, stderr));
+        let duration = std::time::Duration::from_millis(exec_result.duration_ms);
+
+        if exec_result.exit_code != 0 {
+            return Err(format!("rustc failed for {}: {}", crate_name, exec_result.stderr));
         }
 
-        // Store output in CAS
-        let bin_data = std::fs::read(&output_path)
-            .map_err(|e| format!("failed to read binary {}: {}", output_path, e))?;
-        let blob_hash = self.cas.put_blob(bin_data).await;
+        // Extract blob hash from exec result
+        let blob_hash = exec_result
+            .outputs
+            .iter()
+            .find(|o| o.logical == "bin")
+            .ok_or_else(|| format!("exec did not return bin output for {}", crate_name))?
+            .blob_hash;
 
         // Create manifest
         let node_manifest = NodeManifest {

@@ -10,8 +10,7 @@ use owo_colors::OwoColorize;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-use vx_daemon::DaemonService;
-use vx_daemon_proto::{BuildRequest, Daemon};
+use vx_daemon_proto::{BuildRequest, Daemon, DaemonClient};
 use vx_report::{CacheOutcome, ReportStore, RunDiff};
 
 /// vx - Build execution engine with deterministic caching
@@ -122,7 +121,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         CliCommand::Build { release } => cmd_build(release).await,
-        CliCommand::Kill => cmd_kill(),
+        CliCommand::Kill => cmd_kill().await,
         CliCommand::Clean => cmd_clean(),
         CliCommand::Explain {
             all,
@@ -159,13 +158,60 @@ fn short_hex(hash: &str, verbose: bool) -> String {
     }
 }
 
+/// Connect to the daemon, spawning it if necessary
+async fn get_or_spawn_daemon() -> Result<DaemonClient> {
+    let endpoint = std::env::var("VX_DAEMON")
+        .unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+
+    let backoff_ms = [10, 50, 100, 500, 1000];
+
+    // Try to connect first
+    match try_connect_daemon(&endpoint).await {
+        Ok(client) => return Ok(client),
+        Err(_) => {
+            // Spawn daemon
+            tracing::info!("Daemon not running, spawning vx-daemon on {}", endpoint);
+
+            std::process::Command::new("vx-daemon")
+                .spawn()
+                .map_err(|e| eyre::eyre!("failed to spawn vx-daemon: {}", e))?;
+
+            // Retry with backoff
+            for (attempt, delay) in backoff_ms.iter().enumerate() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(*delay)).await;
+                if let Ok(client) = try_connect_daemon(&endpoint).await {
+                    tracing::info!("Connected to daemon after {} attempts", attempt + 1);
+                    return Ok(client);
+                }
+            }
+
+            // Final attempt
+            try_connect_daemon(&endpoint).await
+        }
+    }
+}
+
+async fn try_connect_daemon(endpoint: &str) -> Result<DaemonClient> {
+    let stream = tokio::net::TcpStream::connect(endpoint).await?;
+    let transport = rapace::Transport::stream(stream);
+
+    let (client, session) = DaemonClient::new(transport);
+
+    // CRITICAL: spawn session.run() in background (rapace requires explicit receive loop)
+    tokio::spawn(async move {
+        if let Err(e) = session.run().await {
+            tracing::error!("Daemon session error: {}", e);
+        }
+    });
+
+    Ok(client)
+}
+
 async fn cmd_build(release: bool) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
 
-    // For v0, we run the daemon in-process
-    // Future: connect to a persistent daemon via rapace
-    let vx_home = get_vx_home()?;
-    let daemon = DaemonService::new(vx_home)?;
+    // Connect to daemon (spawning if necessary)
+    let daemon = get_or_spawn_daemon().await?;
 
     let request = BuildRequest {
         project_path: cwd.clone(),
@@ -174,9 +220,6 @@ async fn cmd_build(release: bool) -> Result<()> {
 
     // Print building message
     println!("{} ({})", "Building".green().bold(), cwd);
-
-    // Load picante cache from disk (if it exists)
-    let _ = daemon.load_cache().await;
 
     let result = daemon.build(request).await;
 
@@ -202,14 +245,25 @@ async fn cmd_build(release: bool) -> Result<()> {
     }
 }
 
-fn cmd_kill() -> Result<()> {
-    // For v0, the daemon runs in-process, so there's nothing to kill.
-    // When we have a persistent daemon, this will send a shutdown signal.
-    println!(
-        "{} daemon not running (v0 runs in-process)",
-        "Note:".yellow().bold()
-    );
-    Ok(())
+async fn cmd_kill() -> Result<()> {
+    let endpoint = std::env::var("VX_DAEMON")
+        .unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+
+    // Try to connect to daemon
+    match try_connect_daemon(&endpoint).await {
+        Ok(daemon) => {
+            println!("{} daemon at {}", "Stopping".green().bold(), endpoint);
+            daemon.shutdown().await;
+            // Give it a moment to shut down
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            println!("{} daemon stopped", "✓".green().bold());
+            Ok(())
+        }
+        Err(_) => {
+            eprintln!("{} daemon not running", "Error:".red().bold());
+            std::process::exit(1);
+        }
+    }
 }
 
 fn cmd_clean() -> Result<()> {

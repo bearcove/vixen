@@ -3,7 +3,12 @@ name = "vx-daemon"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "vx-daemon"
+path = "src/main.rs"
+
 [dependencies]
+tracing-subscriber = { workspace = true }
 facet = { workspace = true }
 picante = { workspace = true }
 rapace = { workspace = true }

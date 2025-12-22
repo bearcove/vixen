@@ -95,8 +95,8 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
         // Target directory: toolchains/<manifest_hash_hex>
         let target_dir = self.toolchains_dir.join(manifest_hash.to_hex());
 
-        // Check if already materialized
-        if target_dir.exists() {
+        // Check if already materialized (using tokio::fs)
+        if tokio::fs::try_exists(&target_dir).await.unwrap_or(false) {
             debug!(target_dir = %target_dir, "toolchain already materialized");
             return Ok(target_dir);
         }
@@ -105,11 +105,13 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
         let temp_dir = self
             .toolchains_dir
             .join(format!("{}.tmp", manifest_hash.to_hex()));
-        if temp_dir.exists() {
-            std::fs::remove_dir_all(&temp_dir)
+        if tokio::fs::try_exists(&temp_dir).await.unwrap_or(false) {
+            tokio::fs::remove_dir_all(&temp_dir)
+                .await
                 .map_err(|e| format!("failed to remove stale temp dir {}: {}", temp_dir, e))?;
         }
-        std::fs::create_dir_all(&temp_dir)
+        tokio::fs::create_dir_all(&temp_dir)
+            .await
             .map_err(|e| format!("failed to create temp dir {}: {}", temp_dir, e))?;
 
         // Execute materialization plan
@@ -121,7 +123,8 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
                     strip_components,
                 } => {
                     let dest = temp_dir.join(dest_subdir);
-                    std::fs::create_dir_all(&dest)
+                    tokio::fs::create_dir_all(&dest)
+                        .await
                         .map_err(|e| format!("failed to create dest dir {}: {}", dest, e))?;
 
                     self.extract_tar_xz_from_cas(*blob, &dest, *strip_components)
@@ -129,7 +132,8 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
                 }
                 MaterializeStep::EnsureDir { relpath } => {
                     let dest = temp_dir.join(relpath);
-                    std::fs::create_dir_all(&dest)
+                    tokio::fs::create_dir_all(&dest)
+                        .await
                         .map_err(|e| format!("failed to create directory {}: {}", dest, e))?;
                 }
                 MaterializeStep::WriteFile {
@@ -139,9 +143,11 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
                 } => {
                     let dest = temp_dir.join(relpath);
                     if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            format!("failed to create parent directory {}: {}", parent, e)
-                        })?;
+                        tokio::fs::create_dir_all(parent)
+                            .await
+                            .map_err(|e| {
+                                format!("failed to create parent directory {}: {}", parent, e)
+                            })?;
                     }
 
                     // Fetch blob from CAS
@@ -153,7 +159,8 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
                         data.extend_from_slice(&chunk);
                     }
 
-                    std::fs::write(&dest, data)
+                    tokio::fs::write(&dest, data)
+                        .await
                         .map_err(|e| format!("failed to write file {}: {}", dest, e))?;
 
                     // Set permissions
@@ -161,20 +168,24 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
                     {
                         use std::os::unix::fs::PermissionsExt;
                         let perms = std::fs::Permissions::from_mode(*mode);
-                        std::fs::set_permissions(&dest, perms)
+                        tokio::fs::set_permissions(&dest, perms)
+                            .await
                             .map_err(|e| format!("failed to set permissions on {}: {}", dest, e))?;
                     }
                 }
                 MaterializeStep::Symlink { relpath, target } => {
                     let dest = temp_dir.join(relpath);
                     if let Some(parent) = dest.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            format!("failed to create parent directory {}: {}", parent, e)
-                        })?;
+                        tokio::fs::create_dir_all(parent)
+                            .await
+                            .map_err(|e| {
+                                format!("failed to create parent directory {}: {}", parent, e)
+                            })?;
                     }
                     #[cfg(unix)]
                     {
-                        std::os::unix::fs::symlink(target, &dest)
+                        tokio::fs::symlink(target, &dest)
+                            .await
                             .map_err(|e| format!("failed to create symlink {}: {}", dest, e))?;
                     }
                     #[cfg(not(unix))]
@@ -186,7 +197,8 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
         }
 
         // Atomic rename to final location
-        std::fs::rename(&temp_dir, &target_dir)
+        tokio::fs::rename(&temp_dir, &target_dir)
+            .await
             .map_err(|e| format!("failed to rename {} to {}: {}", temp_dir, target_dir, e))?;
 
         info!(target_dir = %target_dir, "toolchain materialized successfully");
@@ -211,74 +223,80 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> ExecService<C> {
             compressed_data.extend_from_slice(&chunk);
         }
 
-        // Decompress with xz2
-        let mut decompressor = xz2::read::XzDecoder::new(&compressed_data[..]);
-        let mut tarball_data = Vec::new();
-        decompressor
-            .read_to_end(&mut tarball_data)
-            .map_err(|e| format!("failed to decompress tar.xz: {}", e))?;
+        // CPU-bound: decompress and extract in spawn_blocking
+        let dest = dest.to_owned();
+        tokio::task::spawn_blocking(move || {
+            // Decompress with xz2
+            let mut decompressor = xz2::read::XzDecoder::new(&compressed_data[..]);
+            let mut tarball_data = Vec::new();
+            decompressor
+                .read_to_end(&mut tarball_data)
+                .map_err(|e| format!("failed to decompress tar.xz: {}", e))?;
 
-        // Extract tar
-        let mut archive = tar::Archive::new(&tarball_data[..]);
-        for entry in archive
-            .entries()
-            .map_err(|e| format!("failed to read tar entries: {}", e))?
-        {
-            let mut entry = entry.map_err(|e| format!("failed to read tar entry: {}", e))?;
-            let path = entry
-                .path()
-                .map_err(|e| format!("failed to get entry path: {}", e))?;
-
-            // Strip components
-            let components: Vec<_> = path.components().collect();
-            if components.len() <= strip_components as usize {
-                continue;
-            }
-            let stripped_path = Utf8PathBuf::from_path_buf(
-                components[strip_components as usize..]
-                    .iter()
-                    .collect::<std::path::PathBuf>(),
-            )
-            .map_err(|_| "non-UTF8 path in tarball".to_string())?;
-
-            // Security: validate no path traversal (use component-based check to avoid
-            // false positives on valid filenames like "foo..rs")
-            for component in stripped_path.components() {
-                if matches!(component, camino::Utf8Component::ParentDir) {
-                    return Err(format!("path traversal in tarball: {}", stripped_path));
-                }
-            }
-
-            let target_path = dest.join(&stripped_path);
-
-            // Create parent directories
-            if let Some(parent) = target_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("failed to create directory {}: {}", parent, e))?;
-            }
-
-            // Extract file
-            let mut output_file = std::fs::File::create(&target_path)
-                .map_err(|e| format!("failed to create file {}: {}", target_path, e))?;
-            std::io::copy(&mut entry, &mut output_file)
-                .map_err(|e| format!("failed to write file {}: {}", target_path, e))?;
-
-            // Set executable bit if needed
-            #[cfg(unix)]
+            // Extract tar
+            let mut archive = tar::Archive::new(&tarball_data[..]);
+            for entry in archive
+                .entries()
+                .map_err(|e| format!("failed to read tar entries: {}", e))?
             {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(mode) = entry.header().mode() {
-                    if mode & 0o111 != 0 {
-                        let perms = std::fs::Permissions::from_mode(mode);
-                        std::fs::set_permissions(&target_path, perms).map_err(|e| {
-                            format!("failed to set permissions on {}: {}", target_path, e)
-                        })?;
+                let mut entry = entry.map_err(|e| format!("failed to read tar entry: {}", e))?;
+                let path = entry
+                    .path()
+                    .map_err(|e| format!("failed to get entry path: {}", e))?;
+
+                // Strip components
+                let components: Vec<_> = path.components().collect();
+                if components.len() <= strip_components as usize {
+                    continue;
+                }
+                let stripped_path = Utf8PathBuf::from_path_buf(
+                    components[strip_components as usize..]
+                        .iter()
+                        .collect::<std::path::PathBuf>(),
+                )
+                .map_err(|_| "non-UTF8 path in tarball".to_string())?;
+
+                // Security: validate no path traversal (use component-based check to avoid
+                // false positives on valid filenames like "foo..rs")
+                for component in stripped_path.components() {
+                    if matches!(component, camino::Utf8Component::ParentDir) {
+                        return Err(format!("path traversal in tarball: {}", stripped_path));
+                    }
+                }
+
+                let target_path = dest.join(&stripped_path);
+
+                // Create parent directories
+                if let Some(parent) = target_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed to create directory {}: {}", parent, e))?;
+                }
+
+                // Extract file
+                let mut output_file = std::fs::File::create(&target_path)
+                    .map_err(|e| format!("failed to create file {}: {}", target_path, e))?;
+                std::io::copy(&mut entry, &mut output_file)
+                    .map_err(|e| format!("failed to write file {}: {}", target_path, e))?;
+
+                // Set executable bit if needed
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(mode) = entry.header().mode() {
+                        if mode & 0o111 != 0 {
+                            let perms = std::fs::Permissions::from_mode(mode);
+                            std::fs::set_permissions(&target_path, perms).map_err(|e| {
+                                format!("failed to set permissions on {}: {}", target_path, e)
+                            })?;
+                        }
                     }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))?
     }
 }
 
@@ -366,7 +384,7 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> Exec for ExecSer
         for expected in &invocation.expected_outputs {
             let full_path = Utf8PathBuf::from(&invocation.cwd).join(&expected.path);
 
-            let data = match std::fs::read(&full_path) {
+            let data = match tokio::fs::read(&full_path).await {
                 Ok(d) => d,
                 Err(e) => {
                     return ExecuteResult {
@@ -435,18 +453,18 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> Exec for ExecSer
         // Ensure output directories exist
         for expected in &invocation.expected_outputs {
             let full_path = Utf8PathBuf::from(&invocation.cwd).join(&expected.path);
-            if let Some(parent) = full_path.parent()
-                && let Err(e) = std::fs::create_dir_all(parent)
-            {
-                return CcExecuteResult {
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: format!("failed to create output directory {}: {}", parent, e),
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    outputs: vec![],
-                    discovered_deps: vec![],
-                    manifest_hash: None,
-                };
+            if let Some(parent) = full_path.parent() {
+                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                    return CcExecuteResult {
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: format!("failed to create output directory {}: {}", parent, e),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        outputs: vec![],
+                        discovered_deps: vec![],
+                        manifest_hash: None,
+                    };
+                }
             }
         }
 
@@ -519,7 +537,7 @@ impl<C: Cas + CasToolchain + CasRegistry + Clone + Send + Sync> Exec for ExecSer
         for expected in &invocation.expected_outputs {
             let full_path = Utf8PathBuf::from(&invocation.cwd).join(&expected.path);
 
-            let data = match std::fs::read(&full_path) {
+            let data = match tokio::fs::read(&full_path).await {
                 Ok(d) => d,
                 Err(e) => {
                     // Depfile might not exist if compilation failed early
