@@ -1,9 +1,10 @@
 use jiff::Timestamp;
 use vx_cas_proto::Cas;
 use vx_cas_proto::{
-    Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, ManifestHash,
-    MaterializationPlan, MaterializeStep, NodeManifest, PublishResult, RegistryCrateManifest,
-    RegistrySpec, RegistrySpecKey, ToolchainKind, ToolchainManifest,
+    Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, EnsureToolchainResult,
+    ManifestHash, MaterializationPlan, MaterializeStep, NodeManifest, PublishResult,
+    RegistryCrateManifest, RegistrySpec, RegistrySpecKey, RustToolchainSpec, ToolchainKind,
+    ToolchainManifest, ToolchainSpecKey, ZigToolchainSpec,
 };
 
 use crate::registry::{download_crate, validate_crate_tarball};
@@ -189,6 +190,21 @@ impl Cas for CasService {
 
     async fn lookup_registry_spec(&self, spec_key: RegistrySpecKey) -> Option<Blake3Hash> {
         self.lookup_registry_spec_local(&spec_key)
+    }
+
+    async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
+        // Delegate to the inherent method which handles deduplication via ToolchainManager
+        CasService::ensure_rust_toolchain(self, spec).await
+    }
+
+    async fn ensure_zig_toolchain(&self, spec: ZigToolchainSpec) -> EnsureToolchainResult {
+        // Delegate to the inherent method
+        CasService::ensure_zig_toolchain(self, spec).await
+    }
+
+    async fn lookup_toolchain_spec(&self, spec_key: ToolchainSpecKey) -> Option<Blake3Hash> {
+        // Delegate to the inherent method
+        self.lookup_spec(&spec_key).await
     }
 
     async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest> {

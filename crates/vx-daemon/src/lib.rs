@@ -1161,10 +1161,13 @@ pub struct Database {}
 pub struct ToolchainInfo {
     /// Hash of the ToolchainManifest in CAS
     pub manifest_hash: Blake3Hash,
+
     /// Content-derived toolchain ID (from manifest)
     pub toolchain_id: Blake3Hash,
+
     /// Rustc version string (for reports)
     pub version: Option<String>,
+
     /// Manifest date (for reports)
     pub manifest_date: Option<String>,
 }
@@ -1173,22 +1176,22 @@ pub struct ToolchainInfo {
 pub struct AcquiredToolchains {
     /// Rust toolchain (if acquired)
     pub rust: Option<ToolchainInfo>,
+
     /// Zig toolchain (if acquired)
     pub zig: Option<ToolchainInfo>,
 }
 
 /// The daemon service implementation
 pub struct DaemonService {
-    /// CAS service for content-addressed storage (Arc for sharing with exec)
-    cas: Arc<CasService>,
-    /// Exec service for materialization and compilation
-    exec: ExecService<Arc<CasService>>,
     /// The picante incremental database (shared across builds)
     db: Arc<Mutex<Database>>,
+
     /// Path to the picante cache file
     cache_path: Utf8PathBuf,
+
     /// VX_HOME directory
     vx_home: Utf8PathBuf,
+
     /// Acquired toolchains (manifest references only, no materialization)
     toolchains: Arc<Mutex<AcquiredToolchains>>,
 }

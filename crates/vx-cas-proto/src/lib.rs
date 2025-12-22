@@ -159,6 +159,12 @@ pub trait Cas {
     // Toolchain operations (called by execd/daemon)
     // =========================================================================
 
+    /// Ensure a Rust toolchain exists in CAS. CAS downloads if needed.
+    async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult;
+
+    /// Ensure a Zig toolchain exists in CAS. CAS downloads if needed.
+    async fn ensure_zig_toolchain(&self, spec: ZigToolchainSpec) -> EnsureToolchainResult;
+
     /// Get toolchain manifest by its hash
     async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest>;
 
@@ -167,6 +173,9 @@ pub trait Cas {
         &self,
         manifest_hash: Blake3Hash,
     ) -> Option<MaterializationPlan>;
+
+    /// Lookup manifest hash by toolchain spec key
+    async fn lookup_toolchain_spec(&self, spec_key: ToolchainSpecKey) -> Option<Blake3Hash>;
 
     // =========================================================================
     // Registry operations (called by execd/daemon)

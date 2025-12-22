@@ -91,12 +91,15 @@ impl CasService {
             }
         };
 
+        let this = self.clone();
+        let this2 = self.clone();
+
         self.toolchain_manager
             .ensure(
                 spec_key,
                 // Async lookup (CAS is remote in production)
-                async || self.lookup_spec(&spec_key).await,
-                async || {
+                async move || this.lookup_spec(&spec_key).await,
+                async move || {
                     // Convert proto spec to vx_toolchain types
                     let channel = match &spec.channel {
                         RustChannel::Stable => vx_toolchain::Channel::Stable,
@@ -153,8 +156,8 @@ impl CasService {
                     }
 
                     // Store component blobs
-                    let rustc_blob = self.put_blob(acquired.rustc_tarball.clone()).await;
-                    let rust_std_blob = self.put_blob(acquired.rust_std_tarball.clone()).await;
+                    let rustc_blob = this2.put_blob(acquired.rustc_tarball.clone()).await;
+                    let rust_std_blob = this2.put_blob(acquired.rust_std_tarball.clone()).await;
 
                     // Build manifest
                     let manifest = ToolchainManifest {
@@ -187,10 +190,10 @@ impl CasService {
                     };
 
                     // Store manifest using put_toolchain_manifest (not put_blob!)
-                    let manifest_hash = self.put_toolchain_manifest(&manifest).await;
+                    let manifest_hash = this2.put_toolchain_manifest(&manifest).await;
 
                     // Publish spec → manifest_hash mapping (atomic, first-writer-wins)
-                    let _ = self.publish_spec_mapping(&spec_key, &manifest_hash);
+                    let _ = this2.publish_spec_mapping(&spec_key, &manifest_hash);
 
                     tracing::info!(
                         spec_key = %spec_key.short_hex(),
