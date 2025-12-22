@@ -3222,9 +3222,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vx-cas-proto",
- "vx-registry-proto",
  "vx-toolchain",
- "vx-toolchain-proto",
  "xz2",
 ]
 
@@ -3255,17 +3253,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vx-cas-proto",
- "vx-casd",
  "vx-cc",
  "vx-daemon-proto",
  "vx-exec-proto",
- "vx-execd",
  "vx-manifest",
- "vx-registry-proto",
  "vx-report",
  "vx-rs",
- "vx-toolchain",
- "vx-toolchain-proto",
 ]
 
 [[package]]
@@ -3306,8 +3299,6 @@ dependencies = [
  "vx-cas-proto",
  "vx-cc",
  "vx-exec-proto",
- "vx-registry-proto",
- "vx-toolchain-proto",
  "xz2",
 ]
 
@@ -3323,16 +3314,6 @@ dependencies = [
  "miette",
  "tempfile",
  "thiserror",
-]
-
-[[package]]
-name = "vx-registry-proto"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "facet",
- "rapace",
- "vx-cas-proto",
 ]
 
 [[package]]
@@ -3385,16 +3366,6 @@ dependencies = [
  "vx-cas-proto",
  "walkdir",
  "xz2",
-]
-
-[[package]]
-name = "vx-toolchain-proto"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "facet",
- "rapace",
- "vx-cas-proto",
 ]
 
 [[package]]

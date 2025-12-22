@@ -22,8 +22,6 @@ futures-util = { workspace = true }
 vx-cas-proto = { workspace = true }
 vx-cc = { workspace = true }
 vx-exec-proto = { workspace = true }
-vx-toolchain-proto = { workspace = true }
-vx-registry-proto = { workspace = true }
 
 # For tar.xz streaming extraction
 tar = "0.4"

@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use vx_cas_proto::{Blake3Hash, Cas};
-use vx_cas_proto::{CRATES_IO_REGISTRY, EnsureRegistryCrateResult, EnsureStatus, REGISTRY_MANIFEST_SCHEMA_VERSION, RegistryCrateManifest, RegistrySpec, RegistrySpecKey};
+use vx_cas_proto::{
+    CRATES_IO_REGISTRY, EnsureRegistryCrateResult, EnsureStatus, REGISTRY_MANIFEST_SCHEMA_VERSION,
+    RegistryCrateManifest, RegistrySpec, RegistrySpecKey,
+};
 
 use crate::CasService;
 
@@ -32,7 +35,7 @@ type InflightFuture = Arc<tokio::sync::OnceCell<EnsureRegistryCrateResult>>;
 ///
 /// Same design as ToolchainManager: inflight entries are never removed.
 pub struct RegistryManager {
-    inflight: tokio::sync::Mutex<HashMap<SpecKey, InflightFuture>>,
+    inflight: tokio::sync::Mutex<HashMap<RegistrySpecKey, InflightFuture>>,
 }
 
 impl RegistryManager {
@@ -45,7 +48,7 @@ impl RegistryManager {
     /// Ensure a registry crate, deduplicating concurrent requests.
     pub async fn ensure<L, LFut, A, AFut>(
         &self,
-        spec_key: SpecKey,
+        spec_key: RegistrySpecKey,
         lookup_fn: L,
         acquire_fn: A,
     ) -> EnsureRegistryCrateResult
@@ -264,7 +267,7 @@ impl CasService {
     }
 
     /// Get the path for a registry spec mapping
-    fn registry_spec_path(&self, spec_key: &SpecKey) -> camino::Utf8PathBuf {
+    fn registry_spec_path(&self, spec_key: &RegistrySpecKey) -> camino::Utf8PathBuf {
         let hex = spec_key.to_hex();
         self.registry_spec_dir().join(&hex[..2]).join(&hex)
     }
@@ -272,7 +275,7 @@ impl CasService {
     /// Publish registry spec → manifest_hash mapping atomically (first-writer-wins).
     fn publish_registry_spec_mapping(
         &self,
-        spec_key: &SpecKey,
+        spec_key: &RegistrySpecKey,
         manifest_hash: &Blake3Hash,
     ) -> std::io::Result<bool> {
         use std::fs::{File, OpenOptions};
@@ -297,7 +300,7 @@ impl CasService {
     }
 
     /// Lookup manifest_hash by registry spec_key (internal helper).
-    fn lookup_registry_spec_local(&self, spec_key: &SpecKey) -> Option<Blake3Hash> {
+    fn lookup_registry_spec_local(&self, spec_key: &RegistrySpecKey) -> Option<Blake3Hash> {
         let path = self.registry_spec_path(spec_key);
         let content = std::fs::read_to_string(&path).ok()?;
         Blake3Hash::from_hex(content.trim())
@@ -324,115 +327,5 @@ impl CasService {
         let path = self.manifest_path(manifest_hash);
         let json = std::fs::read_to_string(&path).ok()?;
         facet_json::from_str(&json).ok()
-    }
-}
-
-// =============================================================================
-// Registry methods (Cas trait impl continuation)
-// =============================================================================
-
-impl Cas for CasService {
-    #[tracing::instrument(skip(self), fields(name = %spec.name, version = %spec.version))]
-    async fn ensure_registry_crate(&self, spec: RegistrySpec) -> EnsureRegistryCrateResult {
-        // Validate spec and compute spec_key
-        let spec_key = match spec.spec_key() {
-            Ok(k) => k,
-            Err(e) => {
-                return EnsureRegistryCrateResult {
-                    spec_key: None,
-                    manifest_hash: None,
-                    status: EnsureStatus::Failed,
-                    error: Some(format!("invalid spec: {}", e)),
-                };
-            }
-        };
-
-        // Validate registry is crates.io
-        if spec.registry_url != CRATES_IO_REGISTRY {
-            return EnsureRegistryCrateResult {
-                spec_key: Some(spec_key),
-                manifest_hash: None,
-                status: EnsureStatus::Failed,
-                error: Some(format!(
-                    "only crates.io is supported, got: {}",
-                    spec.registry_url
-                )),
-            };
-        }
-
-        self.registry_manager
-            .ensure(
-                spec_key,
-                || async move { self.lookup_registry_spec_local(&spec_key) },
-                || async {
-                    // Download tarball
-                    let tarball_bytes =
-                        match download_crate(&spec.name, &spec.version, &spec.checksum).await {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                return EnsureRegistryCrateResult {
-                                    spec_key: Some(spec_key),
-                                    manifest_hash: None,
-                                    status: EnsureStatus::Failed,
-                                    error: Some(e),
-                                };
-                            }
-                        };
-
-                    // Validate tarball structure
-                    if let Err(e) = validate_crate_tarball(&tarball_bytes) {
-                        return EnsureRegistryCrateResult {
-                            spec_key: Some(spec_key),
-                            manifest_hash: None,
-                            status: EnsureStatus::Failed,
-                            error: Some(format!("tarball validation failed: {}", e)),
-                        };
-                    }
-
-                    // Store tarball as blob
-                    let tarball_blob = self.put_blob(tarball_bytes).await;
-
-                    // Create manifest
-                    let manifest = RegistryCrateManifest {
-                        schema_version: REGISTRY_MANIFEST_SCHEMA_VERSION,
-                        spec: spec.clone(),
-                        crate_tarball_blob: tarball_blob,
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                    };
-
-                    // Store manifest
-                    let manifest_hash = self.put_registry_manifest(&manifest).await;
-
-                    // Publish spec → manifest_hash mapping
-                    let _ = self.publish_registry_spec_mapping(&spec_key, &manifest_hash);
-
-                    tracing::info!(
-                        name = %spec.name,
-                        version = %spec.version,
-                        spec_key = %spec_key.short_hex(),
-                        manifest_hash = %manifest_hash.short_hex(),
-                        "stored registry crate in CAS"
-                    );
-
-                    EnsureRegistryCrateResult {
-                        spec_key: Some(spec_key),
-                        manifest_hash: Some(manifest_hash),
-                        status: EnsureStatus::Downloaded,
-                        error: None,
-                    }
-                },
-            )
-            .await
-    }
-
-    async fn get_registry_manifest(
-        &self,
-        manifest_hash: Blake3Hash,
-    ) -> Option<RegistryCrateManifest> {
-        self.get_registry_crate_manifest(&manifest_hash)
-    }
-
-    async fn lookup_registry_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash> {
-        self.lookup_registry_spec_local(&spec_key)
     }
 }

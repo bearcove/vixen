@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use vx_cas_proto::*;
 use vx_cas_proto::{
-    EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult,
-    MATERIALIZATION_LAYOUT_VERSION, MaterializationPlan, MaterializeStep, RustChannel, RustToolchainSpec, ToolchainSpecKey,
+    EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult, MATERIALIZATION_LAYOUT_VERSION,
+    MaterializationPlan, MaterializeStep, RustChannel, RustToolchainSpec,
     TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentBlob, ToolchainKind, ToolchainManifest,
-    ZigToolchainSpec,
+    ToolchainSpecKey, ZigToolchainSpec,
 };
 
 pub use registry::RegistryManager;
@@ -148,7 +148,7 @@ impl CasService {
     }
 
     /// Initialize directory structure
-    pub fn init(&self) -> std::io::Result<()> {
+    fn init(&self) -> std::io::Result<()> {
         fs::create_dir_all(self.blobs_dir())?;
         fs::create_dir_all(self.manifests_dir())?;
         fs::create_dir_all(self.cache_dir())?;
@@ -386,9 +386,218 @@ impl Cas for CasService {
         }
     }
 
-    // NOTE: The remaining Cas trait methods (stream_blob, get_toolchain_manifest, etc.)
-    // are implemented in separate impl blocks below for organizational purposes.
-    // Rust allows splitting trait implementations across multiple blocks.
+    #[tracing::instrument(skip(self), fields(name = %spec.name, version = %spec.version))]
+    async fn ensure_registry_crate(&self, spec: RegistrySpec) -> EnsureRegistryCrateResult {
+        // Validate spec and compute spec_key
+        let spec_key = match spec.spec_key() {
+            Ok(k) => k,
+            Err(e) => {
+                return EnsureRegistryCrateResult {
+                    spec_key: None,
+                    manifest_hash: None,
+                    status: EnsureStatus::Failed,
+                    error: Some(format!("invalid spec: {}", e)),
+                };
+            }
+        };
+
+        // Validate registry is crates.io
+        if spec.registry_url != CRATES_IO_REGISTRY {
+            return EnsureRegistryCrateResult {
+                spec_key: Some(spec_key),
+                manifest_hash: None,
+                status: EnsureStatus::Failed,
+                error: Some(format!(
+                    "only crates.io is supported, got: {}",
+                    spec.registry_url
+                )),
+            };
+        }
+
+        self.registry_manager
+            .ensure(
+                spec_key,
+                || async move { self.lookup_registry_spec_local(&spec_key) },
+                || async {
+                    // Download tarball
+                    let tarball_bytes =
+                        match download_crate(&spec.name, &spec.version, &spec.checksum).await {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                return EnsureRegistryCrateResult {
+                                    spec_key: Some(spec_key),
+                                    manifest_hash: None,
+                                    status: EnsureStatus::Failed,
+                                    error: Some(e),
+                                };
+                            }
+                        };
+
+                    // Validate tarball structure
+                    if let Err(e) = validate_crate_tarball(&tarball_bytes) {
+                        return EnsureRegistryCrateResult {
+                            spec_key: Some(spec_key),
+                            manifest_hash: None,
+                            status: EnsureStatus::Failed,
+                            error: Some(format!("tarball validation failed: {}", e)),
+                        };
+                    }
+
+                    // Store tarball as blob
+                    let tarball_blob = self.put_blob(tarball_bytes).await;
+
+                    // Create manifest
+                    let manifest = RegistryCrateManifest {
+                        schema_version: REGISTRY_MANIFEST_SCHEMA_VERSION,
+                        spec: spec.clone(),
+                        crate_tarball_blob: tarball_blob,
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    };
+
+                    // Store manifest
+                    let manifest_hash = self.put_registry_manifest(&manifest).await;
+
+                    // Publish spec → manifest_hash mapping
+                    let _ = self.publish_registry_spec_mapping(&spec_key, &manifest_hash);
+
+                    tracing::info!(
+                        name = %spec.name,
+                        version = %spec.version,
+                        spec_key = %spec_key.short_hex(),
+                        manifest_hash = %manifest_hash.short_hex(),
+                        "stored registry crate in CAS"
+                    );
+
+                    EnsureRegistryCrateResult {
+                        spec_key: Some(spec_key),
+                        manifest_hash: Some(manifest_hash),
+                        status: EnsureStatus::Downloaded,
+                        error: None,
+                    }
+                },
+            )
+            .await
+    }
+
+    async fn get_registry_manifest(
+        &self,
+        manifest_hash: Blake3Hash,
+    ) -> Option<RegistryCrateManifest> {
+        self.get_registry_crate_manifest(&manifest_hash)
+    }
+
+    async fn lookup_registry_spec(&self, spec_key: RegistrySpecKey) -> Option<Blake3Hash> {
+        self.lookup_registry_spec_local(&spec_key)
+    }
+
+    async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest> {
+        let path = self.manifest_path(&manifest_hash);
+        let json = fs::read_to_string(&path).ok()?;
+        facet_json::from_str(&json).ok()
+    }
+
+    async fn get_materialization_plan(
+        &self,
+        manifest_hash: Blake3Hash,
+    ) -> Option<MaterializationPlan> {
+        let manifest = self.get_toolchain_manifest(manifest_hash).await?;
+
+        // Pure function: manifest → plan (no heuristics, bit-for-bit stable)
+        let steps = match manifest.kind {
+            ToolchainKind::Rust => {
+                let mut steps = vec![MaterializeStep::EnsureDir {
+                    relpath: "sysroot".to_string(),
+                }];
+                steps.extend(manifest.components.iter().map(|c| {
+                    MaterializeStep::ExtractTarXz {
+                        blob: c.blob,
+                        strip_components: 1, // Validated during acquisition
+                        dest_subdir: "sysroot".to_string(),
+                    }
+                }));
+                steps
+            }
+            ToolchainKind::Zig => {
+                let mut steps = Vec::new();
+                for c in &manifest.components {
+                    match c.name.as_str() {
+                        "zig-exe" => {
+                            steps.push(MaterializeStep::WriteFile {
+                                relpath: "zig".to_string(),
+                                blob: c.blob,
+                                mode: 0o755,
+                            });
+                        }
+                        "zig-lib" => {
+                            steps.push(MaterializeStep::EnsureDir {
+                                relpath: "lib".to_string(),
+                            });
+                            steps.push(MaterializeStep::ExtractTarXz {
+                                blob: c.blob,
+                                strip_components: 0,
+                                dest_subdir: "lib".to_string(),
+                            });
+                        }
+                        _ => {} // Unknown component, skip
+                    }
+                }
+                steps
+            }
+        };
+
+        Some(MaterializationPlan {
+            toolchain_id: manifest.toolchain_id,
+            layout_version: MATERIALIZATION_LAYOUT_VERSION,
+            steps,
+        })
+    }
+
+    async fn stream_blob(&self, blob: Blake3Hash) -> rapace::Streaming<Vec<u8>> {
+        use tokio::sync::mpsc;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let (tx, rx) = mpsc::channel(16);
+        let blob_path = self.blob_path(&blob);
+
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+
+            let Ok(file) = tokio::fs::File::open(&blob_path).await else {
+                let _ = tx
+                    .send(Err(rapace::RpcError::Status {
+                        code: rapace::ErrorCode::NotFound,
+                        message: "blob not found".to_string(),
+                    }))
+                    .await;
+                return;
+            };
+
+            let mut reader = tokio::io::BufReader::new(file);
+            let mut buf = vec![0u8; 16 * 1024 * 1024]; // 16MB chunks
+
+            loop {
+                match reader.read(&mut buf).await {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        if tx.send(Ok(buf[..n].to_vec())).await.is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(rapace::RpcError::Status {
+                                code: rapace::ErrorCode::Internal,
+                                message: format!("read error: {}", e),
+                            }))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+
+        Box::pin(ReceiverStream::new(rx))
+    }
 }
 
 // =============================================================================
@@ -458,12 +667,13 @@ impl ToolchainManager {
 }
 
 // =============================================================================
-// Toolchain methods (Cas trait impl continuation)
+// Toolchain methods (Inherent methods, NOT part of Cas RPC trait)
 // =============================================================================
 
-impl Cas for CasService {
+impl CasService {
+    /// Ensure a Rust toolchain exists in CAS (internal helper, not an RPC method).
     #[tracing::instrument(skip(self), fields(spec_key = tracing::field::Empty))]
-    async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
+    pub async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
         // Validate and compute spec_key first
         let spec_key = match spec.spec_key() {
             Ok(k) => {
@@ -600,7 +810,8 @@ impl Cas for CasService {
             .await
     }
 
-    async fn ensure_zig_toolchain(&self, _spec: ZigToolchainSpec) -> EnsureToolchainResult {
+    /// Ensure a Zig toolchain exists in CAS (internal helper, not an RPC method).
+    pub async fn ensure_zig_toolchain(&self, _spec: ZigToolchainSpec) -> EnsureToolchainResult {
         // TODO: Implement Zig toolchain acquisition
         EnsureToolchainResult {
             spec_key: None,
@@ -611,117 +822,9 @@ impl Cas for CasService {
         }
     }
 
-    async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest> {
-        let path = self.manifest_path(&manifest_hash);
-        let json = fs::read_to_string(&path).ok()?;
-        facet_json::from_str(&json).ok()
-    }
-
-    async fn lookup_toolchain_spec(&self, spec_key: ToolchainSpecKey) -> Option<Blake3Hash> {
-        self.lookup_spec(&spec_key)
-    }
-
-    async fn get_materialization_plan(
-        &self,
-        manifest_hash: Blake3Hash,
-    ) -> Option<MaterializationPlan> {
-        let manifest = self.get_toolchain_manifest(manifest_hash).await?;
-
-        // Pure function: manifest → plan (no heuristics, bit-for-bit stable)
-        let steps = match manifest.kind {
-            ToolchainKind::Rust => {
-                let mut steps = vec![MaterializeStep::EnsureDir {
-                    relpath: "sysroot".to_string(),
-                }];
-                steps.extend(manifest.components.iter().map(|c| {
-                    MaterializeStep::ExtractTarXz {
-                        blob: c.blob,
-                        strip_components: 1, // Validated during acquisition
-                        dest_subdir: "sysroot".to_string(),
-                    }
-                }));
-                steps
-            }
-            ToolchainKind::Zig => {
-                let mut steps = Vec::new();
-                for c in &manifest.components {
-                    match c.name.as_str() {
-                        "zig-exe" => {
-                            steps.push(MaterializeStep::WriteFile {
-                                relpath: "zig".to_string(),
-                                blob: c.blob,
-                                mode: 0o755,
-                            });
-                        }
-                        "zig-lib" => {
-                            steps.push(MaterializeStep::EnsureDir {
-                                relpath: "lib".to_string(),
-                            });
-                            steps.push(MaterializeStep::ExtractTarXz {
-                                blob: c.blob,
-                                strip_components: 0,
-                                dest_subdir: "lib".to_string(),
-                            });
-                        }
-                        _ => {} // Unknown component, skip
-                    }
-                }
-                steps
-            }
-        };
-
-        Some(MaterializationPlan {
-            toolchain_id: manifest.toolchain_id,
-            layout_version: MATERIALIZATION_LAYOUT_VERSION,
-            steps,
-        })
-    }
-
-    async fn stream_blob(&self, blob: Blake3Hash) -> rapace::Streaming<Vec<u8>> {
-        use tokio::sync::mpsc;
-        use tokio_stream::wrappers::ReceiverStream;
-
-        let (tx, rx) = mpsc::channel(16);
-        let blob_path = self.blob_path(&blob);
-
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt;
-
-            let Ok(file) = tokio::fs::File::open(&blob_path).await else {
-                let _ = tx
-                    .send(Err(rapace::RpcError::Status {
-                        code: rapace::ErrorCode::NotFound,
-                        message: "blob not found".to_string(),
-                    }))
-                    .await;
-                return;
-            };
-
-            let mut reader = tokio::io::BufReader::new(file);
-            let mut buf = vec![0u8; 16 * 1024 * 1024]; // 16MB chunks
-
-            loop {
-                match reader.read(&mut buf).await {
-                    Ok(0) => break, // EOF
-                    Ok(n) => {
-                        if tx.send(Ok(buf[..n].to_vec())).await.is_err() {
-                            break; // Receiver dropped
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx
-                            .send(Err(rapace::RpcError::Status {
-                                code: rapace::ErrorCode::Internal,
-                                message: format!("read error: {}", e),
-                            }))
-                            .await;
-                        break;
-                    }
-                }
-            }
-        });
-
-        Box::pin(ReceiverStream::new(rx))
+    /// Lookup manifest_hash by toolchain spec_key (internal helper, not an RPC method).
+    pub fn lookup_toolchain_spec(&self, spec_key: &ToolchainSpecKey) -> Option<Blake3Hash> {
+        self.lookup_spec(spec_key)
     }
 }
 

@@ -20,8 +20,6 @@ vx-casd = { path = "crates/vx-casd" }
 vx-execd = { path = "crates/vx-execd" }
 vx-report = { path = "crates/vx-report" }
 vx-toolchain = { path = "crates/vx-toolchain" }
-vx-toolchain-proto = { path = "crates/vx-toolchain-proto" }
-vx-registry-proto = { path = "crates/vx-registry-proto" }
 
 # facet ecosystem
 facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
