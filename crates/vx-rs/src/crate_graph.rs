@@ -23,8 +23,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use camino::{Utf8Path, Utf8PathBuf};
 use thiserror::Error;
 use vx_cas_proto::Blake3Hash;
+use vx_manifest::full::CargoManifest;
 use vx_manifest::lockfile::{Lockfile, LockfileError, ReachablePackages};
-use vx_manifest::{Manifest, ManifestError};
+use vx_manifest::{Edition, Manifest, ManifestError};
 
 /// Errors during crate graph construction
 #[derive(Debug, Error)]
@@ -680,19 +681,27 @@ impl CrateGraph {
                 }
             })?;
 
-            // Parse the manifest
+            // Parse the manifest using the full parser (accepts all Cargo.toml features)
             let manifest_path = self.workspace_root.join(workspace_rel).join("Cargo.toml");
-            let manifest = Manifest::from_path(&manifest_path)?;
+            let manifest = CargoManifest::from_path(&manifest_path).map_err(|e| {
+                CrateGraphError::ManifestError(ManifestError::ParseError(e.to_string()))
+            })?;
+
+            let package = manifest.package.as_ref().ok_or_else(|| {
+                CrateGraphError::ManifestError(ManifestError::MissingField("package"))
+            })?;
 
             // Registry crates must be libraries
-            if !manifest.is_lib() {
+            // A crate is a library if it has [lib] or has src/lib.rs
+            let crate_dir = self.workspace_root.join(workspace_rel);
+            let has_lib = manifest.lib.is_some() || crate_dir.join("src/lib.rs").exists();
+            if !has_lib {
                 return Err(CrateGraphError::NotALibrary {
                     name: info.name.clone(),
                 });
             }
 
             // Check for build.rs - we don't support build scripts yet
-            let crate_dir = self.workspace_root.join(workspace_rel);
             if crate_dir.join("build.rs").exists() {
                 return Err(CrateGraphError::RegistryBuildScript {
                     name: info.name.clone(),
@@ -700,9 +709,33 @@ impl CrateGraph {
                 });
             }
 
-            let lib = manifest.lib.as_ref().unwrap();
-            // lib.path is absolute (manifest parsed with base_dir), normalize to workspace-relative
-            let crate_root_rel = normalize_path(&lib.path, &self.workspace_root)?;
+            // Determine lib path
+            let lib_path = if let Some(ref lib) = manifest.lib {
+                if let Some(ref path) = lib.path {
+                    crate_dir.join(path)
+                } else {
+                    crate_dir.join("src/lib.rs")
+                }
+            } else {
+                crate_dir.join("src/lib.rs")
+            };
+            let crate_root_rel = normalize_path(&lib_path, &self.workspace_root)?;
+
+            // Extract package name
+            let package_name = package.name.clone().ok_or_else(|| {
+                CrateGraphError::ManifestError(ManifestError::MissingField("name"))
+            })?;
+
+            // Extract edition, converting from full::Edition to vx_manifest::Edition
+            let edition = match &package.edition {
+                Some(vx_manifest::full::EditionOrWorkspace::Edition(e)) => match e {
+                    vx_manifest::full::Edition::E2015 => Edition::E2015,
+                    vx_manifest::full::Edition::E2018 => Edition::E2018,
+                    vx_manifest::full::Edition::E2021 => Edition::E2021,
+                    vx_manifest::full::Edition::E2024 => Edition::E2024,
+                },
+                _ => Edition::E2021, // Default
+            };
 
             let source = CrateSource::Registry {
                 name: info.name.clone(),
@@ -711,14 +744,15 @@ impl CrateGraph {
             };
             let id = CrateId::for_registry(&info.name, &info.version, &info.checksum);
 
+            let crate_name = package_name.replace('-', "_");
             let node = CrateNode {
                 id,
-                package_name: manifest.name.clone(),
-                crate_name: manifest.crate_name(),
+                package_name: package_name.clone(),
+                crate_name,
                 source,
                 workspace_rel: workspace_rel.clone(),
                 crate_root_rel,
-                edition: manifest.edition,
+                edition,
                 crate_type: CrateType::Lib,
                 deps: Vec::new(), // Filled in next phase
             };

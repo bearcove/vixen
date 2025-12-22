@@ -205,34 +205,148 @@ struct RawWorkspace {
     members: Option<Vec<String>>,
 }
 
+/// Build script specification: can be a path or `false` to disable
 #[derive(Facet, Debug)]
+#[repr(u8)]
+#[facet(untagged)]
+enum BuildScript {
+    /// Path to build script (e.g., "build.rs")
+    Path(String),
+    /// Explicitly disabled with `build = false`
+    Disabled(bool),
+}
+
+impl BuildScript {
+    /// Returns true if a build script is specified (not disabled)
+    fn is_enabled(&self) -> bool {
+        match self {
+            BuildScript::Path(_) => true,
+            BuildScript::Disabled(false) => false,
+            BuildScript::Disabled(true) => true, // `build = true` means default build.rs
+        }
+    }
+}
+
+/// All [package] fields from https://doc.rust-lang.org/cargo/reference/manifest.html
+/// We only use a few, but need to accept all to parse real-world crates.
+#[derive(Facet, Debug)]
+#[facet(rename_all = "kebab-case")]
 struct RawPackage {
+    // === Fields we actually use ===
     name: Option<String>,
     version: Option<String>,
     edition: Option<Edition>,
-    build: Option<String>,
+    /// Build script: can be a path string or `false` to disable
+    build: Option<BuildScript>,
+
+    // === Metadata fields (ignored) ===
+    authors: Option<Vec<String>>,
+    rust_version: Option<String>,
+    description: Option<String>,
+    documentation: Option<String>,
+    readme: Option<ReadmeField>,
+    homepage: Option<String>,
+    repository: Option<String>,
+    license: Option<String>,
+    license_file: Option<String>,
+    keywords: Option<Vec<String>>,
+    categories: Option<Vec<String>>,
+
+    // === Build & linking (ignored) ===
+    links: Option<String>,
+
+    // === Publishing & workspace (ignored) ===
+    workspace: Option<String>,
+    publish: Option<PublishField>,
+    default_run: Option<String>,
+
+    // === File management (ignored) ===
+    exclude: Option<Vec<String>>,
+    include: Option<Vec<String>>,
+
+    // === Discovery control (ignored) ===
+    autolib: Option<bool>,
+    autobins: Option<bool>,
+    autoexamples: Option<bool>,
+    autotests: Option<bool>,
+    autobenches: Option<bool>,
+
+    // === Advanced (ignored) ===
+    resolver: Option<String>,
+    /// metadata is arbitrary TOML for external tools - use Opaque to accept anything
+    #[facet(skip)]
+    metadata: (),
 }
 
+/// readme can be a path string or `false` to disable
 #[derive(Facet, Debug)]
+#[repr(u8)]
+#[facet(untagged)]
+enum ReadmeField {
+    Path(String),
+    Disabled(bool),
+}
+
+/// publish can be a bool or array of registry names
+#[derive(Facet, Debug)]
+#[repr(u8)]
+#[facet(untagged)]
+enum PublishField {
+    Bool(bool),
+    Registries(Vec<String>),
+}
+
+/// [[bin]] target configuration
+/// All fields from https://doc.rust-lang.org/cargo/reference/cargo-targets.html
+#[derive(Facet, Debug)]
+#[facet(rename_all = "kebab-case")]
 struct RawBinTarget {
     name: Option<String>,
     path: Option<String>,
+    test: Option<bool>,
+    doctest: Option<bool>,
+    bench: Option<bool>,
+    doc: Option<bool>,
+    harness: Option<bool>,
+    edition: Option<Edition>,
+    required_features: Option<Vec<String>>,
 }
 
+/// [lib] target configuration
+/// All fields from https://doc.rust-lang.org/cargo/reference/cargo-targets.html
 #[derive(Facet, Debug)]
 #[facet(rename_all = "kebab-case")]
 struct RawLibTarget {
     name: Option<String>,
     path: Option<String>,
+    test: Option<bool>,
+    doctest: Option<bool>,
+    bench: Option<bool>,
+    doc: Option<bool>,
+    harness: Option<bool>,
     proc_macro: Option<bool>,
+    edition: Option<Edition>,
+    crate_type: Option<Vec<String>>,
+    required_features: Option<Vec<String>>,
 }
 
-/// Placeholder for target entries in [[test]], [[bench]], [[example]]
-/// We just need to know they exist
+/// Target entry for [[test]], [[bench]], [[example]]
+/// All fields from https://doc.rust-lang.org/cargo/reference/cargo-targets.html
 #[derive(Facet, Debug)]
+#[facet(rename_all = "kebab-case")]
 struct TargetEntry {
+    // === Common target settings ===
     name: Option<String>,
     path: Option<String>,
+    test: Option<bool>,
+    doctest: Option<bool>,
+    bench: Option<bool>,
+    doc: Option<bool>,
+    proc_macro: Option<bool>,
+    harness: Option<bool>,
+    edition: Option<Edition>,
+    crate_type: Option<Vec<String>>,
+    required_features: Option<Vec<String>>,
 }
 
 impl Manifest {
@@ -326,11 +440,13 @@ impl Manifest {
 
         let package = raw.package.ok_or(ManifestError::MissingField("name"))?;
 
-        if package.build.is_some() {
-            return Err(ManifestError::Unsupported {
-                feature: "build scripts",
-                details: "build = \"...\" is not supported yet".into(),
-            });
+        if let Some(ref build) = package.build {
+            if build.is_enabled() {
+                return Err(ManifestError::Unsupported {
+                    feature: "build scripts",
+                    details: "build = \"...\" is not supported yet".into(),
+                });
+            }
         }
 
         let name = package.name.ok_or(ManifestError::MissingField("name"))?;
