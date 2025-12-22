@@ -4,32 +4,42 @@
 //! CAS stores immutable content. Clients produce working directories.
 
 mod registry;
+mod tarball;
+mod toolchain;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
+
 use std::collections::HashMap;
 use std::fs;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
+
 use vx_cas_proto::*;
 use vx_cas_proto::{
-    EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult, MATERIALIZATION_LAYOUT_VERSION,
-    MaterializationPlan, MaterializeStep, RustChannel, RustToolchainSpec,
-    TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentBlob, ToolchainKind, ToolchainManifest,
-    ToolchainSpecKey, ZigToolchainSpec,
+    MATERIALIZATION_LAYOUT_VERSION, MaterializationPlan, MaterializeStep, ToolchainKind,
+    ToolchainManifest, ToolchainSpecKey,
 };
 
 pub use registry::RegistryManager;
 
+use crate::toolchain::ToolchainManager;
+
 /// CAS service implementation
-pub struct CasService {
+struct CasService {
     /// Root directory for CAS storage (typically .vx/cas)
     root: Utf8PathBuf,
+
     /// Next upload session ID
     next_upload_id: AtomicU64,
+
     /// In-progress chunked uploads
     uploads: Mutex<HashMap<u64, ChunkedUpload>>,
+
     /// Toolchain acquisition manager (handles inflight deduplication)
     toolchain_manager: ToolchainManager,
+
     /// Registry crate acquisition manager (handles inflight deduplication)
     registry_manager: RegistryManager,
 }
@@ -42,7 +52,7 @@ struct ChunkedUpload {
 }
 
 impl CasService {
-    pub fn new(root: Utf8PathBuf) -> Self {
+    fn new(root: Utf8PathBuf) -> Self {
         Self {
             root,
             next_upload_id: AtomicU64::new(1),
@@ -98,40 +108,23 @@ impl CasService {
     /// Returns Ok(true) if we published, Ok(false) if already exists.
     ///
     /// DURABILITY: Uses O_EXCL + fsync + directory sync for crash safety.
-    fn publish_spec_mapping(
+    async fn publish_spec_mapping(
         &self,
         spec_key: &ToolchainSpecKey,
         manifest_hash: &Blake3Hash,
     ) -> std::io::Result<bool> {
-        use std::fs::{File, OpenOptions};
-        use std::io::Write;
-
         let path = self.spec_path(spec_key);
 
-        let parent = path.parent().expect("spec path has parent");
-        fs::create_dir_all(parent)?;
+        // Check if file already exists first
+        if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            return Ok(false);
+        }
 
-        // Use O_EXCL (create_new) for atomic first-writer-wins
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true) // O_EXCL - fails if exists
-            .open(&path)
-        {
-            Ok(mut file) => {
-                file.write_all(manifest_hash.to_hex().as_bytes())?;
-                // Ensure data is on disk
-                file.sync_all()?;
-
-                // Sync parent directory to ensure the directory entry is durable
-                // (required on some filesystems for crash safety)
-                if let Ok(dir) = File::open(parent) {
-                    let _ = dir.sync_all();
-                }
-
-                Ok(true)
-            }
+        // Use atomic_write which handles tmp + rename
+        match atomic_write(&path, manifest_hash.to_hex().as_bytes()).await {
+            Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                Ok(false) // Another writer won
+                Ok(false) // Another writer won during the race
             }
             Err(e) => Err(e),
         }
@@ -141,30 +134,32 @@ impl CasService {
     ///
     /// If the mapping file exists but is unreadable/corrupt, we treat it as
     /// a cache miss (re-acquire will fix it via first-writer-wins).
-    fn lookup_spec(&self, spec_key: &ToolchainSpecKey) -> Option<Blake3Hash> {
+    async fn lookup_spec(&self, spec_key: &ToolchainSpecKey) -> Option<Blake3Hash> {
         let path = self.spec_path(spec_key);
-        let content = std::fs::read_to_string(&path).ok()?;
+        let content = tokio::fs::read_to_string(&path).await.ok()?;
         Blake3Hash::from_hex(content.trim())
     }
 
     /// Initialize directory structure
-    fn init(&self) -> std::io::Result<()> {
-        fs::create_dir_all(self.blobs_dir())?;
-        fs::create_dir_all(self.manifests_dir())?;
-        fs::create_dir_all(self.cache_dir())?;
-        fs::create_dir_all(self.tmp_dir())?;
+    async fn init(&self) -> std::io::Result<()> {
+        tokio::fs::create_dir_all(self.blobs_dir()).await?;
+        tokio::fs::create_dir_all(self.manifests_dir()).await?;
+        tokio::fs::create_dir_all(self.cache_dir()).await?;
+        tokio::fs::create_dir_all(self.tmp_dir()).await?;
         Ok(())
     }
 
-    /// Atomically write data to a file via tmp + rename
-    fn atomic_write(&self, dest: &Utf8PathBuf, data: &[u8]) -> std::io::Result<()> {
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+    /// Store a ToolchainManifest using the manifest storage path.
+    async fn put_toolchain_manifest(&self, manifest: &ToolchainManifest) -> Blake3Hash {
+        let json = facet_json::to_string(manifest);
+        let hash = Blake3Hash::from_bytes(json.as_bytes());
+        let path = self.manifest_path(&hash);
+
+        if !path.exists() {
+            let _ = atomic_write(&path, json.as_bytes());
         }
-        let tmp = self.tmp_dir().join(format!("write-{}", rand_suffix()));
-        fs::write(&tmp, data)?;
-        fs::rename(&tmp, dest)?;
-        Ok(())
+
+        hash
     }
 }
 
@@ -179,60 +174,36 @@ fn rand_suffix() -> u64 {
 impl Cas for CasService {
     async fn lookup(&self, cache_key: CacheKey) -> Option<ManifestHash> {
         let path = self.cache_path(&cache_key);
-        tokio::task::spawn_blocking(move || {
-            let content = fs::read_to_string(&path).ok()?;
-            ManifestHash::from_hex(content.trim())
-        })
-        .await
-        .ok()
-        .flatten()
+        let content = tokio::fs::read_to_string(&path).await.ok()?;
+        ManifestHash::from_hex(content.trim())
     }
 
     async fn publish(&self, cache_key: CacheKey, manifest_hash: ManifestHash) -> PublishResult {
         let manifest_path = self.manifest_path(&manifest_hash);
         let dest = self.cache_path(&cache_key);
-        let tmp_dir = self.tmp_dir();
 
-        tokio::task::spawn_blocking(move || {
-            // Validate manifest exists
-            if !manifest_path.exists() {
-                return PublishResult {
-                    success: false,
-                    error: Some(format!(
-                        "manifest {} does not exist",
-                        manifest_hash.to_hex()
-                    )),
-                };
-            }
+        // Validate manifest exists
+        if !tokio::fs::try_exists(&manifest_path).await.unwrap_or(false) {
+            return PublishResult {
+                success: false,
+                error: Some(format!(
+                    "manifest {} does not exist",
+                    manifest_hash.to_hex()
+                )),
+            };
+        }
 
-            // Atomically write the cache mapping (inline atomic_write)
-            if let Some(parent) = dest.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::create_dir_all(&tmp_dir);
-            let tmp = tmp_dir.join(format!("write-{}", rand_suffix()));
-            match fs::write(&tmp, manifest_hash.to_hex().as_bytes()) {
-                Ok(()) => match fs::rename(&tmp, &dest) {
-                    Ok(()) => PublishResult {
-                        success: true,
-                        error: None,
-                    },
-                    Err(e) => PublishResult {
-                        success: false,
-                        error: Some(format!("failed to rename: {}", e)),
-                    },
-                },
-                Err(e) => PublishResult {
-                    success: false,
-                    error: Some(format!("failed to write: {}", e)),
-                },
-            }
-        })
-        .await
-        .unwrap_or_else(|_| PublishResult {
-            success: false,
-            error: Some("spawn_blocking failed".to_string()),
-        })
+        // Atomically write the cache mapping
+        match atomic_write(&dest, manifest_hash.to_hex().as_bytes()).await {
+            Ok(()) => PublishResult {
+                success: true,
+                error: None,
+            },
+            Err(e) => PublishResult {
+                success: false,
+                error: Some(format!("failed to write cache mapping: {}", e)),
+            },
+        }
     }
 
     async fn put_manifest(&self, manifest: NodeManifest) -> ManifestHash {
@@ -600,290 +571,30 @@ impl Cas for CasService {
     }
 }
 
-// =============================================================================
-// Toolchain Manager (Inflight Deduplication)
-// =============================================================================
+pub async fn atomic_write(path: &Utf8Path, contents: &[u8]) -> Result<(), std::io::Error> {
+    // Create a temporary file in the same directory as the target path
+    let parent_dir = path.parent().unwrap_or_else(|| camino::Utf8Path::new("."));
 
-type InflightFuture = Arc<tokio::sync::OnceCell<EnsureToolchainResult>>;
+    // Create parent directory if it doesn't exist
+    tokio::fs::create_dir_all(parent_dir).await?;
 
-/// Manages in-flight toolchain acquisitions with deduplication.
-///
-/// Inflight entries are never removed. This is intentional:
-/// - Memory cost is negligible (one OnceCell per unique ToolchainSpecKey)
-/// - Avoids race between CAS lookup miss and inflight insert
-/// - Once CAS has the mapping, lookup_fn fast-paths and OnceCell is never awaited
-pub struct ToolchainManager {
-    inflight: tokio::sync::Mutex<HashMap<ToolchainSpecKey, InflightFuture>>,
-}
+    // Create a temporary file in the same directory to ensure it's on the same filesystem
+    let temp_file = tempfile::Builder::new()
+        .prefix(".tmp-")
+        .tempfile_in(parent_dir)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-impl ToolchainManager {
-    pub fn new() -> Self {
-        Self {
-            inflight: tokio::sync::Mutex::new(HashMap::new()),
-        }
-    }
+    // Get the temporary path and write contents to it
+    let temp_path = temp_file.into_temp_path();
+    tokio::fs::write(&temp_path, contents).await?;
 
-    /// Ensure a toolchain, deduplicating concurrent requests.
-    ///
-    /// `lookup_fn` is async because CAS is remote in production.
-    pub async fn ensure<L, LFut, A, AFut>(
-        &self,
-        spec_key: ToolchainSpecKey,
-        lookup_fn: L,
-        acquire_fn: A,
-    ) -> EnsureToolchainResult
-    where
-        L: Fn() -> LFut,
-        LFut: std::future::Future<Output = Option<Blake3Hash>>,
-        A: FnOnce() -> AFut,
-        AFut: std::future::Future<Output = EnsureToolchainResult>,
-    {
-        // Fast path: check if already in CAS (async RPC)
-        if let Some(manifest_hash) = lookup_fn().await {
-            return EnsureToolchainResult {
-                spec_key: Some(spec_key),
-                toolchain_id: None, // Caller should read manifest for ID
-                manifest_hash: Some(manifest_hash),
-                status: ToolchainEnsureStatus::Hit,
-                error: None,
-            };
-        }
+    // Atomically persist the temporary file to the final location
+    temp_path.persist(&path).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to persist temp file: {}", e),
+        )
+    })?;
 
-        // Get or create inflight entry
-        let cell = {
-            let mut inflight = self.inflight.lock().await;
-            inflight
-                .entry(spec_key)
-                .or_insert_with(|| Arc::new(tokio::sync::OnceCell::new()))
-                .clone()
-        };
-
-        // Initialize if we're first, otherwise wait
-        cell.get_or_init(|| acquire_fn()).await.clone()
-
-        // NOTE: We intentionally do NOT remove entries from inflight.
-        // See struct doc comment for rationale.
-    }
-}
-
-// =============================================================================
-// Toolchain methods (Inherent methods, NOT part of Cas RPC trait)
-// =============================================================================
-
-impl CasService {
-    /// Ensure a Rust toolchain exists in CAS (internal helper, not an RPC method).
-    #[tracing::instrument(skip(self), fields(spec_key = tracing::field::Empty))]
-    pub async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
-        // Validate and compute spec_key first
-        let spec_key = match spec.spec_key() {
-            Ok(k) => {
-                tracing::Span::current().record("spec_key", k.short_hex());
-                k
-            }
-            Err(e) => {
-                return EnsureToolchainResult {
-                    spec_key: None, // Can't compute - no sentinel hash
-                    toolchain_id: None,
-                    manifest_hash: None,
-                    status: ToolchainEnsureStatus::Failed,
-                    error: Some(format!("invalid spec: {}", e)),
-                };
-            }
-        };
-
-        self.toolchain_manager
-            .ensure(
-                spec_key,
-                // Async lookup (CAS is remote in production)
-                || async move { self.lookup_spec(&spec_key) },
-                || async {
-                    // Convert proto spec to vx_toolchain types
-                    let channel = match &spec.channel {
-                        RustChannel::Stable => vx_toolchain::Channel::Stable,
-                        RustChannel::Beta => vx_toolchain::Channel::Beta,
-                        RustChannel::Nightly { date } => {
-                            vx_toolchain::Channel::Nightly { date: date.clone() }
-                        }
-                    };
-
-                    let toolchain_spec = vx_toolchain::RustToolchainSpec {
-                        channel,
-                        host: spec.host.clone(),
-                        target: if spec.target == spec.host {
-                            None
-                        } else {
-                            Some(spec.target.clone())
-                        },
-                    };
-
-                    // Acquire (downloads, verifies, returns tarballs)
-                    let acquired = match vx_toolchain::acquire_rust_toolchain(&toolchain_spec).await
-                    {
-                        Ok(a) => a,
-                        Err(e) => {
-                            return EnsureToolchainResult {
-                                spec_key: Some(spec_key),
-                                toolchain_id: None,
-                                manifest_hash: None,
-                                status: ToolchainEnsureStatus::Failed,
-                                error: Some(format!("{}", e)),
-                            };
-                        }
-                    };
-
-                    // Validate tarball structure (PERF: double decompression, see note)
-                    if let Err(e) = validate_tarball_structure(&acquired.rustc_tarball) {
-                        return EnsureToolchainResult {
-                            spec_key: Some(spec_key),
-                            toolchain_id: None,
-                            manifest_hash: None,
-                            status: ToolchainEnsureStatus::Failed,
-                            error: Some(format!("rustc tarball invalid: {}", e)),
-                        };
-                    }
-                    if let Err(e) = validate_tarball_structure(&acquired.rust_std_tarball) {
-                        return EnsureToolchainResult {
-                            spec_key: Some(spec_key),
-                            toolchain_id: None,
-                            manifest_hash: None,
-                            status: ToolchainEnsureStatus::Failed,
-                            error: Some(format!("rust-std tarball invalid: {}", e)),
-                        };
-                    }
-
-                    // Store component blobs
-                    let rustc_blob = self.put_blob(acquired.rustc_tarball.clone()).await;
-                    let rust_std_blob = self.put_blob(acquired.rust_std_tarball.clone()).await;
-
-                    // Build manifest
-                    let manifest = ToolchainManifest {
-                        schema_version: TOOLCHAIN_MANIFEST_SCHEMA_VERSION,
-                        kind: ToolchainKind::Rust,
-                        spec_key,
-                        toolchain_id: acquired.id.0,
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                        rust_manifest_date: Some(acquired.manifest_date.clone()),
-                        rust_version: Some(acquired.rustc_version.clone()),
-                        zig_version: None,
-                        components: vec![
-                            ToolchainComponentBlob {
-                                name: "rustc".to_string(),
-                                target: Some(spec.host.clone()),
-                                compression: "xz".to_string(),
-                                blob: rustc_blob,
-                                sha256: acquired.rustc_manifest_sha256.clone(),
-                                size_bytes: acquired.rustc_tarball.len() as u64,
-                            },
-                            ToolchainComponentBlob {
-                                name: "rust-std".to_string(),
-                                target: Some(spec.target.clone()),
-                                compression: "xz".to_string(),
-                                blob: rust_std_blob,
-                                sha256: acquired.rust_std_manifest_sha256.clone(),
-                                size_bytes: acquired.rust_std_tarball.len() as u64,
-                            },
-                        ],
-                    };
-
-                    // Store manifest using put_toolchain_manifest (not put_blob!)
-                    let manifest_hash = self.put_toolchain_manifest(&manifest).await;
-
-                    // Publish spec → manifest_hash mapping (atomic, first-writer-wins)
-                    let _ = self.publish_spec_mapping(&spec_key, &manifest_hash);
-
-                    tracing::info!(
-                        spec_key = %spec_key.short_hex(),
-                        toolchain_id = %acquired.id.short_hex(),
-                        manifest_hash = %manifest_hash.short_hex(),
-                        "stored Rust toolchain in CAS"
-                    );
-
-                    EnsureToolchainResult {
-                        spec_key: Some(spec_key),
-                        toolchain_id: Some(acquired.id.0),
-                        manifest_hash: Some(manifest_hash),
-                        status: ToolchainEnsureStatus::Downloaded,
-                        error: None,
-                    }
-                },
-            )
-            .await
-    }
-
-    /// Ensure a Zig toolchain exists in CAS (internal helper, not an RPC method).
-    pub async fn ensure_zig_toolchain(&self, _spec: ZigToolchainSpec) -> EnsureToolchainResult {
-        // TODO: Implement Zig toolchain acquisition
-        EnsureToolchainResult {
-            spec_key: None,
-            toolchain_id: None,
-            manifest_hash: None,
-            status: ToolchainEnsureStatus::Failed,
-            error: Some("Zig toolchain acquisition not yet implemented".to_string()),
-        }
-    }
-
-    /// Lookup manifest_hash by toolchain spec_key (internal helper, not an RPC method).
-    pub fn lookup_toolchain_spec(&self, spec_key: &ToolchainSpecKey) -> Option<Blake3Hash> {
-        self.lookup_spec(spec_key)
-    }
-}
-
-/// Store a ToolchainManifest using the manifest storage path.
-impl CasService {
-    async fn put_toolchain_manifest(&self, manifest: &ToolchainManifest) -> Blake3Hash {
-        let json = facet_json::to_string(manifest);
-        let hash = Blake3Hash::from_bytes(json.as_bytes());
-        let path = self.manifest_path(&hash);
-
-        if !path.exists() {
-            let _ = self.atomic_write(&path, json.as_bytes());
-        }
-
-        hash
-    }
-}
-
-// =============================================================================
-// Tarball Validation
-// =============================================================================
-
-/// Validate that a tarball has exactly one top-level directory.
-/// Returns the number of components to strip (always 1 for valid tarballs).
-///
-/// PERF: This decompresses the entire tarball to validate structure.
-/// Future optimization: validate during extraction in execd.
-fn validate_tarball_structure(tarball_bytes: &[u8]) -> Result<u32, String> {
-    use std::io::Read;
-    use xz2::read::XzDecoder;
-
-    let mut decoder = XzDecoder::new(tarball_bytes);
-    let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
-        .map_err(|e| format!("xz decompression failed: {}", e))?;
-
-    let mut archive = tar::Archive::new(decompressed.as_slice());
-    let mut top_level_dirs = std::collections::HashSet::new();
-
-    for entry in archive.entries().map_err(|e| format!("tar error: {}", e))? {
-        let entry = entry.map_err(|e| format!("tar entry error: {}", e))?;
-        let path = entry.path().map_err(|e| format!("path error: {}", e))?;
-
-        // Get the first component
-        if let Some(first) = path.components().next() {
-            if let std::path::Component::Normal(name) = first {
-                top_level_dirs.insert(name.to_string_lossy().to_string());
-            }
-        }
-    }
-
-    if top_level_dirs.len() != 1 {
-        return Err(format!(
-            "tarball must have exactly one top-level directory, found {}: {:?}",
-            top_level_dirs.len(),
-            top_level_dirs
-        ));
-    }
-
-    Ok(1) // strip_components = 1
+    Ok(())
 }

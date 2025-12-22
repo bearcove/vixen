@@ -14,10 +14,7 @@ vx-cas-proto = { path = "crates/vx-cas-proto" }
 vx-cc = { path = "crates/vx-cc" }
 vx-exec-proto = { path = "crates/vx-exec-proto" }
 vx-manifest = { path = "crates/vx-manifest" }
-vx-daemon = { path = "crates/vx-daemon" }
 vx-daemon-proto = { path = "crates/vx-daemon-proto" }
-vx-casd = { path = "crates/vx-casd" }
-vx-execd = { path = "crates/vx-execd" }
 vx-report = { path = "crates/vx-report" }
 vx-toolchain = { path = "crates/vx-toolchain" }
 
@@ -54,9 +51,6 @@ jiff = "0.2"
 
 # paths
 camino = "1"
-
-# serialization
-serde = "1"
 serde_json = "1"
 
 # testing
