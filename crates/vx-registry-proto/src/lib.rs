@@ -167,6 +167,7 @@ pub struct RegistryMaterializationResult {
 /// CAS is the sole component that downloads and stores registry crates.
 /// Daemon and execd communicate only with CAS via these RPCs.
 #[rapace::service]
+#[allow(async_fn_in_trait)]
 pub trait CasRegistry {
     /// Ensure a registry crate exists in CAS. CAS downloads if needed.
     ///
@@ -183,6 +184,27 @@ pub trait CasRegistry {
 
     /// Lookup manifest hash by spec key.
     async fn lookup_registry_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash>;
+}
+
+// =============================================================================
+// Blanket implementation for Arc<T>
+// =============================================================================
+
+impl<T: CasRegistry + Send + Sync> CasRegistry for std::sync::Arc<T> {
+    async fn ensure_registry_crate(&self, spec: RegistrySpec) -> EnsureRegistryCrateResult {
+        (**self).ensure_registry_crate(spec).await
+    }
+
+    async fn get_registry_manifest(
+        &self,
+        manifest_hash: Blake3Hash,
+    ) -> Option<RegistryCrateManifest> {
+        (**self).get_registry_manifest(manifest_hash).await
+    }
+
+    async fn lookup_registry_spec(&self, spec_key: SpecKey) -> Option<Blake3Hash> {
+        (**self).lookup_registry_spec(spec_key).await
+    }
 }
 
 #[cfg(test)]

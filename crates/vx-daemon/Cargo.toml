@@ -20,6 +20,7 @@ vx-daemon-proto = { workspace = true }
 vx-manifest = { workspace = true }
 vx-casd = { workspace = true }
 vx-execd = { workspace = true }
+vx-registry-proto = { workspace = true }
 vx-toolchain = { path = "../vx-toolchain" }
 vx-toolchain-proto = { workspace = true }
 vx-report = { workspace = true }

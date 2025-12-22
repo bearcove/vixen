@@ -19,6 +19,8 @@
 
 pub mod lockfile;
 
+pub mod full;
+
 use std::collections::HashMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
