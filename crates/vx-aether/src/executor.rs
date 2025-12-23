@@ -29,6 +29,24 @@ pub enum ActionState {
 /// Result from executing an action
 #[derive(Debug, Clone)]
 pub enum ActionResult {
+    /// Toolchain acquired successfully
+    ToolchainAcquired {
+        /// Toolchain ID
+        toolchain_id: Blake3Hash,
+        /// Toolchain manifest hash
+        manifest_hash: Blake3Hash,
+    },
+
+    /// Registry crate acquired successfully
+    RegistryCrateAcquired {
+        /// Crate name
+        name: String,
+        /// Crate version
+        version: String,
+        /// Manifest hash
+        manifest_hash: Blake3Hash,
+    },
+
     /// Rust crate compiled successfully
     CrateCompiled {
         /// CrateId of the compiled crate
@@ -85,9 +103,6 @@ pub struct Executor {
     /// Picante database
     db: Arc<Mutex<crate::db::Database>>,
 
-    /// Registry crate manifests (for registry dependencies)
-    registry_manifests: Arc<HashMap<(String, String), Blake3Hash>>,
-
     /// Execution statistics
     stats: Arc<RwLock<ExecutionStats>>,
 
@@ -112,7 +127,6 @@ impl Executor {
         cas: Arc<OortClient>,
         exec: Arc<RheaClient>,
         db: Arc<Mutex<crate::db::Database>>,
-        registry_manifests: HashMap<(String, String), Blake3Hash>,
         workspace_root: camino::Utf8PathBuf,
         target_triple: String,
         profile: String,
@@ -156,7 +170,6 @@ impl Executor {
             cas,
             exec,
             db,
-            registry_manifests: Arc::new(registry_manifests),
             stats: Arc::new(RwLock::new(ExecutionStats::default())),
             first_error: Arc::new(RwLock::new(None)),
             workspace_root,
@@ -238,7 +251,6 @@ impl Executor {
         let exec = self.exec.clone();
         let db = self.db.clone();
         let tui = self.tui.clone();
-        let registry_manifests = self.registry_manifests.clone();
         let stats = self.stats.clone();
         let first_error = self.first_error.clone();
         let workspace_root = self.workspace_root.clone();
@@ -265,7 +277,6 @@ impl Executor {
                 &cas,
                 &exec,
                 &db,
-                &registry_manifests,
                 &results,
                 &stats,
                 &workspace_root,
@@ -346,7 +357,6 @@ async fn execute_action(
     cas: &Arc<OortClient>,
     exec: &Arc<RheaClient>,
     db: &Arc<Mutex<crate::db::Database>>,
-    registry_manifests: &Arc<HashMap<(String, String), Blake3Hash>>,
     results: &Arc<RwLock<HashMap<NodeIndex, ActionResult>>>,
     stats: &Arc<RwLock<ExecutionStats>>,
     workspace_root: &camino::Utf8PathBuf,
@@ -360,6 +370,102 @@ async fn execute_action(
     use crate::queries::*;
 
     match action {
+        Action::AcquireToolchain { channel, target_triple } => {
+            use vx_oort_proto::{RustToolchainSpec, RustComponent, EnsureStatus};
+
+            let spec = RustToolchainSpec {
+                channel,
+                host: target_triple.clone(),
+                target: target_triple.clone(),
+                components: vec![RustComponent::Rustc, RustComponent::RustStd],
+            };
+
+            let result = cas
+                .ensure_rust_toolchain(spec)
+                .await
+                .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
+
+            if result.status == EnsureStatus::Failed {
+                return Err(AetherError::ToolchainAcquisition(
+                    result.error.unwrap_or_else(|| "unknown error".to_string()),
+                ));
+            }
+
+            let manifest_hash = result.manifest_hash.ok_or(AetherError::NoManifestHash)?;
+
+            // Get manifest for version info (and toolchain_id on cache hit)
+            let manifest = cas
+                .get_toolchain_manifest(manifest_hash)
+                .await
+                .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
+                .ok_or(AetherError::ToolchainManifestNotFound(manifest_hash))?;
+
+            // On cache hit, toolchain_id comes from manifest; on download, it's in the result
+            let toolchain_id = result.toolchain_id.unwrap_or(manifest.toolchain_id);
+
+            info!(
+                toolchain_id = %toolchain_id.short_hex(),
+                manifest_hash = %manifest_hash.short_hex(),
+                version = ?manifest.rust_version,
+                "toolchain acquired"
+            );
+
+            Ok(ActionResult::ToolchainAcquired {
+                toolchain_id,
+                manifest_hash,
+            })
+        }
+
+        Action::AcquireRegistryCrate { name, version, checksum } => {
+            use vx_oort_proto::{RegistrySpec, EnsureStatus};
+
+            let spec = RegistrySpec {
+                registry_url: "https://crates.io".to_string(),
+                name: name.clone(),
+                version: version.clone(),
+                checksum,
+            };
+
+            debug!(name = %name, version = %version, "ensuring registry crate");
+
+            let result = cas
+                .ensure_registry_crate(spec)
+                .await
+                .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
+
+            match result.status {
+                EnsureStatus::Hit | EnsureStatus::Downloaded => {
+                    let manifest_hash =
+                        result
+                            .manifest_hash
+                            .ok_or_else(|| AetherError::RegistryCrateNoManifest {
+                                name: name.clone(),
+                                version: version.clone(),
+                            })?;
+
+                    debug!(
+                        name = %name,
+                        version = %version,
+                        manifest_hash = %manifest_hash.short_hex(),
+                        "acquired registry crate"
+                    );
+
+                    Ok(ActionResult::RegistryCrateAcquired {
+                        name,
+                        version,
+                        manifest_hash,
+                    })
+                }
+                EnsureStatus::Failed => Err(AetherError::RegistryCrateAcquisition {
+                    name,
+                    version,
+                    reason: result
+                        .error
+                        .unwrap_or_else(|| "acquisition failed".to_string()),
+                }),
+            }
+        }
+
         Action::CompileRustCrate {
             crate_id,
             crate_name,
@@ -415,10 +521,10 @@ async fn execute_action(
             drop(db_guard);
 
             // Collect dependency results from completed actions
-            let deps: Vec<RustDep> = {
+            let (deps, registry_crate_manifests): (Vec<RustDep>, HashMap<(String, String), Blake3Hash>) = {
                 let results_lock = results.read().await;
 
-                // Build map of CrateId -> output_manifest from completed actions
+                // Build map of CrateId -> output_manifest from completed compilation actions
                 let completed_manifests: HashMap<CrateId, Blake3Hash> = results_lock
                     .iter()
                     .filter_map(|(_, result)| {
@@ -427,12 +533,28 @@ async fn execute_action(
                                 crate_id,
                                 output_manifest,
                             } => Some((*crate_id, *output_manifest)),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+
+                // Build map of (name, version) -> manifest_hash from registry acquisition actions
+                let registry_crate_manifests: HashMap<(String, String), Blake3Hash> = results_lock
+                    .iter()
+                    .filter_map(|(_, result)| {
+                        match result {
+                            ActionResult::RegistryCrateAcquired {
+                                name,
+                                version,
+                                manifest_hash,
+                            } => Some(((name.clone(), version.clone()), *manifest_hash)),
+                            _ => None,
                         }
                     })
                     .collect();
 
                 // Build RustDep list by resolving each ActionDep
-                action_deps
+                let deps = action_deps
                     .iter()
                     .map(|action_dep| {
                         let manifest_hash = completed_manifests
@@ -442,10 +564,10 @@ async fn execute_action(
                                 crate_name: crate_name.clone(),
                             })?;
 
-                        // Determine registry_crate_manifest based on source
+                        // Determine registry_crate_manifest based on source (from ActionResults)
                         let registry_crate_manifest = match &action_dep.source {
                             CrateSource::Registry { name, version, .. } => {
-                                registry_manifests.get(&(name.clone(), version.clone())).copied()
+                                registry_crate_manifests.get(&(name.clone(), version.clone())).copied()
                             }
                             CrateSource::Path { .. } => None,
                         };
@@ -456,7 +578,9 @@ async fn execute_action(
                             registry_crate_manifest,
                         })
                     })
-                    .collect::<Result<Vec<_>, AetherError>>()?
+                    .collect::<Result<Vec<_>, AetherError>>()?;
+
+                (deps, registry_crate_manifests)
             };
 
             let dep_rlib_hashes: Vec<(String, Blake3Hash)> = deps
@@ -562,7 +686,7 @@ async fn execute_action(
                     }
                     CrateSource::Registry { name, version, .. } => {
                         // Registry crate - rhea will extract and determine edition/lib_path
-                        let registry_manifest = registry_manifests
+                        let registry_manifest = registry_crate_manifests
                             .get(&(name.clone(), version.clone()))
                             .copied()
                             .ok_or_else(|| AetherError::RegistryCrateNoManifest {

@@ -374,49 +374,38 @@ impl AetherService {
         let project_path = &request.project_path;
         let total_start = std::time::Instant::now();
 
-        // Start toolchain acquisition in background - doesn't block manifest parsing
-        let toolchain_fut = self.ensure_rust_toolchain(RustChannel::Stable);
-
         let target_triple = self.exec_host_triple.clone();
 
-        // Build the crate graph with lockfile support (can happen while toolchain downloads)
+        // Build the crate graph with lockfile support
         let graph = CrateGraph::build_with_lockfile(project_path)
             .map_err(|e| AetherError::CrateGraph(format!("{:?}", miette::Report::new(e))))?;
 
-        // Set total number of actions for the TUI
-        // Total = all crates in the graph
-        self.tui.set_total(graph.nodes.len()).await;
-
-        // Acquire registry crates in parallel (can happen while toolchain downloads)
-        // This spawns all crate downloads concurrently
-        let registry_fut = self.acquire_registry_crates(&graph);
-
-        // Now wait for both toolchain and registry crates
-        let (rust_toolchain, registry_manifests) = tokio::try_join!(toolchain_fut, registry_fut)?;
+        let profile = if request.release { "release" } else { "debug" };
 
         info!(
             workspace_root = %graph.workspace_root,
             path_crate_count = graph.nodes.len(),
             registry_crate_count = graph.iter_registry_crates().count(),
-            toolchain_id = %rust_toolchain.toolchain_id.short_hex(),
-            "resolved crate graph, toolchain and crates ready"
+            "resolved crate graph, building action graph"
         );
 
-        let profile = if request.release { "release" } else { "debug" };
-
-        // Set up picante inputs
+        // Set up picante inputs (for cache key computation)
+        // We create placeholder toolchain/config inputs since we don't have the actual
+        // toolchain yet - it will be acquired by the action graph executor
         let db = self.db.lock().await;
 
+        // Use a placeholder toolchain_id and manifest_hash - these will be acquired dynamically
+        let placeholder_hash = Blake3Hash([0u8; 32]);
         let toolchain = RustToolchain::new(
             &*db,
-            rust_toolchain.toolchain_id,
-            rust_toolchain.manifest_hash,
+            placeholder_hash,
+            placeholder_hash,
             target_triple.clone(),
             target_triple.clone(),
         )
         .map_err(|e| AetherError::Picante(e.to_string()))?;
 
-        RustToolchainManifest::set(&*db, rust_toolchain.manifest_hash)
+        RustToolchainManifest::set(&*db, placeholder_hash)
             .map_err(|e| AetherError::Picante(e.to_string()))?;
 
         let build_key = BuildConfig::compute_key(
@@ -433,11 +422,24 @@ impl AetherService {
         )
         .map_err(|e| AetherError::Picante(e.to_string()))?;
 
-        // Action graph execution (Phase 1.5)
+        // Action graph execution (Phase 2)
         use crate::action_graph::ActionGraph;
         use crate::executor::Executor;
+        use vx_oort_proto::RustChannel;
 
-        let action_graph = ActionGraph::from_crate_graph(&graph, toolchain, config, &*db)?;
+        let action_graph = ActionGraph::from_crate_graph(
+            &graph,
+            RustChannel::Stable,
+            target_triple.clone(),
+            toolchain,
+            config,
+            &*db,
+        )?;
+
+        // Set total number of actions for the TUI
+        // Total = 1 toolchain + N registry crates + M compilations
+        self.tui.set_total(action_graph.node_count()).await;
+
         let max_concurrency = std::thread::available_parallelism()
             .map(|n| n.get() * 2)
             .unwrap_or(16);
@@ -447,7 +449,6 @@ impl AetherService {
             self.cas.clone(),
             self.exec.clone(),
             self.db.clone(),
-            registry_manifests,
             graph.workspace_root.clone(),
             target_triple.clone(),
             profile.to_string(),

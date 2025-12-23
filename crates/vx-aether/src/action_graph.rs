@@ -6,7 +6,7 @@
 
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
-use vx_oort_proto::Blake3Hash;
+use vx_oort_proto::{Blake3Hash, RustChannel};
 use vx_rs::crate_graph::{CrateGraph, CrateId, CrateSource, CrateType};
 
 use crate::inputs::{BuildConfig, RustCrate, RustToolchain};
@@ -25,6 +25,24 @@ pub struct ActionDep {
 /// A single unit of work in the build process
 #[derive(Debug, Clone)]
 pub enum Action {
+    /// Acquire Rust toolchain from static.rust-lang.org
+    AcquireToolchain {
+        /// Rust channel (Stable, Beta, Nightly)
+        channel: RustChannel,
+        /// Target triple
+        target_triple: String,
+    },
+
+    /// Acquire registry crate from crates.io
+    AcquireRegistryCrate {
+        /// Crate name
+        name: String,
+        /// Crate version
+        version: String,
+        /// Checksum for verification
+        checksum: String,
+    },
+
     /// Compile a Rust crate (lib or bin)
     CompileRustCrate {
         crate_id: CrateId,
@@ -59,6 +77,12 @@ impl Action {
     /// Get a display name for TUI tracking
     pub fn display_name(&self) -> String {
         match self {
+            Action::AcquireToolchain { channel, .. } => {
+                format!("acquire toolchain {:?}", channel)
+            }
+            Action::AcquireRegistryCrate { name, version, .. } => {
+                format!("acquire {}@{}", name, version)
+            }
             Action::CompileRustCrate { crate_name, .. } => {
                 format!("compile {}", crate_name)
             }
@@ -68,6 +92,12 @@ impl Action {
     /// Convert to TUI ActionType
     pub fn to_tui_action_type(&self) -> crate::tui::ActionType {
         match self {
+            Action::AcquireToolchain { .. } => {
+                crate::tui::ActionType::AcquireToolchain
+            }
+            Action::AcquireRegistryCrate { name, version, .. } => {
+                crate::tui::ActionType::AcquireRegistryCrate(name.clone(), version.clone())
+            }
             Action::CompileRustCrate { crate_name, .. } => {
                 crate::tui::ActionType::CompileRust(crate_name.clone())
             }
@@ -90,23 +120,55 @@ pub struct ActionGraph {
 
     /// Map from CrateId to its action node (for resolving dependencies)
     pub crate_to_node: HashMap<CrateId, NodeIndex>,
+
+    /// Toolchain acquisition node (all compilations depend on this)
+    pub toolchain_node: Option<NodeIndex>,
+
+    /// Map from (name, version) to registry crate acquisition node
+    pub registry_nodes: HashMap<(String, String), NodeIndex>,
 }
 
 impl ActionGraph {
     /// Build action graph from a CrateGraph
     ///
-    /// This creates one CompileRustCrate action per crate and connects
-    /// them based on the crate dependency edges.
+    /// This creates AcquireToolchain, AcquireRegistryCrate, and CompileRustCrate
+    /// actions with proper dependency edges.
     pub fn from_crate_graph(
         crate_graph: &CrateGraph,
+        rust_channel: RustChannel,
+        target_triple: String,
         toolchain: RustToolchain,
         config: BuildConfig,
         db: &crate::db::Database,
     ) -> Result<Self, crate::error::AetherError> {
         let mut graph = DiGraph::new();
         let mut crate_to_node = HashMap::new();
+        let mut registry_nodes = HashMap::new();
 
-        // Create action nodes for all crates
+        // 1. Create toolchain acquisition action (all compilations depend on this)
+        let toolchain_node = graph.add_node(ActionNode {
+            action: Action::AcquireToolchain {
+                channel: rust_channel,
+                target_triple: target_triple.clone(),
+            },
+        });
+
+        // 2. Create registry crate acquisition actions
+        for registry_crate in crate_graph.iter_registry_crates() {
+            let registry_action = graph.add_node(ActionNode {
+                action: Action::AcquireRegistryCrate {
+                    name: registry_crate.name.clone(),
+                    version: registry_crate.version.clone(),
+                    checksum: registry_crate.checksum.clone(),
+                },
+            });
+            registry_nodes.insert(
+                (registry_crate.name.clone(), registry_crate.version.clone()),
+                registry_action,
+            );
+        }
+
+        // 3. Create compilation action nodes for all crates
         for crate_node in crate_graph.nodes.values() {
             // Create RustCrate input
             let crate_id_hex = crate_node.id.short_hex();
@@ -160,19 +222,35 @@ impl ActionGraph {
             crate_to_node.insert(crate_node.id, node_idx);
         }
 
-        // Add dependency edges
+        // 4. Add dependency edges
         // Edge from dependent → dependency means "dependent needs dependency to complete first"
         for crate_node in crate_graph.nodes.values() {
-            let dependent_idx = crate_to_node[&crate_node.id];
+            let compile_idx = crate_to_node[&crate_node.id];
 
+            // Every compilation depends on toolchain acquisition
+            graph.add_edge(compile_idx, toolchain_node, ());
+
+            // Registry crates also depend on their registry acquisition
+            if let CrateSource::Registry { name, version, .. } = &crate_node.source {
+                if let Some(&registry_idx) = registry_nodes.get(&(name.clone(), version.clone())) {
+                    graph.add_edge(compile_idx, registry_idx, ());
+                }
+            }
+
+            // Add edges to crate dependencies
             for dep in &crate_node.deps {
-                if let Some(&dependency_idx) = crate_to_node.get(&dep.crate_id) {
-                    graph.add_edge(dependent_idx, dependency_idx, ());
+                if let Some(&dep_compile_idx) = crate_to_node.get(&dep.crate_id) {
+                    graph.add_edge(compile_idx, dep_compile_idx, ());
                 }
             }
         }
 
-        Ok(Self { graph, crate_to_node })
+        Ok(Self {
+            graph,
+            crate_to_node,
+            toolchain_node: Some(toolchain_node),
+            registry_nodes,
+        })
     }
 
     /// Get total number of actions
