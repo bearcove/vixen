@@ -1,4 +1,4 @@
-//! vx-execd - Execution daemon
+//! vx-rhea - Worker daemon
 //!
 //! Implements the Exec rapace service trait.
 //! A remote-capable compilation service - all inputs/outputs go through CAS.
@@ -60,10 +60,10 @@ impl Args {
         let registry_cache_dir = Utf8PathBuf::from(&vx_home).join("registry");
 
         let cas_endpoint_raw =
-            std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+            std::env::var("VX_OORT").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
         let cas_endpoint = vx_io::net::normalize_tcp_endpoint(&cas_endpoint_raw)?;
 
-        let bind_raw = std::env::var("VX_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
+        let bind_raw = std::env::var("VX_RHEA").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
         let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
 
         Ok(Args {
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_execd=info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_rhea=info")),
         )
         .init();
 
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(&args.toolchains_dir).await?;
     tokio::fs::create_dir_all(&args.registry_cache_dir).await?;
 
-    let exec = ExecService::new(Arc::new(cas), args.toolchains_dir, args.registry_cache_dir);
+    let exec = RheaService::new(Arc::new(cas), args.toolchains_dir, args.registry_cache_dir);
 
     // Start TCP server
     let listener = TcpListener::bind(&args.bind).await?;
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
 }
 
 /// Inner Exec service implementation
-pub struct ExecServiceInner {
+pub struct RheaServiceInner {
     /// CAS client for storing outputs and fetching toolchains
     pub(crate) cas: Arc<OortClient>,
 
@@ -168,26 +168,26 @@ pub struct ExecServiceInner {
 
 /// Exec service handle - cloneable wrapper around shared inner state
 #[derive(Clone)]
-pub struct ExecService {
-    inner: Arc<ExecServiceInner>,
+pub struct RheaService {
+    inner: Arc<RheaServiceInner>,
 }
 
-impl std::ops::Deref for ExecService {
-    type Target = ExecServiceInner;
+impl std::ops::Deref for RheaService {
+    type Target = RheaServiceInner;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl ExecService {
+impl RheaService {
     pub fn new(
         cas: Arc<OortClient>,
         toolchains_dir: Utf8PathBuf,
         registry_cache_dir: Utf8PathBuf,
     ) -> Self {
         Self {
-            inner: Arc::new(ExecServiceInner {
+            inner: Arc::new(RheaServiceInner {
                 registry_materializer: RegistryMaterializer::new(cas.clone(), registry_cache_dir),
                 cas,
                 toolchains_dir,

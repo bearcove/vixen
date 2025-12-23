@@ -2,10 +2,10 @@ use camino::Utf8PathBuf;
 use tracing::{debug, info};
 use vx_oort_proto::{Blake3Hash, MaterializeStep};
 
-use crate::ExecService;
+use crate::RheaService;
 use crate::error::{Result, RheaError};
 
-impl ExecService {
+impl RheaService {
     /// Materialize a toolchain from CAS to local directory
     pub(crate) async fn materialize_toolchain_impl(
         &self,

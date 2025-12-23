@@ -94,7 +94,7 @@ fn init_tracing() {
     // Default to info for vx crates, warn for everything else
     // Can be overridden with RUST_LOG env var
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("warn,vx=info,vx_aether=info,vx_casd=info,vx_toolchain=info,vx_execd=info")
+        EnvFilter::new("warn,vx=info,vx_aether=info,vx_oort=info,vx_toolchain=info,vx_rhea=info")
     });
 
     tracing_subscriber::fmt()
@@ -154,9 +154,9 @@ async fn get_or_spawn_aether() -> Result<AetherClient> {
         Err(_) => {
             if !vx_io::net::is_loopback_endpoint(&endpoint) {
                 eyre::bail!(
-                    "failed to connect to vx-aether at {} (from VX_DAEMON={}).\n\
+                    "failed to connect to vx-aether at {} (from VX_AETHER={}).\n\
                     Auto-spawn is only supported for loopback endpoints.\n\
-                    Start vx-aether on the remote host, or point VX_DAEMON to a local endpoint.",
+                    Start vx-aether on the remote host, or point VX_AETHER to a local endpoint.",
                     endpoint,
                     endpoint_raw
                 );
@@ -242,7 +242,7 @@ async fn cmd_build(release: bool) -> Result<()> {
 }
 
 async fn cmd_kill() -> Result<()> {
-    let endpoint_raw = std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    let endpoint_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
     let endpoint = vx_io::net::normalize_tcp_endpoint(&endpoint_raw)?;
 
     // Try to connect to daemon

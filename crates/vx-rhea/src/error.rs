@@ -1,4 +1,4 @@
-//! Error types for vx-execd.
+//! Error types for vx-rhea.
 
 use camino::Utf8PathBuf;
 use facet::Facet;

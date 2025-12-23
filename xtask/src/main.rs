@@ -22,9 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn install_all() -> Result<(), Box<dyn std::error::Error>> {
     let binaries = vec![
         ("vx", "./crates/vx"),
-        ("vx-casd", "./crates/vx-casd"),
-        ("vx-execd", "./crates/vx-execd"),
-        ("vx-daemon", "./crates/vx-daemon"),
+        ("vx-oort", "./crates/vx-oort"),
+        ("vx-rhea", "./crates/vx-rhea"),
+        ("vx-aether", "./crates/vx-aether"),
     ];
 
     println!("Installing all vertex binaries...\n");

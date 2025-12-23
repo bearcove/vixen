@@ -1,4 +1,4 @@
-//! Simple test client to verify vx-casd TCP connectivity
+//! Simple test client to verify vx-oort TCP connectivity
 
 use eyre::Result;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
 
     // Test: put a blob
     tracing::info!("Testing put_blob...");
-    let test_data = b"Hello from vx-casd test client!";
+    let test_data = b"Hello from vx-oort test client!";
     let blob_hash = client.put_blob(test_data.to_vec()).await?;
     tracing::info!("Put blob: {}", blob_hash.to_hex());
 

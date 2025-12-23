@@ -3,10 +3,10 @@ use futures_util::StreamExt;
 use tracing::debug;
 use vx_oort_proto::{Blake3Hash, TreeManifest};
 
-use crate::ExecService;
+use crate::RheaService;
 use crate::error::{Result, RheaError};
 
-impl ExecService {
+impl RheaService {
     /// Materialize a tree from CAS to a destination directory
     pub(crate) async fn materialize_tree_from_cas(
         &self,

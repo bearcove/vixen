@@ -10,12 +10,12 @@ use vx_rhea_proto::{
     RustCompileResult,
 };
 
-use crate::{ExecService, RheaResult};
+use crate::{RheaService, RheaResult};
 
-impl Rhea for ExecService {
+impl Rhea for RheaService {
     async fn version(&self) -> ServiceVersion {
         ServiceVersion {
-            service: "vx-execd".to_string(),
+            service: "vx-rhea".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             protocol_version: RHEA_PROTOCOL_VERSION,
         }
@@ -500,7 +500,7 @@ impl Rhea for ExecService {
     }
 }
 
-impl ExecService {
+impl RheaService {
     /// Create a scratch directory for compilation
     async fn create_scratch_dir(&self) -> RheaResult<Utf8PathBuf> {
         let scratch_base = self.toolchains_dir.parent().unwrap_or(&self.toolchains_dir);

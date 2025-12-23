@@ -2596,6 +2596,7 @@ dependencies = [
  "vx-report",
  "vx-rhea-proto",
  "vx-rs",
+ "vx-tarball",
  "vx-toolchain",
 ]
 

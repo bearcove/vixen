@@ -1,7 +1,7 @@
 //! vx-aether - Build orchestration daemon
 //!
 //! The daemon orchestrates builds but never touches the filesystem directly.
-//! All file I/O and compilation is delegated to vx-execd.
+//! All file I/O and compilation is delegated to vx-rhea.
 //!
 //! Responsibilities:
 //! - Own the picante incremental computation database
@@ -104,11 +104,11 @@ impl Args {
         });
 
         let cas_endpoint_raw =
-            std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+            std::env::var("VX_OORT").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
         let cas_endpoint = vx_io::net::normalize_tcp_endpoint(&cas_endpoint_raw)?;
 
         let exec_endpoint_raw =
-            std::env::var("VX_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
+            std::env::var("VX_RHEA").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
         let exec_endpoint = vx_io::net::normalize_tcp_endpoint(&exec_endpoint_raw)?;
 
         let bind_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
@@ -126,22 +126,22 @@ impl Args {
 /// Tracks spawned child services
 #[derive(Default)]
 pub struct SpawnTracker {
-    casd: Option<Child>,
-    execd: Option<Child>,
+    oort: Option<Child>,
+    rhea: Option<Child>,
 }
 
 impl SpawnTracker {
     pub fn kill_all(&mut self) {
-        if let Some(mut child) = self.casd.take() {
-            tracing::info!("Killing spawned vx-casd (pid: {})", child.id());
+        if let Some(mut child) = self.oort.take() {
+            tracing::info!("Killing spawned vx-oort (pid: {})", child.id());
             if let Err(e) = child.kill() {
-                tracing::warn!("Failed to kill vx-casd (pid: {}): {e}", child.id());
+                tracing::warn!("Failed to kill vx-oort (pid: {}): {e}", child.id());
             }
         }
-        if let Some(mut child) = self.execd.take() {
-            tracing::info!("Killing spawned vx-execd (pid: {})", child.id());
+        if let Some(mut child) = self.rhea.take() {
+            tracing::info!("Killing spawned vx-rhea (pid: {})", child.id());
             if let Err(e) = child.kill() {
-                tracing::warn!("Failed to kill vx-execd (pid: {}): {e}", child.id());
+                tracing::warn!("Failed to kill vx-rhea (pid: {}): {e}", child.id());
             }
         }
     }
@@ -165,78 +165,78 @@ fn spawn_service(binary_name: &str, env_vars: &[(&str, &str)]) -> Result<Child> 
 async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) -> Result<()> {
     let backoff_ms = [10, 50, 100, 500, 1000];
 
-    // Check CAS
+    // Check Oort (storage)
     if try_connect(&args.cas_endpoint).await.is_err() {
         if !vx_io::net::is_loopback_endpoint(&args.cas_endpoint) {
             eyre::bail!(
-                "CAS is not reachable at {}. Auto-spawn is only supported for loopback endpoints.\n\
-                Start vx-casd on the remote host, or point VX_CAS to a local endpoint.",
+                "Oort is not reachable at {}. Auto-spawn is only supported for loopback endpoints.\n\
+                Start vx-oort on the remote host, or point VX_OORT to a local endpoint.",
                 args.cas_endpoint
             );
         }
 
-        tracing::info!("CAS not running, spawning vx-casd on {}", args.cas_endpoint);
+        tracing::info!("Oort not running, spawning vx-oort on {}", args.cas_endpoint);
 
         let child = spawn_service(
-            "vx-casd",
+            "vx-oort",
             &[
                 ("VX_HOME", args.vx_home.as_str()),
-                ("VX_CAS", &args.cas_endpoint),
+                ("VX_OORT", &args.cas_endpoint),
             ],
         )?;
 
-        spawn_tracker.lock().await.casd = Some(child);
+        spawn_tracker.lock().await.oort = Some(child);
 
         for (attempt, delay) in backoff_ms.iter().enumerate() {
             tokio::time::sleep(tokio::time::Duration::from_millis(*delay)).await;
             if try_connect(&args.cas_endpoint).await.is_ok() {
-                tracing::info!("Connected to CAS after {} attempts", attempt + 1);
+                tracing::info!("Connected to Oort after {} attempts", attempt + 1);
                 break;
             }
         }
 
         try_connect(&args.cas_endpoint).await?;
     } else {
-        tracing::info!("CAS already running at {}", args.cas_endpoint);
+        tracing::info!("Oort already running at {}", args.cas_endpoint);
     }
 
-    // Check Exec
+    // Check Rhea (worker)
     if try_connect(&args.exec_endpoint).await.is_err() {
         if !vx_io::net::is_loopback_endpoint(&args.exec_endpoint) {
             eyre::bail!(
-                "Exec is not reachable at {}. Auto-spawn is only supported for loopback endpoints.\n\
-                Start vx-execd on the remote host, or point VX_EXEC to a local endpoint.",
+                "Rhea is not reachable at {}. Auto-spawn is only supported for loopback endpoints.\n\
+                Start vx-rhea on the remote host, or point VX_RHEA to a local endpoint.",
                 args.exec_endpoint
             );
         }
 
         tracing::info!(
-            "Exec not running, spawning vx-execd on {}",
+            "Rhea not running, spawning vx-rhea on {}",
             args.exec_endpoint
         );
 
         let child = spawn_service(
-            "vx-execd",
+            "vx-rhea",
             &[
                 ("VX_HOME", args.vx_home.as_str()),
-                ("VX_CAS", &args.cas_endpoint),
-                ("VX_EXEC", &args.exec_endpoint),
+                ("VX_OORT", &args.cas_endpoint),
+                ("VX_RHEA", &args.exec_endpoint),
             ],
         )?;
 
-        spawn_tracker.lock().await.execd = Some(child);
+        spawn_tracker.lock().await.rhea = Some(child);
 
         for (attempt, delay) in backoff_ms.iter().enumerate() {
             tokio::time::sleep(tokio::time::Duration::from_millis(*delay)).await;
             if try_connect(&args.exec_endpoint).await.is_ok() {
-                tracing::info!("Connected to Exec after {} attempts", attempt + 1);
+                tracing::info!("Connected to Rhea after {} attempts", attempt + 1);
                 break;
             }
         }
 
         try_connect(&args.exec_endpoint).await?;
     } else {
-        tracing::info!("Exec already running at {}", args.exec_endpoint);
+        tracing::info!("Rhea already running at {}", args.exec_endpoint);
     }
 
     Ok(())
@@ -270,14 +270,14 @@ async fn main() -> Result<()> {
 
     ensure_services(&args, &spawn_tracker).await?;
 
-    let exec_host_triple = match std::env::var("VX_EXEC_HOST_TRIPLE") {
+    let exec_host_triple = match std::env::var("VX_RHEA_HOST_TRIPLE") {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => {
             if !vx_io::net::is_loopback_endpoint(&args.exec_endpoint) {
                 eyre::bail!(
-                    "VX_EXEC points to a non-loopback endpoint ({}) but VX_EXEC_HOST_TRIPLE is not set.\n\
-                    vx-aether must know the execd host triple to request the correct Rust toolchain from CAS.\n\
-                    Set VX_EXEC_HOST_TRIPLE (e.g. x86_64-unknown-linux-gnu) and retry.",
+                    "VX_RHEA points to a non-loopback endpoint ({}) but VX_RHEA_HOST_TRIPLE is not set.\n\
+                    vx-aether must know the rhea host triple to request the correct Rust toolchain from Oort.\n\
+                    Set VX_RHEA_HOST_TRIPLE (e.g. x86_64-unknown-linux-gnu) and retry.",
                     args.exec_endpoint
                 );
             }

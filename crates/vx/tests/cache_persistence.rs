@@ -85,7 +85,7 @@ fn picante_memoization_skips_query_recomputation() {
     // - First build: queries are computed (we see "COMPUTING" in logs)
     // - Second build: queries are memoized (no "COMPUTING" messages)
     //
-    // We enable RUST_LOG=vx_daemon=debug to capture the trace output.
+    // We enable RUST_LOG=vx_aether=debug to capture the trace output.
 
     let env = TestEnv::new();
     let shared_home = tempfile::TempDir::new().unwrap();
@@ -96,7 +96,7 @@ fn picante_memoization_skips_query_recomputation() {
     let result1 = env.build_with_home_and_env(
         shared_home.path(),
         false,
-        &[("RUST_LOG", "vx_daemon=debug")],
+        &[("RUST_LOG", "vx_aether=debug")],
     );
     assert!(result1.success, "first build failed");
 
@@ -111,7 +111,7 @@ fn picante_memoization_skips_query_recomputation() {
     let result2 = env.build_with_home_and_env(
         shared_home.path(),
         false,
-        &[("RUST_LOG", "vx_daemon=debug")],
+        &[("RUST_LOG", "vx_aether=debug")],
     );
     assert!(result2.success, "second build failed");
     assert!(result2.was_cached(), "second build should be cached");
