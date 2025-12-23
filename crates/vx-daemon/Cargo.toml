@@ -19,7 +19,7 @@ eyre = { workspace = true }
 jiff = { workspace = true }
 tracing = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
-miette-arborium = { version = "2.4.0", features = ["lang-toml", "lang-rust"] }
+miette-arborium = { version = "2.4.5", features = ["lang-toml", "lang-rust"] }
 
 vx-cas-proto = { workspace = true }
 vx-cc = { path = "../vx-cc" }
