@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 facet = { workspace = true }
 facet-args = { workspace = true }
+facet-postcard = { workspace = true, features = ["camino"] }
 eyre = { workspace = true }
 owo-colors = { workspace = true }
 camino = { workspace = true }

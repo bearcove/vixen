@@ -7,7 +7,8 @@ use hyper_util::rt::TokioExecutor;
 use std::sync::OnceLock;
 use thiserror::Error;
 
-type HttpsConnector = hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
+type HttpsConnector =
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
 #[derive(Debug, Error)]
 pub enum HttpError {
@@ -48,9 +49,7 @@ fn client() -> &'static Client<HttpsConnector, String> {
 
 /// Perform a simple GET request and return the response
 pub async fn get(url: &str) -> Result<Response<Incoming>, HttpError> {
-    let req = Request::builder()
-        .uri(url)
-        .body(String::new())?;
+    let req = Request::builder().uri(url).body(String::new())?;
 
     let response = client().request(req).await?;
     Ok(response)
