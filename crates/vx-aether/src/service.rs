@@ -13,6 +13,8 @@ use crate::inputs::*;
 use crate::queries::*;
 use crate::tui::{ActionType, TuiHandle};
 use camino::Utf8PathBuf;
+use picante::wal::WalWriter;
+use picante::HasRuntime;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -65,6 +67,12 @@ pub struct AetherService {
     /// Path to the picante cache file
     picante_cache: Utf8PathBuf,
 
+    /// Path to the picante WAL file
+    picante_wal: Utf8PathBuf,
+
+    /// WAL writer for incremental persistence (kept open across builds)
+    wal_writer: Arc<Mutex<Option<WalWriter>>>,
+
     /// Acquired toolchains (manifest references only)
     toolchains: Arc<Mutex<AcquiredToolchains>>,
 
@@ -86,19 +94,52 @@ impl AetherService {
     ) -> Self {
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
+        let wal_path = vx_home.join("picante.wal");
 
         // Load persisted picante cache
-        match db.load_from_cache(&cache_path).await {
+        let cache_loaded = match db.load_from_cache(&cache_path).await {
             Ok(true) => {
                 info!(path = %cache_path, "loaded picante cache");
+                true
             }
             Ok(false) => {
                 debug!(path = %cache_path, "no picante cache found, starting fresh");
+                false
             }
             Err(e) => {
                 warn!(path = %cache_path, error = %e, "failed to load picante cache, starting fresh");
+                false
+            }
+        };
+
+        // If cache was loaded, replay WAL to apply incremental changes
+        if cache_loaded {
+            match db.replay_wal(&wal_path).await {
+                Ok(count) if count > 0 => {
+                    info!(path = %wal_path, entries = count, "replayed WAL entries");
+                }
+                Ok(_) => {
+                    debug!(path = %wal_path, "no WAL entries to replay");
+                }
+                Err(e) => {
+                    warn!(path = %wal_path, error = %e, "failed to replay WAL, continuing without it");
+                }
             }
         }
+
+        // Create a fresh WAL file for this session based on current revision
+        // (which includes any changes from the replayed WAL)
+        let current_revision = db.runtime().current_revision().0;
+        let wal_writer = match WalWriter::create(&wal_path, current_revision) {
+            Ok(writer) => {
+                info!(path = %wal_path, base_revision = current_revision, "created WAL writer for incremental persistence");
+                Some(writer)
+            }
+            Err(e) => {
+                warn!(path = %wal_path, error = %e, "failed to create WAL writer, persistence will be disabled");
+                None
+            }
+        };
 
         Self {
             cas,
@@ -106,6 +147,8 @@ impl AetherService {
             exec_host_triple,
             db: Arc::new(Mutex::new(db)),
             picante_cache: cache_path,
+            picante_wal: wal_path,
+            wal_writer: Arc::new(Mutex::new(wal_writer)),
             toolchains: Arc::new(Mutex::new(AcquiredToolchains {
                 rust: None,
                 zig: None,
@@ -653,15 +696,23 @@ impl AetherService {
             }
         }
 
-        // Persist picante cache after build
-        if let Err(e) = db.save_to_cache(&self.picante_cache).await {
-            warn!(
-                path = %self.picante_cache,
-                error = %e,
-                "failed to save picante cache"
-            );
-        } else {
-            debug!(path = %self.picante_cache, "saved picante cache");
+        // Append changes to WAL after build (incremental persistence)
+        if let Some(ref mut wal) = *self.wal_writer.lock().await {
+            match db.append_to_wal(wal).await {
+                Ok(count) if count > 0 => {
+                    info!(path = %self.picante_wal, entries = count, "appended changes to WAL");
+                    // Explicit flush to ensure durability (WAL auto-flushes after threshold, but we flush after each build)
+                    if let Err(e) = wal.flush() {
+                        warn!(path = %self.picante_wal, error = %e, "failed to flush WAL");
+                    }
+                }
+                Ok(_) => {
+                    debug!("no WAL changes to persist");
+                }
+                Err(e) => {
+                    warn!(path = %self.picante_wal, error = %e, "failed to append to WAL");
+                }
+            }
         }
 
         drop(db);
@@ -711,7 +762,28 @@ impl Aether for AetherService {
     }
 
     async fn shutdown(&self) {
-        tracing::info!("Shutdown requested, killing spawned services");
+        tracing::info!("Shutdown requested");
+
+        // Compact WAL before shutdown to create a clean snapshot
+        let db = self.db.lock().await;
+        match db
+            .compact_wal(&self.picante_cache, &self.picante_wal, false)
+            .await
+        {
+            Ok(revision) => {
+                info!(
+                    cache = %self.picante_cache,
+                    revision = revision,
+                    "compacted WAL to snapshot"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to compact WAL on shutdown");
+            }
+        }
+        drop(db);
+
+        // Kill spawned services
         self.kill_spawned_services().await;
         tracing::info!("Spawned services killed, exiting aether");
         std::process::exit(0);
