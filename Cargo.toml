@@ -27,7 +27,7 @@ facet-args = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-json = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-toml = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-value = { git = "https://github.com/facet-rs/facet", branch = "main" }
-facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jiff02", "camino"] }
 facet-cargo-toml = { git = "https://github.com/bearcove/facet-cargo-toml", branch = "main" }
 
 # incremental computation
@@ -35,6 +35,9 @@ picante = { path = "../picante/crates/picante", features = ["macros"] }
 
 # RPC
 rapace = { path = "../rapace/crates/rapace" }
+
+# process management
+ur-taking-me-with-you = { path = "../rapace/crates/ur-taking-me-with-you" }
 
 # hashing
 blake3 = "1"

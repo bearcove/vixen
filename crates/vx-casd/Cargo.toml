@@ -32,6 +32,7 @@ tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+ur-taking-me-with-you = { workspace = true }
 vx-cas-proto = { workspace = true }
 vx-io = { workspace = true }
 vx-tarball = { workspace = true }

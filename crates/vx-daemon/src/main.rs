@@ -153,7 +153,7 @@ fn spawn_service(binary_name: &str, env_vars: &[(&str, &str)]) -> Result<Child> 
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
-    cmd.spawn().map_err(Into::into)
+    ur_taking_me_with_you::spawn_dying_with_parent(cmd).map_err(Into::into)
 }
 
 /// Ensure services are running, spawning them if necessary
@@ -239,6 +239,9 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // If spawned by parent, die when parent dies
+    ur_taking_me_with_you::die_with_parent();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

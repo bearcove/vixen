@@ -165,8 +165,7 @@ async fn get_or_spawn_daemon() -> Result<DaemonClient> {
             // Spawn daemon (local-only)
             tracing::info!("Daemon not running, spawning vx-daemon on {}", endpoint);
 
-            std::process::Command::new("vx-daemon")
-                .spawn()
+            ur_taking_me_with_you::spawn_dying_with_parent(std::process::Command::new("vx-daemon"))
                 .map_err(|e| eyre::eyre!("failed to spawn vx-daemon: {}", e))?;
 
             // Retry with backoff

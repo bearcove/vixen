@@ -96,6 +96,9 @@ async fn connect_to_cas(endpoint: &str) -> Result<vx_cas_proto::CasClient> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // If spawned by parent, die when parent dies
+    ur_taking_me_with_you::die_with_parent();
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
