@@ -27,7 +27,7 @@ const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Error)]
-enum DownloadError {
+pub(crate) enum DownloadError {
     #[error("HTTP request failed: {0}")]
     Http(#[from] crate::http::HttpError),
 
@@ -104,7 +104,7 @@ pub(crate) async fn download_crate(
     name: &str,
     version: &str,
     expected_checksum: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, DownloadError> {
     let url = format!(
         "https://crates.io/api/v1/crates/{}/{}/download",
         name, version
@@ -129,7 +129,7 @@ pub(crate) async fn download_crate(
             Err(e) => {
                 // Check if error is retryable
                 if !is_retryable_error(&e) {
-                    return Err(e.to_string());
+                    return Err(e);
                 }
                 tracing::warn!(error = %e, "transient download error");
                 last_error = Some(e);
@@ -137,11 +137,7 @@ pub(crate) async fn download_crate(
         }
     }
 
-    Err(format!(
-        "download failed after {} attempts: {}",
-        MAX_RETRIES,
-        last_error.map(|e| e.to_string()).unwrap_or_default()
-    ))
+    Err(last_error.unwrap_or(DownloadError::HttpError(0)))
 }
 
 /// Single download attempt with streaming verification

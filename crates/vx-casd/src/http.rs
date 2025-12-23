@@ -10,6 +10,9 @@ use thiserror::Error;
 type HttpsConnector =
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>;
 
+/// Maximum number of redirects to follow
+const MAX_REDIRECTS: u8 = 10;
+
 #[derive(Debug, Error)]
 pub enum HttpError {
     #[error("invalid URI: {0}")]
@@ -29,6 +32,12 @@ pub enum HttpError {
 
     #[error("HTTP {status}")]
     Status { status: StatusCode },
+
+    #[error("too many redirects")]
+    TooManyRedirects,
+
+    #[error("redirect without Location header")]
+    MissingLocation,
 }
 
 /// Get a shared HTTPS client instance
@@ -47,12 +56,49 @@ fn client() -> &'static Client<HttpsConnector, String> {
     })
 }
 
-/// Perform a simple GET request and return the response
+/// Perform a simple GET request and return the response, following redirects
 pub async fn get(url: &str) -> Result<Response<Incoming>, HttpError> {
-    let req = Request::builder().uri(url).body(String::new())?;
+    let mut current_url = url.to_string();
 
-    let response = client().request(req).await?;
-    Ok(response)
+    for _ in 0..MAX_REDIRECTS {
+        let req = Request::builder()
+            .uri(&current_url)
+            .body(String::new())?;
+
+        let response = client().request(req).await?;
+        let status = response.status();
+
+        // Follow redirects (301, 302, 303, 307, 308)
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(hyper::header::LOCATION)
+                .ok_or(HttpError::MissingLocation)?
+                .to_str()
+                .map_err(|_| HttpError::MissingLocation)?;
+
+            // Handle relative URLs by resolving against current URL
+            current_url = if location.starts_with('/') {
+                // Relative path - extract scheme + host from current URL
+                let uri: hyper::Uri = current_url.parse()?;
+                format!(
+                    "{}://{}{}",
+                    uri.scheme_str().unwrap_or("https"),
+                    uri.host().unwrap_or(""),
+                    location
+                )
+            } else {
+                location.to_string()
+            };
+
+            tracing::debug!(from = %url, to = %current_url, "following redirect");
+            continue;
+        }
+
+        return Ok(response);
+    }
+
+    Err(HttpError::TooManyRedirects)
 }
 
 /// GET request and collect the full response body as bytes

@@ -143,7 +143,7 @@ impl Cas for CasService {
                                     spec_key: Some(spec_key),
                                     manifest_hash: None,
                                     status: EnsureStatus::Failed,
-                                    error: Some(e),
+                                    error: Some(e.to_string()),
                                 };
                             }
                         };
