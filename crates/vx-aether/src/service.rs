@@ -486,21 +486,50 @@ impl AetherService {
                     "cache miss, compiling"
                 );
 
-                // Ingest source tree to CAS
-                let source_manifest = self
-                    .ingest_source_tree(&closure_paths, &graph.workspace_root)
-                    .await?;
+                // Build compile request based on crate source
+                let compile_request = match &crate_node.source {
+                    CrateSource::Path { .. } => {
+                        // Path crate - ingest source tree to CAS
+                        let source_manifest = self
+                            .ingest_source_tree(&closure_paths, &graph.workspace_root)
+                            .await?;
 
-                let compile_request = RustCompileRequest {
-                    toolchain_manifest: rust_toolchain.manifest_hash,
-                    source_manifest,
-                    crate_root: crate_node.crate_root_rel.to_string(),
-                    crate_name: crate_node.crate_name.clone(),
-                    crate_type: crate_node.crate_type.as_str().to_string(),
-                    edition: crate_node.edition.as_str().to_string(),
-                    target_triple: target_triple.clone(),
-                    profile: profile.to_string(),
-                    deps: deps.clone(),
+                        RustCompileRequest {
+                            toolchain_manifest: rust_toolchain.manifest_hash,
+                            source_manifest,
+                            crate_root: crate_node.crate_root_rel.to_string(),
+                            crate_name: crate_node.crate_name.clone(),
+                            crate_type: crate_node.crate_type.as_str().to_string(),
+                            edition: crate_node.edition.as_str().to_string(),
+                            target_triple: target_triple.clone(),
+                            profile: profile.to_string(),
+                            deps: deps.clone(),
+                            registry_crate_manifest: None,
+                        }
+                    }
+                    CrateSource::Registry { name, version, .. } => {
+                        // Registry crate - rhea will extract and determine edition/lib_path
+                        let registry_manifest = registry_manifests
+                            .get(&(name.clone(), version.clone()))
+                            .copied()
+                            .ok_or_else(|| AetherError::RegistryCrateNoManifest {
+                                name: name.clone(),
+                                version: version.clone(),
+                            })?;
+
+                        RustCompileRequest {
+                            toolchain_manifest: rust_toolchain.manifest_hash,
+                            source_manifest: Blake3Hash([0u8; 32]), // Placeholder, rhea ignores
+                            crate_root: String::new(),              // Placeholder, rhea ignores
+                            crate_name: crate_node.crate_name.clone(),
+                            crate_type: crate_node.crate_type.as_str().to_string(),
+                            edition: String::new(), // Placeholder, rhea reads from Cargo.toml
+                            target_triple: target_triple.clone(),
+                            profile: profile.to_string(),
+                            deps: deps.clone(),
+                            registry_crate_manifest: Some(registry_manifest),
+                        }
+                    }
                 };
 
                 let result = self

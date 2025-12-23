@@ -2718,6 +2718,7 @@ dependencies = [
  "clonetree",
  "eyre",
  "facet",
+ "facet-cargo-toml",
  "facet-json",
  "futures-util",
  "jiff",

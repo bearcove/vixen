@@ -50,10 +50,12 @@ pub struct RustCompileRequest {
     /// Toolchain manifest hash (rhea materializes locally)
     pub toolchain_manifest: ManifestHash,
 
-    /// Source tree manifest hash (all source files)
+    /// Source tree manifest hash (all source files).
+    /// Ignored if registry_crate_manifest is set.
     pub source_manifest: ManifestHash,
 
-    /// Crate root within source tree (e.g., "src/lib.rs")
+    /// Crate root within source tree (e.g., "src/lib.rs").
+    /// Ignored if registry_crate_manifest is set (rhea reads Cargo.toml).
     pub crate_root: String,
 
     /// Crate name (with underscores, as rustc expects)
@@ -62,7 +64,8 @@ pub struct RustCompileRequest {
     /// Crate type: "lib" or "bin"
     pub crate_type: String,
 
-    /// Rust edition: "2015", "2018", "2021", "2024"
+    /// Rust edition: "2015", "2018", "2021", "2024".
+    /// Ignored if registry_crate_manifest is set (rhea reads Cargo.toml).
     pub edition: String,
 
     /// Target triple (e.g., "aarch64-apple-darwin")
@@ -73,6 +76,11 @@ pub struct RustCompileRequest {
 
     /// Dependencies (rhea materializes rlibs from CAS)
     pub deps: Vec<RustDep>,
+
+    /// If set, this is a registry crate compilation.
+    /// Rhea will extract the tarball, parse Cargo.toml for edition/lib_path,
+    /// and ignore source_manifest/crate_root/edition from above.
+    pub registry_crate_manifest: Option<ManifestHash>,
 }
 
 /// Result of compiling a Rust crate

@@ -1,4 +1,4 @@
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use jiff::Zoned;
 use std::process::Command;
 use std::time::Instant;
@@ -10,7 +10,15 @@ use vx_rhea_proto::{
     RustCompileResult,
 };
 
-use crate::{RheaService, RheaResult};
+use crate::{RheaResult, RheaService};
+
+/// Information about a crate extracted from its Cargo.toml
+struct CrateInfo {
+    /// The path to the crate root file (e.g., "src/lib.rs")
+    lib_path: Utf8PathBuf,
+    /// The Rust edition
+    edition: String,
+}
 
 impl Rhea for RheaService {
     async fn version(&self) -> ServiceVersion {
@@ -63,25 +71,97 @@ impl Rhea for RheaService {
             }
         };
 
-        if let Err(e) = self
-            .materialize_tree_from_cas(request.source_manifest, &scratch_dir)
-            .await
-        {
-            if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                warn!(
-                    "failed to remove scratch directory after source tree materialization failure: {e}"
+        // Determine effective edition and crate_root based on whether this is a registry crate
+        let (effective_edition, effective_crate_root) =
+            if let Some(registry_manifest) = request.registry_crate_manifest {
+                // Registry crate: materialize via registry_materializer and parse Cargo.toml
+                let result = match self
+                    .registry_materializer
+                    .materialize(registry_manifest, &scratch_dir)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                            warn!(
+                                "failed to remove scratch directory after registry crate materialization failure: {cleanup_err}"
+                            );
+                        }
+                        return RustCompileResult {
+                            success: false,
+                            exit_code: -1,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                            output_manifest: None,
+                            error: Some(format!(
+                                "failed to materialize registry crate {}: {}",
+                                request.crate_name, e
+                            )),
+                        };
+                    }
+                };
+
+                // Parse Cargo.toml to get actual edition and lib_path
+                let crate_dir = scratch_dir.join(&result.workspace_rel_path);
+                let crate_info = match parse_crate_info(&crate_dir).await {
+                    Ok(info) => info,
+                    Err(e) => {
+                        if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                            warn!(
+                                "failed to remove scratch directory after Cargo.toml parse failure: {cleanup_err}"
+                            );
+                        }
+                        return RustCompileResult {
+                            success: false,
+                            exit_code: -1,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                            output_manifest: None,
+                            error: Some(format!(
+                                "failed to parse Cargo.toml for {}: {}",
+                                request.crate_name, e
+                            )),
+                        };
+                    }
+                };
+
+                // The crate root is relative to scratch_dir
+                let crate_root_relative_to_scratch =
+                    Utf8PathBuf::from(&result.workspace_rel_path).join(&crate_info.lib_path);
+
+                info!(
+                    crate_name = %request.crate_name,
+                    edition = %crate_info.edition,
+                    crate_root = %crate_root_relative_to_scratch,
+                    "parsed registry crate metadata"
                 );
-            }
-            return RustCompileResult {
-                success: false,
-                exit_code: -1,
-                stdout: String::new(),
-                stderr: String::new(),
-                duration_ms: start.elapsed().as_millis() as u64,
-                output_manifest: None,
-                error: Some(format!("failed to materialize source tree: {}", e)),
+
+                (crate_info.edition, crate_root_relative_to_scratch.to_string())
+            } else {
+                // Path crate: materialize source tree from CAS, use request values
+                if let Err(e) = self
+                    .materialize_tree_from_cas(request.source_manifest, &scratch_dir)
+                    .await
+                {
+                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                        warn!(
+                            "failed to remove scratch directory after source tree materialization failure: {cleanup_err}"
+                        );
+                    }
+                    return RustCompileResult {
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        output_manifest: None,
+                        error: Some(format!("failed to materialize source tree: {}", e)),
+                    };
+                }
+                (request.edition.clone(), request.crate_root.clone())
             };
-        }
 
         // 3. Materialize dependencies (rlibs) into scratch_dir/.vx/deps/<extern_name>.rlib
         let deps_dir = scratch_dir.join(".vx/deps");
@@ -294,7 +374,7 @@ impl Rhea for RheaService {
         cmd.arg("--sysroot").arg(sysroot_path.as_str());
         cmd.arg("--crate-name").arg(&request.crate_name);
         cmd.arg("--crate-type").arg(&request.crate_type);
-        cmd.arg("--edition").arg(&request.edition);
+        cmd.arg("--edition").arg(&effective_edition);
         cmd.arg("-o").arg(&output_path);
 
         // Path remapping for reproducibility
@@ -312,7 +392,7 @@ impl Rhea for RheaService {
         }
 
         // Crate root (relative to scratch dir)
-        cmd.arg(&request.crate_root);
+        cmd.arg(&effective_crate_root);
 
         cmd.current_dir(&scratch_dir);
 
@@ -326,7 +406,7 @@ impl Rhea for RheaService {
         debug!(
             rustc = %rustc_path,
             crate_name = %request.crate_name,
-            crate_root = %request.crate_root,
+            crate_root = %effective_crate_root,
             "executing rustc"
         );
 
@@ -508,4 +588,49 @@ impl RheaService {
             .await
             .map_err(|e| crate::RheaError::ScratchDir(e.to_string()))
     }
+}
+
+/// Parse a Cargo.toml to extract lib_path and edition.
+///
+/// This is used when compiling registry crates, where the request contains
+/// placeholder values and we need to determine the actual values from the crate.
+async fn parse_crate_info(crate_dir: &Utf8Path) -> Result<CrateInfo, String> {
+    let cargo_toml_path = crate_dir.join("Cargo.toml");
+
+    // Use blocking task to read and parse the file synchronously (facet_cargo_toml uses std::fs)
+    let cargo_toml_path_clone = cargo_toml_path.clone();
+    let manifest = tokio::task::spawn_blocking(move || {
+        facet_cargo_toml::CargoToml::from_path(&cargo_toml_path_clone)
+    })
+    .await
+    .map_err(|e| format!("task join error: {}", e))?
+    .map_err(|e| format!("failed to parse {}: {}", cargo_toml_path, e))?;
+
+    // Determine lib_path
+    let lib_path = if let Some(ref lib) = manifest.lib {
+        if let Some(ref path) = lib.path {
+            Utf8PathBuf::from(path)
+        } else {
+            Utf8PathBuf::from("src/lib.rs")
+        }
+    } else {
+        Utf8PathBuf::from("src/lib.rs")
+    };
+
+    // Determine edition
+    let edition = if let Some(ref package) = manifest.package {
+        match &package.edition {
+            Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => match e {
+                facet_cargo_toml::Edition::E2015 => "2015".to_string(),
+                facet_cargo_toml::Edition::E2018 => "2018".to_string(),
+                facet_cargo_toml::Edition::E2021 => "2021".to_string(),
+                facet_cargo_toml::Edition::E2024 => "2024".to_string(),
+            },
+            _ => "2021".to_string(), // Default
+        }
+    } else {
+        "2021".to_string() // Default
+    };
+
+    Ok(CrateInfo { lib_path, edition })
 }

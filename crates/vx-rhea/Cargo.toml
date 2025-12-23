@@ -8,6 +8,7 @@ tracing-subscriber = { workspace = true }
 facet = { workspace = true }
 thiserror = { workspace = true }
 facet-json = { workspace = true }
+facet-cargo-toml = { workspace = true }
 rapace = { workspace = true }
 tokio = { workspace = true }
 camino = { workspace = true }
