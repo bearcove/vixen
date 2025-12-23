@@ -91,6 +91,7 @@ impl AetherService {
         vx_home: Utf8PathBuf,
         exec_host_triple: String,
         spawn_tracker: Arc<Mutex<SpawnTracker>>,
+        tui: TuiHandle,
     ) -> Self {
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
@@ -154,7 +155,7 @@ impl AetherService {
                 zig: None,
             })),
             spawn_tracker,
-            tui: TuiHandle::new(),
+            tui,
         }
     }
 

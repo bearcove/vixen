@@ -205,11 +205,18 @@ async fn main() -> Result<()> {
     // If spawned by parent, die when parent dies
     ur_taking_me_with_you::die_with_parent();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    // Create TUI first so we can route tracing to it
+    let tui = crate::tui::TuiHandle::new();
+    let tui_layer = tui.tracing_layer();
+
+    // Install tracing with TUI layer
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=info")),
         )
+        .with(tui_layer)
         .init();
 
     // Install miette-arborium for rich syntax-highlighted diagnostics
@@ -282,6 +289,7 @@ async fn main() -> Result<()> {
             args.vx_home,
             exec_host_triple,
             spawn_tracker,
+            tui,
         )
         .await,
     );
