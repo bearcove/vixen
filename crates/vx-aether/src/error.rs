@@ -6,7 +6,7 @@ use thiserror::Error;
 use vx_oort_proto::Blake3Hash;
 
 /// Errors that can occur during aether operations.
-#[derive(Debug, Error, Facet)]
+#[derive(Debug, Clone, Error, Facet)]
 #[repr(u8)]
 pub enum AetherError {
     // === RPC Errors ===

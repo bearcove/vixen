@@ -91,6 +91,9 @@ pub struct Executor {
     /// Execution statistics
     stats: Arc<RwLock<ExecutionStats>>,
 
+    /// First error encountered during execution (for early abort)
+    first_error: Arc<RwLock<Option<AetherError>>>,
+
     /// Workspace root for bin materialization
     workspace_root: camino::Utf8PathBuf,
 
@@ -155,6 +158,7 @@ impl Executor {
             db,
             registry_manifests: Arc::new(registry_manifests),
             stats: Arc::new(RwLock::new(ExecutionStats::default())),
+            first_error: Arc::new(RwLock::new(None)),
             workspace_root,
             target_triple,
             profile,
@@ -171,6 +175,11 @@ impl Executor {
         info!("Starting action graph execution");
 
         loop {
+            // Check if any action has failed
+            if let Some(error) = self.first_error.read().await.as_ref() {
+                return Err(error.clone());
+            }
+
             // Try to spawn all ready actions
             loop {
                 let node_idx = {
@@ -231,6 +240,7 @@ impl Executor {
         let tui = self.tui.clone();
         let registry_manifests = self.registry_manifests.clone();
         let stats = self.stats.clone();
+        let first_error = self.first_error.clone();
         let workspace_root = self.workspace_root.clone();
         let target_triple = self.target_triple.clone();
         let profile = self.profile.clone();
@@ -277,7 +287,12 @@ impl Executor {
                 Err(e) => {
                     tracing::error!(node = ?node_idx, error = %e, "Action failed");
                     states.write().await.insert(node_idx, ActionState::Failed);
-                    // TODO: Better error handling - should we continue or abort?
+
+                    // Store first error for build abortion
+                    let mut error_lock = first_error.write().await;
+                    if error_lock.is_none() {
+                        *error_lock = Some(e);
+                    }
                 }
             }
 

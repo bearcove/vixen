@@ -455,6 +455,26 @@ impl AetherService {
         );
         executor.execute().await?;
 
+        // Append changes to WAL after build (incremental persistence)
+        if let Some(ref mut wal) = *self.wal_writer.lock().await {
+            match db.append_to_wal(wal).await {
+                Ok(count) if count > 0 => {
+                    info!(path = %self.picante_wal, entries = count, "appended changes to WAL");
+                    // Explicit flush to ensure durability (WAL auto-flushes after threshold, but we flush after each build)
+                    if let Err(e) = wal.flush() {
+                        warn!(path = %self.picante_wal, error = %e, "failed to flush WAL");
+                    }
+                }
+                Ok(_) => {
+                    debug!("no WAL changes to persist");
+                }
+                Err(e) => {
+                    warn!(path = %self.picante_wal, error = %e, "failed to append to WAL");
+                }
+            }
+        }
+        drop(db);
+
         // Get execution statistics
         let exec_stats = executor.get_stats().await;
         let duration = total_start.elapsed();
