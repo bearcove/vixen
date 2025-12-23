@@ -2,6 +2,7 @@
 //!
 //! Provides CAS, toolchain, and registry services over TCP using rapace.
 
+pub(crate) mod http;
 pub(crate) mod registry;
 pub(crate) mod service;
 pub(crate) mod toolchain;

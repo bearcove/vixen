@@ -1,7 +1,6 @@
-//! Tarball extraction and download
+//! Tarball extraction
 //!
-//! Provides streaming tar.xz and tar.gz extraction from any AsyncRead source,
-//! plus download_and_extract for HTTP sources with hash verification.
+//! Provides streaming tar.xz and tar.gz extraction from any AsyncRead source.
 //!
 //! ## Tree extraction (CAS deduplication)
 //!
@@ -12,8 +11,6 @@
 //! - Efficient partial materialization
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
-use sha2::{Digest, Sha256};
-use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use vx_cas_proto::{Blake3Hash, TreeManifest};
 
@@ -52,22 +49,6 @@ pub enum TarballError {
         source: std::io::Error,
     },
 
-    #[error("HTTP request failed: {0}")]
-    HttpRequest(#[from] reqwest::Error),
-
-    #[error("HTTP error {status} for {url}")]
-    HttpStatus { url: String, status: u16 },
-
-    #[error("checksum mismatch for {url}: expected {expected}, got {actual}")]
-    ChecksumMismatch {
-        url: String,
-        expected: String,
-        actual: String,
-    },
-
-    #[error("download failed after {attempts} attempts: {last_error}")]
-    DownloadFailed { attempts: u32, last_error: String },
-
     #[error("failed to store blob: {0}")]
     BlobStore(String),
 
@@ -82,18 +63,6 @@ pub enum Compression {
     Xz,
     /// gzip compression (tar.gz, .crate files)
     Gzip,
-}
-
-/// Hash for verification
-#[derive(Debug, Clone)]
-pub enum VerifHash {
-    Sha256(String),
-}
-
-impl VerifHash {
-    pub fn sha256(hex: impl Into<String>) -> Self {
-        Self::Sha256(hex.into())
-    }
 }
 
 /// Extract a tarball from any AsyncRead source.

@@ -13,6 +13,65 @@ use vx_tarball::Compression;
 
 use crate::types::CasService;
 
+// =============================================================================
+// HTTP Download Functions (Rust Toolchains)
+// =============================================================================
+
+/// Fetch a channel manifest from static.rust-lang.org
+async fn fetch_channel_manifest(
+    channel: &vx_toolchain::Channel,
+) -> Result<vx_toolchain::ChannelManifest, vx_toolchain::ToolchainError> {
+    let url = vx_toolchain::rust_channel_manifest_url(channel);
+
+    tracing::debug!(url = %url, "fetching channel manifest");
+
+    let body = crate::http::get_text(&url)
+        .await
+        .map_err(|e| vx_toolchain::ToolchainError::FetchError {
+            url: url.clone(),
+            source: Box::new(e),
+        })?;
+
+    vx_toolchain::ChannelManifest::from_toml(&body)
+}
+
+/// Download a component with checksum verification
+async fn download_component(url: &str, expected_hash: &str) -> Result<Vec<u8>, vx_toolchain::ToolchainError> {
+    tracing::debug!(url = %url, "downloading component");
+
+    let bytes = crate::http::get_bytes(url)
+        .await
+        .map_err(|e| vx_toolchain::ToolchainError::FetchError {
+            url: url.to_string(),
+            source: Box::new(e),
+        })?;
+
+    // Verify SHA256
+    let actual_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        hex::encode(hasher.finalize())
+    };
+
+    if actual_hash != expected_hash {
+        return Err(vx_toolchain::ToolchainError::ChecksumMismatch {
+            url: url.to_string(),
+            expected: expected_hash.to_string(),
+            actual: actual_hash,
+        });
+    }
+
+    tracing::debug!(
+        url = %url,
+        size = bytes.len(),
+        hash = %actual_hash,
+        "component downloaded and verified"
+    );
+
+    Ok(bytes)
+}
+
 type InflightFuture = Arc<tokio::sync::OnceCell<EnsureToolchainResult>>;
 
 /// Manages in-flight toolchain acquisitions with deduplication.
@@ -117,7 +176,7 @@ impl CasService {
         };
 
         // Fetch channel manifest to get download URLs
-        let manifest = match vx_toolchain::fetch_channel_manifest(&channel).await {
+        let manifest = match fetch_channel_manifest(&channel).await {
             Ok(m) => m,
             Err(e) => {
                 return EnsureToolchainResult {
@@ -174,11 +233,11 @@ impl CasService {
         let (rustc_result, rust_std_result) = tokio::join!(
             async {
                 let _permit = sem.acquire().await.unwrap();
-                vx_toolchain::download_component(&rustc_url, &rustc_hash).await
+                download_component(&rustc_url, &rustc_hash).await
             },
             async {
                 let _permit = sem.acquire().await.unwrap();
-                vx_toolchain::download_component(&rust_std_url, &rust_std_hash).await
+                download_component(&rust_std_url, &rust_std_hash).await
             }
         );
 

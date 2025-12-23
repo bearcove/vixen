@@ -31,9 +31,6 @@ pub enum ZigError {
     #[error("extraction failed: {0}")]
     ExtractionFailed(String),
 
-    #[error("HTTP error: {0}")]
-    HttpError(#[from] reqwest::Error),
-
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
@@ -174,35 +171,6 @@ pub fn zig_download_url(version: &ZigVersion, platform: &HostPlatform) -> String
         version.version,
         ext
     )
-}
-
-/// Download a Zig toolchain tarball
-pub async fn download_zig(
-    version: &ZigVersion,
-    platform: &HostPlatform,
-) -> Result<Vec<u8>, ZigError> {
-    let url = zig_download_url(version, platform);
-
-    tracing::info!(url = %url, "downloading Zig toolchain");
-
-    let response = reqwest::get(&url).await?;
-
-    if !response.status().is_success() {
-        return Err(ZigError::FetchError {
-            url: url.clone(),
-            source: format!("HTTP {}", response.status()).into(),
-        });
-    }
-
-    let bytes = response.bytes().await?;
-
-    tracing::debug!(
-        url = %url,
-        size = bytes.len(),
-        "downloaded Zig tarball"
-    );
-
-    Ok(bytes.to_vec())
 }
 
 /// Extract a Zig tarball and return paths to the zig executable and lib directory
@@ -362,66 +330,6 @@ fn is_executable(metadata: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_metadata: &std::fs::Metadata) -> bool {
     false
-}
-
-/// Acquire a Zig toolchain: download, extract, hash, and return metadata
-///
-/// This function:
-/// 1. Downloads the Zig tarball from ziglang.org
-/// 2. Extracts it to a temporary directory
-/// 3. Hashes the zig executable and lib directory
-/// 4. Returns the toolchain metadata (caller is responsible for CAS storage)
-pub async fn acquire_zig_toolchain(
-    version: &ZigVersion,
-    platform: &HostPlatform,
-    temp_dir: &Utf8Path,
-) -> Result<AcquiredToolchain, ZigError> {
-    // Download the tarball
-    let tarball = download_zig(version, platform).await?;
-
-    // Extract it
-    let extract_dir = temp_dir.join(format!("zig-extract-{}", version));
-    let (zig_exe_path, lib_dir_path) = extract_zig_tarball(&tarball, &extract_dir)?;
-
-    // Hash the zig executable
-    let zig_exe_contents = std::fs::read(&zig_exe_path)?;
-    let zig_exe_hash = Blake3Hash::from_bytes(&zig_exe_contents);
-
-    tracing::debug!(
-        hash = %zig_exe_hash,
-        size = zig_exe_contents.len(),
-        "hashed zig executable"
-    );
-
-    // Hash the lib directory as a tarball
-    let (lib_tarball, lib_hash) = hash_directory_as_tar(&lib_dir_path)?;
-
-    tracing::debug!(
-        hash = %lib_hash,
-        size = lib_tarball.len(),
-        "hashed zig lib directory"
-    );
-
-    // Compute toolchain ID
-    let toolchain_id = ToolchainId::from_parts(&zig_exe_hash, &lib_hash);
-
-    tracing::info!(
-        toolchain_id = %toolchain_id,
-        version = %version,
-        platform = %platform,
-        "acquired zig toolchain"
-    );
-
-    Ok(AcquiredToolchain {
-        id: toolchain_id,
-        version: version.clone(),
-        host: platform.clone(),
-        zig_exe_hash,
-        zig_exe_contents,
-        lib_hash,
-        lib_tarball,
-        extract_dir,
-    })
 }
 
 /// Result of acquiring a Zig toolchain (before CAS storage)
@@ -625,38 +533,4 @@ mod tests {
         assert!(!platform.arch.is_empty());
     }
 
-    #[tokio::test]
-    #[ignore] // Requires network access - run with --ignored
-    async fn download_and_extract_zig() {
-        let version = ZigVersion::new("0.13.0");
-        let platform = HostPlatform::detect().unwrap();
-
-        let temp_dir = Utf8PathBuf::from("/tmp/vx-zig-test");
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).unwrap();
-
-        let acquired = acquire_zig_toolchain(&version, &platform, &temp_dir)
-            .await
-            .unwrap();
-
-        println!("Toolchain ID: {}", acquired.id);
-        println!("Zig exe hash: {}", acquired.zig_exe_hash);
-        println!("Lib hash: {}", acquired.lib_hash);
-
-        // Verify we can materialize it
-        let materialize_dir = temp_dir.join("materialized");
-        let materialized = materialize_toolchain(
-            &acquired.zig_exe_contents,
-            &acquired.lib_tarball,
-            &materialize_dir,
-        )
-        .unwrap();
-
-        assert!(materialized.zig_path.exists());
-        assert!(materialized.lib_dir.exists());
-
-        // Cleanup
-        acquired.cleanup().unwrap();
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
 }

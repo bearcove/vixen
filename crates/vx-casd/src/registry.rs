@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use thiserror::Error;
 use vx_cas_proto::Blake3Hash;
 use vx_cas_proto::{
     EnsureRegistryCrateResult, EnsureStatus, RegistryCrateManifest, RegistrySpecKey,
@@ -24,6 +25,24 @@ const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Maximum backoff duration
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Error)]
+enum DownloadError {
+    #[error("HTTP request failed: {0}")]
+    Http(#[from] crate::http::HttpError),
+
+    #[error("rate limited (429)")]
+    RateLimited,
+
+    #[error("server error: {0}")]
+    ServerError(u16),
+
+    #[error("HTTP error: {0}")]
+    HttpError(u16),
+
+    #[error("checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
+}
 
 // =============================================================================
 // Registry Manager (Inflight Deduplication)
@@ -91,7 +110,7 @@ pub(crate) async fn download_crate(
         name, version
     );
 
-    let mut last_error = String::new();
+    let mut last_error: Option<DownloadError> = None;
     let mut backoff = INITIAL_BACKOFF;
 
     for attempt in 0..MAX_RETRIES {
@@ -108,59 +127,60 @@ pub(crate) async fn download_crate(
         match download_crate_attempt(&url, expected_checksum).await {
             Ok(bytes) => return Ok(bytes),
             Err(e) => {
-                last_error = e.clone();
                 // Check if error is retryable
                 if !is_retryable_error(&e) {
-                    return Err(e);
+                    return Err(e.to_string());
                 }
                 tracing::warn!(error = %e, "transient download error");
+                last_error = Some(e);
             }
         }
     }
 
     Err(format!(
         "download failed after {} attempts: {}",
-        MAX_RETRIES, last_error
+        MAX_RETRIES,
+        last_error.map(|e| e.to_string()).unwrap_or_default()
     ))
 }
 
 /// Single download attempt
-async fn download_crate_attempt(url: &str, expected_checksum: &str) -> Result<Vec<u8>, String> {
+async fn download_crate_attempt(url: &str, expected_checksum: &str) -> Result<Vec<u8>, DownloadError> {
+    use http_body_util::BodyExt;
+
     tracing::info!(url = %url, "downloading crate");
 
-    let response = reqwest::get(url)
-        .await
-        .map_err(|e| format!("request failed: {}", e))?;
-
+    let response = crate::http::get(url).await?;
     let status = response.status();
 
     // Check for rate limiting
     if status.as_u16() == 429 {
-        return Err("rate limited (429)".to_string());
+        return Err(DownloadError::RateLimited);
     }
 
     // Check for server errors (retryable)
     if status.is_server_error() {
-        return Err(format!("server error: {}", status));
+        return Err(DownloadError::ServerError(status.as_u16()));
     }
 
     // Check for client errors (not retryable except 429)
     if !status.is_success() {
-        return Err(format!("HTTP error: {}", status));
+        return Err(DownloadError::HttpError(status.as_u16()));
     }
 
-    let bytes = response
-        .bytes()
+    let body = response.into_body().collect()
         .await
-        .map_err(|e| format!("failed to read response: {}", e))?;
+        .map_err(DownloadError::Http)?
+        .to_bytes();
+    let bytes = body.to_vec();
 
     // Verify SHA256 checksum
     let actual_checksum = compute_sha256(&bytes);
     if actual_checksum.to_lowercase() != expected_checksum.to_lowercase() {
-        return Err(format!(
-            "checksum mismatch: expected {}, got {}",
-            expected_checksum, actual_checksum
-        ));
+        return Err(DownloadError::ChecksumMismatch {
+            expected: expected_checksum.to_string(),
+            actual: actual_checksum,
+        });
     }
 
     tracing::debug!(
@@ -170,13 +190,14 @@ async fn download_crate_attempt(url: &str, expected_checksum: &str) -> Result<Ve
         "crate downloaded and verified"
     );
 
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
-fn is_retryable_error(error: &str) -> bool {
-    error.contains("rate limited")
-        || error.contains("server error")
-        || error.contains("request failed")
+fn is_retryable_error(error: &DownloadError) -> bool {
+    matches!(
+        error,
+        DownloadError::RateLimited | DownloadError::ServerError(_) | DownloadError::Http(_)
+    )
 }
 
 fn compute_sha256(data: &[u8]) -> String {

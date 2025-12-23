@@ -16,8 +16,11 @@ facet = { workspace = true }
 facet-json = { workspace = true }
 flate2 = "1"
 hex = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1.5", features = ["client", "http1", "http2"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "ring", "tls12"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 rapace = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"
 tar = "0.4"
 tempfile.workspace = true

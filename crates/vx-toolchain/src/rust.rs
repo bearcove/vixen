@@ -184,68 +184,6 @@ impl From<RawTarget> for TargetManifest {
     }
 }
 
-/// Fetch a channel manifest from static.rust-lang.org
-pub async fn fetch_channel_manifest(
-    channel: &RustChannel,
-) -> Result<ChannelManifest, ToolchainError> {
-    let url = rust_channel_manifest_url(channel);
-
-    tracing::debug!(url = %url, "fetching channel manifest");
-
-    let response = reqwest::get(&url).await?;
-
-    if !response.status().is_success() {
-        return Err(ToolchainError::FetchError {
-            url: url.clone(),
-            source: format!("HTTP {}", response.status()).into(),
-        });
-    }
-
-    let body = response.text().await?;
-    ChannelManifest::from_toml(&body)
-}
-
-/// Download a component with checksum verification
-pub async fn download_component(url: &str, expected_hash: &str) -> Result<Vec<u8>, ToolchainError> {
-    tracing::debug!(url = %url, "downloading component");
-
-    let response = reqwest::get(url).await?;
-
-    if !response.status().is_success() {
-        return Err(ToolchainError::FetchError {
-            url: url.to_string(),
-            source: format!("HTTP {}", response.status()).into(),
-        });
-    }
-
-    let bytes = response.bytes().await?;
-
-    // Verify SHA256
-    let actual_hash = {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        hex::encode(hasher.finalize())
-    };
-
-    if actual_hash != expected_hash {
-        return Err(ToolchainError::ChecksumMismatch {
-            url: url.to_string(),
-            expected: expected_hash.to_string(),
-            actual: actual_hash,
-        });
-    }
-
-    tracing::debug!(
-        url = %url,
-        size = bytes.len(),
-        hash = %actual_hash,
-        "component downloaded and verified"
-    );
-
-    Ok(bytes.to_vec())
-}
-
 /// Create a RustToolchainSpec for native compilation on the current host
 pub fn rust_toolchain_spec_native(
     channel: RustChannel,

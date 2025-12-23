@@ -16,9 +16,8 @@ pub use vx_cas_proto::{Blake3Hash, RustChannel, RustComponent, RustToolchainSpec
 
 // Re-export Rust toolchain functions
 pub use rust::{
-    AcquiredRustToolchain, ChannelManifest, RustToolchainId, acquire_rust_toolchain,
-    download_component, fetch_channel_manifest, parse_rust_channel, rust_channel_manifest_url,
-    rust_toolchain_spec_cross, rust_toolchain_spec_native,
+    ChannelManifest, PackageManifest, RustToolchainId, TargetManifest, parse_rust_channel,
+    rust_channel_manifest_url, rust_toolchain_spec_cross, rust_toolchain_spec_native,
 };
 
 // Type alias for backward compatibility
@@ -48,9 +47,6 @@ pub enum ToolchainError {
         expected: String,
         actual: String,
     },
-
-    #[error("HTTP error: {0}")]
-    HttpError(#[from] reqwest::Error),
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
