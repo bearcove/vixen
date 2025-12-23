@@ -43,17 +43,18 @@
 //! happen for supported crates.
 
 use camino::{Utf8Path, Utf8PathBuf};
+use facet::Facet;
 use ra_ap_rustc_lexer::{FrontmatterAllowed, TokenKind, tokenize};
 use thiserror::Error;
 
 /// Errors during module scanning
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Facet)]
+#[repr(u8)]
 pub enum ModuleError {
-    #[error("failed to read source file: {path}: {source}")]
+    #[error("failed to read source file: {path}: {message}")]
     IoError {
         path: Utf8PathBuf,
-        #[source]
-        source: std::io::Error,
+        message: String,
     },
 
     #[error("inline modules are not supported yet: `mod {name} {{...}}` at {file}:{line}")]
@@ -507,14 +508,14 @@ pub fn rust_source_closure(
         .canonicalize_utf8()
         .map_err(|e| ModuleError::IoError {
             path: workspace_root.to_owned(),
-            source: e,
+            message: e.to_string(),
         })?;
 
     let crate_root_abs = crate_root
         .canonicalize_utf8()
         .map_err(|e| ModuleError::IoError {
             path: crate_root.to_owned(),
-            source: e,
+            message: e.to_string(),
         })?;
 
     queue.push_back(crate_root_abs.clone());
@@ -536,7 +537,7 @@ pub fn rust_source_closure(
         // Read and parse the file
         let source = std::fs::read_to_string(&current_abs).map_err(|e| ModuleError::IoError {
             path: current_abs.clone(),
-            source: e,
+            message: e.to_string(),
         })?;
 
         let mods = scan_mod_decls(&source);

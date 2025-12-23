@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 tracing-subscriber = { workspace = true }
 facet = { workspace = true }
+thiserror = { workspace = true }
 facet-json = { workspace = true }
 rapace = { workspace = true }
 tokio = { workspace = true }

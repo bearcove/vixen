@@ -16,6 +16,7 @@ tokio = { workspace = true }
 blake3 = { workspace = true }
 camino = { workspace = true }
 eyre = { workspace = true }
+thiserror = { workspace = true }
 futures-util = { workspace = true }
 jiff = { workspace = true }
 tracing = { workspace = true }

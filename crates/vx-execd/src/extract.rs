@@ -3,6 +3,7 @@ use futures_util::StreamExt;
 use tracing::debug;
 use vx_cas_proto::{Blake3Hash, TreeManifest};
 
+use crate::error::{ExecdError, Result};
 use crate::ExecService;
 
 impl ExecService {
@@ -11,7 +12,7 @@ impl ExecService {
         &self,
         tree_manifest_hash: Blake3Hash,
         dest: &Utf8Path,
-    ) -> Result<(), String> {
+    ) -> Result<()> {
         debug!(tree = %tree_manifest_hash, dest = %dest, "materializing tree");
 
         // Fetch tree manifest blob from CAS
@@ -19,15 +20,24 @@ impl ExecService {
             .cas
             .get_blob(tree_manifest_hash)
             .await
-            .map_err(|e| format!("failed to fetch tree manifest: {:?}", e))?
-            .ok_or_else(|| format!("tree manifest {} not found in CAS", tree_manifest_hash))?;
+            .map_err(|e| ExecdError::CasRpc(e.to_string()))?
+            .ok_or(ExecdError::ToolchainBlobNotFound {
+                hash: tree_manifest_hash,
+                path: "tree manifest".to_string(),
+            })?;
 
         // Parse tree manifest
         let tree: TreeManifest = facet_json::from_str(
-            std::str::from_utf8(&tree_json)
-                .map_err(|e| format!("tree manifest is not valid UTF-8: {}", e))?,
+            std::str::from_utf8(&tree_json).map_err(|e| {
+                ExecdError::ToolchainMaterialization(format!(
+                    "tree manifest is not valid UTF-8: {}",
+                    e
+                ))
+            })?,
         )
-        .map_err(|e| format!("failed to parse tree manifest: {}", e))?;
+        .map_err(|e| {
+            ExecdError::ToolchainMaterialization(format!("failed to parse tree manifest: {}", e))
+        })?;
 
         debug!(
             tree = %tree_manifest_hash,
@@ -54,7 +64,7 @@ impl ExecService {
             Ok(data)
         })
         .await
-        .map_err(|e| format!("failed to materialize tree: {}", e))?;
+        .map_err(|e| ExecdError::ToolchainMaterialization(format!("failed to materialize tree: {}", e)))?;
 
         debug!(tree = %tree_manifest_hash, dest = %dest, "tree materialized");
         Ok(())

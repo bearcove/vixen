@@ -11,6 +11,7 @@
 //! - Materialize final outputs locally (via execd or direct CAS fetch)
 
 mod db;
+mod error;
 mod inputs;
 mod queries;
 mod service;
@@ -58,7 +59,8 @@ impl Daemon for DaemonHandle {
                 cached: false,
                 duration_ms: 0,
                 output_path: None,
-                error: Some(e),
+                // Convert structured error to string at RPC boundary
+                error: Some(e.to_string()),
             },
         }
     }

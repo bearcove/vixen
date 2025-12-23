@@ -476,10 +476,10 @@ impl Exec for ExecService {
 
 impl ExecService {
     /// Create a scratch directory for compilation
-    async fn create_scratch_dir(&self) -> Result<Utf8PathBuf, String> {
+    async fn create_scratch_dir(&self) -> crate::ExecdResult<Utf8PathBuf> {
         let scratch_base = self.toolchains_dir.parent().unwrap_or(&self.toolchains_dir);
         vx_io::create_scratch_dir(scratch_base)
             .await
-            .map_err(|e| format!("failed to create scratch dir: {}", e))
+            .map_err(|e| crate::ExecdError::ScratchDir(e.to_string()))
     }
 }

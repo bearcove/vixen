@@ -8,6 +8,7 @@
 
 use crate::SpawnTracker;
 use crate::db::Database;
+use crate::error::{DaemonError, Result};
 use crate::inputs::*;
 use crate::queries::*;
 use camino::Utf8PathBuf;
@@ -23,8 +24,8 @@ use vx_cas_proto::{
 };
 use vx_daemon_proto::{BuildRequest, BuildResult};
 use vx_exec_proto::{ExecClient, RustCompileRequest, RustDep};
-use vx_rs::{CrateGraph, CrateId, CrateType, ModuleError};
 use vx_rs::crate_graph::CrateSource;
+use vx_rs::{CrateGraph, CrateId, CrateType};
 
 /// Toolchain information (manifest-only, no materialization)
 pub struct ToolchainInfo {
@@ -101,10 +102,7 @@ impl DaemonService {
     }
 
     /// Ensure Rust toolchain exists in CAS. Returns info for cache keys.
-    pub async fn ensure_rust_toolchain(
-        &self,
-        channel: RustChannel,
-    ) -> Result<ToolchainInfo, String> {
+    pub async fn ensure_rust_toolchain(&self, channel: RustChannel) -> Result<ToolchainInfo> {
         // Check if already acquired
         {
             let toolchains = self.toolchains.lock().await;
@@ -129,26 +127,26 @@ impl DaemonService {
             .cas
             .ensure_rust_toolchain(spec)
             .await
-            .map_err(|e| format!("RPC error: {:?}", e))?;
+            .map_err(|e| DaemonError::CasRpc(e.to_string()))?;
 
         if result.status == EnsureStatus::Failed {
-            return Err(result.error.unwrap_or_else(|| "unknown error".to_string()));
+            return Err(DaemonError::ToolchainAcquisition(
+                result.error.unwrap_or_else(|| "unknown error".to_string()),
+            ));
         }
 
-        let manifest_hash = result
-            .manifest_hash
-            .ok_or_else(|| "no manifest hash returned".to_string())?;
-        let toolchain_id = result
-            .toolchain_id
-            .ok_or_else(|| "no toolchain id returned".to_string())?;
+        let manifest_hash = result.manifest_hash.ok_or(DaemonError::NoManifestHash)?;
 
-        // Get manifest for version info
+        // Get manifest for version info (and toolchain_id on cache hit)
         let manifest = self
             .cas
             .get_toolchain_manifest(manifest_hash)
             .await
-            .map_err(|e| format!("RPC error: {:?}", e))?
-            .ok_or_else(|| "manifest not found".to_string())?;
+            .map_err(|e| DaemonError::CasRpc(e.to_string()))?
+            .ok_or(DaemonError::ToolchainManifestNotFound(manifest_hash))?;
+
+        // On cache hit, toolchain_id comes from manifest; on download, it's in the result
+        let toolchain_id = result.toolchain_id.unwrap_or(manifest.toolchain_id);
 
         let info = ToolchainInfo {
             manifest_hash,
@@ -181,14 +179,17 @@ impl DaemonService {
         &self,
         paths: &[Utf8PathBuf],
         workspace_root: &camino::Utf8Path,
-    ) -> Result<Blake3Hash, String> {
+    ) -> Result<Blake3Hash> {
         let mut files = Vec::with_capacity(paths.len());
 
         for rel_path in paths {
             let abs_path = workspace_root.join(rel_path);
-            let contents = tokio::fs::read(&abs_path)
-                .await
-                .map_err(|e| format!("failed to read {}: {}", abs_path, e))?;
+            let contents = tokio::fs::read(&abs_path).await.map_err(|e| {
+                DaemonError::FileRead {
+                    path: abs_path.clone(),
+                    message: e.to_string(),
+                }
+            })?;
 
             files.push(TreeFile {
                 path: rel_path.to_string(),
@@ -202,17 +203,17 @@ impl DaemonService {
             .cas
             .ingest_tree(request)
             .await
-            .map_err(|e| format!("RPC error: {:?}", e))?;
+            .map_err(|e| DaemonError::CasRpc(e.to_string()))?;
 
         if !result.success {
-            return Err(result
-                .error
-                .unwrap_or_else(|| "tree ingestion failed".to_string()));
+            return Err(DaemonError::TreeIngestion(
+                result
+                    .error
+                    .unwrap_or_else(|| "tree ingestion failed".to_string()),
+            ));
         }
 
-        let manifest_hash = result
-            .manifest_hash
-            .ok_or_else(|| "no manifest hash returned".to_string())?;
+        let manifest_hash = result.manifest_hash.ok_or(DaemonError::NoManifestHash)?;
 
         debug!(
             manifest_hash = %manifest_hash.short_hex(),
@@ -231,7 +232,7 @@ impl DaemonService {
         name: String,
         version: String,
         checksum: String,
-    ) -> Result<(String, Blake3Hash), String> {
+    ) -> Result<(String, Blake3Hash)> {
         let spec = RegistrySpec {
             registry_url: "https://crates.io".to_string(),
             name: name.clone(),
@@ -244,13 +245,17 @@ impl DaemonService {
         let result = cas
             .ensure_registry_crate(spec)
             .await
-            .map_err(|e| format!("RPC error for {}@{}: {:?}", name, version, e))?;
+            .map_err(|e| DaemonError::CasRpc(e.to_string()))?;
 
         match result.status {
             EnsureStatus::Hit | EnsureStatus::Downloaded => {
-                let manifest_hash = result
-                    .manifest_hash
-                    .ok_or_else(|| format!("{}@{}: missing manifest_hash", name, version))?;
+                let manifest_hash =
+                    result
+                        .manifest_hash
+                        .ok_or_else(|| DaemonError::RegistryCrateNoManifest {
+                            name: name.clone(),
+                            version: version.clone(),
+                        })?;
 
                 debug!(
                     name = %name,
@@ -261,9 +266,13 @@ impl DaemonService {
 
                 Ok((format!("{}@{}", name, version), manifest_hash))
             }
-            EnsureStatus::Failed => Err(result
-                .error
-                .unwrap_or_else(|| format!("{}@{}: acquisition failed", name, version))),
+            EnsureStatus::Failed => Err(DaemonError::RegistryCrateAcquisition {
+                name,
+                version,
+                reason: result
+                    .error
+                    .unwrap_or_else(|| "acquisition failed".to_string()),
+            }),
         }
     }
 
@@ -271,7 +280,7 @@ impl DaemonService {
     async fn acquire_registry_crates(
         &self,
         graph: &CrateGraph,
-    ) -> Result<HashMap<String, Blake3Hash>, String> {
+    ) -> Result<HashMap<String, Blake3Hash>> {
         if !graph.has_registry_deps() {
             return Ok(HashMap::new());
         }
@@ -304,7 +313,7 @@ impl DaemonService {
     }
 
     /// Build a project.
-    pub async fn do_build(&self, request: BuildRequest) -> Result<BuildResult, String> {
+    pub async fn do_build(&self, request: BuildRequest) -> Result<BuildResult> {
         let project_path = &request.project_path;
         let total_start = std::time::Instant::now();
 
@@ -315,7 +324,7 @@ impl DaemonService {
 
         // Build the crate graph with lockfile support
         let graph = CrateGraph::build_with_lockfile(project_path)
-            .map_err(|e| format!("{:?}", miette::Report::new(e)))?;
+            .map_err(|e| DaemonError::CrateGraph(format!("{:?}", miette::Report::new(e))))?;
 
         info!(
             workspace_root = %graph.workspace_root,
@@ -340,10 +349,10 @@ impl DaemonService {
             target_triple.clone(),
             target_triple.clone(),
         )
-        .map_err(|e| format!("picante error: {}", e))?;
+        .map_err(|e| DaemonError::Picante(e.to_string()))?;
 
         RustToolchainManifest::set(&*db, rust_toolchain.manifest_hash)
-            .map_err(|e| format!("picante error: {}", e))?;
+            .map_err(|e| DaemonError::Picante(e.to_string()))?;
 
         BuildConfig::set(
             &*db,
@@ -351,7 +360,7 @@ impl DaemonService {
             target_triple.clone(),
             graph.workspace_root.to_string(),
         )
-        .map_err(|e| format!("picante error: {}", e))?;
+        .map_err(|e| DaemonError::Picante(e.to_string()))?;
 
         // Track compiled outputs for dependencies
         // Maps CrateId -> manifest_hash of the compiled output
@@ -370,11 +379,17 @@ impl DaemonService {
 
             // Compute source closure
             let crate_root_abs = graph.workspace_root.join(&crate_node.crate_root_rel);
-            let closure_paths = vx_rs::rust_source_closure(&crate_root_abs, &graph.workspace_root)
-                .map_err(|e| format_module_error(&e))?;
+            let closure_paths =
+                vx_rs::rust_source_closure(&crate_root_abs, &graph.workspace_root).map_err(
+                    |e| DaemonError::SourceClosure {
+                        crate_name: crate_node.crate_name.clone(),
+                        message: e.to_string(),
+                    },
+                )?;
 
-            let closure_hash = vx_rs::hash_source_closure(&closure_paths, &graph.workspace_root)
-                .map_err(|e| format!("failed to hash source closure: {}", e))?;
+            let closure_hash =
+                vx_rs::hash_source_closure(&closure_paths, &graph.workspace_root)
+                    .map_err(|e| DaemonError::SourceHash(e.to_string()))?;
 
             // Create RustCrate input
             let crate_id_hex = crate_node.id.short_hex();
@@ -387,25 +402,27 @@ impl DaemonService {
                 crate_node.crate_root_rel.to_string(),
                 closure_hash,
             )
-            .map_err(|e| format!("picante error: {}", e))?;
+            .map_err(|e| DaemonError::Picante(e.to_string()))?;
 
             // Collect dependency manifest hashes
             let deps: Vec<RustDep> = crate_node
                 .deps
                 .iter()
                 .map(|dep| {
-                    let manifest_hash = compiled_outputs.get(&dep.crate_id).ok_or_else(|| {
-                        format!(
-                            "dependency {} not yet compiled for {}",
-                            dep.extern_name, crate_node.crate_name
-                        )
-                    })?;
+                    let manifest_hash =
+                        compiled_outputs
+                            .get(&dep.crate_id)
+                            .ok_or_else(|| DaemonError::DependencyNotCompiled {
+                                dep_name: dep.extern_name.clone(),
+                                crate_name: crate_node.crate_name.clone(),
+                            })?;
 
                     // Look up dependency node to check if it's a registry crate
-                    let dep_node = graph
-                        .nodes
-                        .get(&dep.crate_id)
-                        .ok_or_else(|| format!("dependency {} node not found", dep.extern_name))?;
+                    let dep_node = graph.nodes.get(&dep.crate_id).ok_or_else(|| {
+                        DaemonError::DependencyNodeNotFound {
+                            dep_name: dep.extern_name.clone(),
+                        }
+                    })?;
 
                     let registry_crate_manifest = match &dep_node.source {
                         CrateSource::Registry { name, version, .. } => {
@@ -421,7 +438,7 @@ impl DaemonService {
                         registry_crate_manifest,
                     })
                 })
-                .collect::<Result<Vec<_>, String>>()?;
+                .collect::<Result<Vec<_>>>()?;
 
             // Compute cache key
             let dep_rlib_hashes: Vec<(String, Blake3Hash)> = deps
@@ -434,18 +451,16 @@ impl DaemonService {
                     if dep_rlib_hashes.is_empty() {
                         cache_key_compile_rlib(&*db, rust_crate)
                             .await
-                            .map_err(|e| format!("cache key error: {}", e))?
+                            .map_err(|e| DaemonError::CacheKey(e.to_string()))?
                     } else {
                         cache_key_compile_rlib_with_deps(&*db, rust_crate, dep_rlib_hashes)
                             .await
-                            .map_err(|e| format!("cache key error: {}", e))?
+                            .map_err(|e| DaemonError::CacheKey(e.to_string()))?
                     }
                 }
-                CrateType::Bin => {
-                    cache_key_compile_bin_with_deps(&*db, rust_crate, dep_rlib_hashes)
-                        .await
-                        .map_err(|e| format!("cache key error: {}", e))?
-                }
+                CrateType::Bin => cache_key_compile_bin_with_deps(&*db, rust_crate, dep_rlib_hashes)
+                    .await
+                    .map_err(|e| DaemonError::CacheKey(e.to_string()))?,
             };
 
             // Check cache
@@ -453,7 +468,7 @@ impl DaemonService {
                 .cas
                 .lookup(cache_key)
                 .await
-                .map_err(|e| format!("RPC error: {:?}", e))?
+                .map_err(|e| DaemonError::CasRpc(e.to_string()))?
             {
                 info!(
                     crate_name = %crate_node.crate_name,
@@ -489,25 +504,27 @@ impl DaemonService {
                     .exec
                     .compile_rust(compile_request)
                     .await
-                    .map_err(|e| format!("RPC error: {:?}", e))?;
+                    .map_err(|e| DaemonError::ExecRpc(e.to_string()))?;
 
                 if !result.success {
-                    return Err(format!(
-                        "compilation failed for {}: {}",
-                        crate_node.crate_name,
-                        result.error.unwrap_or(result.stderr)
-                    ));
+                    return Err(DaemonError::Compilation {
+                        crate_name: crate_node.crate_name.clone(),
+                        message: result.error.unwrap_or(result.stderr),
+                    });
                 }
 
-                let output_manifest = result
-                    .output_manifest
-                    .ok_or_else(|| "no output manifest returned".to_string())?;
+                let output_manifest =
+                    result
+                        .output_manifest
+                        .ok_or_else(|| DaemonError::NoOutputManifest {
+                            crate_name: crate_node.crate_name.clone(),
+                        })?;
 
                 // Publish to cache
                 self.cas
                     .publish(cache_key, output_manifest)
                     .await
-                    .map_err(|e| format!("RPC error: {:?}", e))?;
+                    .map_err(|e| DaemonError::CasRpc(e.to_string()))?;
 
                 any_rebuilt = true;
                 output_manifest
@@ -526,7 +543,10 @@ impl DaemonService {
 
                 tokio::fs::create_dir_all(&output_dir)
                     .await
-                    .map_err(|e| format!("failed to create output dir: {}", e))?;
+                    .map_err(|e| DaemonError::CreateDir {
+                        path: output_dir.clone(),
+                        message: e.to_string(),
+                    })?;
 
                 let output_path = output_dir.join(&crate_node.crate_name);
 
@@ -535,8 +555,8 @@ impl DaemonService {
                     .cas
                     .get_manifest(output_manifest)
                     .await
-                    .map_err(|e| format!("RPC error: {:?}", e))?
-                    .ok_or_else(|| "output manifest not found".to_string())?;
+                    .map_err(|e| DaemonError::CasRpc(e.to_string()))?
+                    .ok_or(DaemonError::OutputManifestNotFound(output_manifest))?;
 
                 for output in &manifest.outputs {
                     if output.logical == "bin" {
@@ -544,11 +564,14 @@ impl DaemonService {
                             .cas
                             .get_blob(output.blob)
                             .await
-                            .map_err(|e| format!("RPC error: {:?}", e))?
-                            .ok_or_else(|| "blob not found".to_string())?;
+                            .map_err(|e| DaemonError::CasRpc(e.to_string()))?
+                            .ok_or(DaemonError::BlobNotFound(output.blob))?;
 
                         vx_io::sync::atomic_write_executable(&output_path, &blob_data, true)
-                            .map_err(|e| format!("failed to write output: {}", e))?;
+                            .map_err(|e| DaemonError::WriteOutput {
+                                path: output_path.clone(),
+                                message: e.to_string(),
+                            })?;
 
                         final_output_path = Some(output_path.clone());
                         break;
@@ -585,9 +608,4 @@ impl DaemonService {
             error: None,
         })
     }
-}
-
-/// Format a module error
-fn format_module_error(e: &ModuleError) -> String {
-    format!("{}", e)
 }

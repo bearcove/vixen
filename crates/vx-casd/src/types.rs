@@ -25,6 +25,9 @@ pub(crate) struct CasServiceInner {
     /// Root directory for CAS storage (typically .vx/cas)
     pub(crate) root: Utf8PathBuf,
 
+    /// VX home directory (typically .vx) - parent of root, used for toolchain spec mappings
+    pub(crate) vx_home: Utf8PathBuf,
+
     /// Toolchain acquisition manager (handles inflight deduplication)
     pub(crate) toolchain_manager: ToolchainManager,
 

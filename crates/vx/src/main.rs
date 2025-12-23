@@ -127,7 +127,7 @@ async fn main() -> Result<()> {
     match cli.command {
         CliCommand::Build { release } => cmd_build(release).await,
         CliCommand::Kill => cmd_kill().await,
-        CliCommand::Clean => cmd_clean(),
+        CliCommand::Clean => cmd_clean().await,
         CliCommand::Explain(args) => cmd_explain(args),
     }
 }
@@ -264,20 +264,12 @@ async fn cmd_kill() -> Result<()> {
     }
 }
 
-fn cmd_clean() -> Result<()> {
+async fn cmd_clean() -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
     let vx_dir = cwd.join(".vx");
 
     // First, try to kill the daemon (best-effort, ignore errors since daemon may not be running)
-    if let Err(e) = tokio::runtime::Handle::try_current()
-        .ok()
-        .map(|h| h.block_on(cmd_kill()))
-        .unwrap_or_else(|| {
-            tokio::runtime::Runtime::new()
-                .map(|rt| rt.block_on(cmd_kill()))
-                .unwrap_or_else(|e| Err(eyre::eyre!("Failed to create runtime: {e}")))
-        })
-    {
+    if let Err(e) = cmd_kill().await {
         tracing::debug!("Failed to kill daemon during clean (may not be running): {e}");
     }
 

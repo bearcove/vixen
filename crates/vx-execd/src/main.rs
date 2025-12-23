@@ -11,10 +11,13 @@
 //! - Ingest outputs to CAS
 //! - Return output manifest hashes
 
+pub(crate) mod error;
 pub(crate) mod extract;
 pub(crate) mod registry;
 pub(crate) mod service;
 pub(crate) mod toolchain;
+
+use error::{ExecdError, Result as ExecdResult};
 
 use camino::Utf8PathBuf;
 use eyre::Result;
@@ -29,7 +32,7 @@ use crate::registry::RegistryMaterializer;
 /// Type alias for inflight materialization tracking
 type InflightMaterializations = Arc<
     tokio::sync::Mutex<
-        HashMap<Blake3Hash, Arc<tokio::sync::OnceCell<Result<Utf8PathBuf, String>>>>,
+        HashMap<Blake3Hash, Arc<tokio::sync::OnceCell<ExecdResult<Utf8PathBuf>>>>,
     >,
 >;
 
@@ -200,7 +203,7 @@ impl ExecService {
     pub(crate) async fn ensure_materialized(
         &self,
         manifest_hash: Blake3Hash,
-    ) -> Result<Utf8PathBuf, String> {
+    ) -> ExecdResult<Utf8PathBuf> {
         // Check if already materializing
         let cell = {
             let mut map = self.materializing.lock().await;
@@ -219,7 +222,7 @@ impl ExecService {
     async fn materialize_toolchain(
         &self,
         manifest_hash: Blake3Hash,
-    ) -> Result<Utf8PathBuf, String> {
+    ) -> ExecdResult<Utf8PathBuf> {
         self.materialize_toolchain_impl(manifest_hash).await
     }
 }

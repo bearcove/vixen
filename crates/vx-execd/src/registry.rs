@@ -13,6 +13,7 @@ use vx_cas_proto::{Blake3Hash, CasClient};
 use vx_cas_proto::{RegistryCrateManifest, RegistryMaterializationResult};
 use vx_tarball::Compression;
 
+use crate::error::{ExecdError, Result};
 use crate::InflightMaterializations;
 
 /// Registry materialization manager.
@@ -46,14 +47,14 @@ impl RegistryMaterializer {
         &self,
         manifest_hash: Blake3Hash,
         workspace_root: &Utf8Path,
-    ) -> Result<RegistryMaterializationResult, String> {
+    ) -> Result<RegistryMaterializationResult> {
         // Fetch manifest from CAS
         let manifest = self
             .cas
             .get_registry_manifest(manifest_hash)
             .await
-            .map_err(|e| format!("failed to fetch registry manifest: {:?}", e))?
-            .ok_or_else(|| format!("registry manifest {} not found in CAS", manifest_hash))?;
+            .map_err(|e| ExecdError::CasRpc(e.to_string()))?
+            .ok_or(ExecdError::RegistryCrateManifestNotFound(manifest_hash))?;
 
         let spec = &manifest.spec;
 
@@ -76,8 +77,12 @@ impl RegistryMaterializer {
                             "checksum mismatch, re-copying registry crate"
                         );
                         // Remove old copy
-                        std::fs::remove_dir_all(&workspace_local)
-                            .map_err(|e| format!("failed to remove stale workspace copy: {}", e))?;
+                        std::fs::remove_dir_all(&workspace_local).map_err(|e| {
+                            ExecdError::CreateDir {
+                                path: workspace_local.clone(),
+                                message: format!("failed to remove stale workspace copy: {}", e),
+                            }
+                        })?;
                         true
                     } else {
                         false
@@ -86,7 +91,10 @@ impl RegistryMaterializer {
                 Err(_) => {
                     // No checksum file, need to re-copy
                     std::fs::remove_dir_all(&workspace_local).map_err(|e| {
-                        format!("failed to remove workspace copy without checksum: {}", e)
+                        ExecdError::CreateDir {
+                            path: workspace_local.clone(),
+                            message: format!("failed to remove workspace copy without checksum: {}", e),
+                        }
                     })?;
                     true
                 }
@@ -98,23 +106,27 @@ impl RegistryMaterializer {
         if needs_copy {
             // Create parent directory
             if let Some(parent) = workspace_local.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("failed to create workspace directory: {}", e))?;
+                std::fs::create_dir_all(parent).map_err(|e| ExecdError::CreateDir {
+                    path: parent.to_owned(),
+                    message: e.to_string(),
+                })?;
             }
 
             // Use clonetree for efficient copy (reflink if supported)
             let options = clonetree::Options::default();
             clonetree::clone_tree(&global_path, &workspace_local, &options).map_err(|e| {
-                format!(
+                ExecdError::RegistryCrateExtraction(format!(
                     "failed to clone {} to {}: {}",
                     global_path, workspace_local, e
-                )
+                ))
             })?;
 
             // Write .checksum file
             let checksum_file = workspace_local.join(".checksum");
-            std::fs::write(&checksum_file, &spec.checksum)
-                .map_err(|e| format!("failed to write checksum file: {}", e))?;
+            std::fs::write(&checksum_file, &spec.checksum).map_err(|e| ExecdError::WriteFile {
+                path: checksum_file,
+                message: e.to_string(),
+            })?;
 
             info!(
                 name = %spec.name,
@@ -142,7 +154,7 @@ impl RegistryMaterializer {
     async fn ensure_global_cache(
         &self,
         manifest: &RegistryCrateManifest,
-    ) -> Result<Utf8PathBuf, String> {
+    ) -> Result<Utf8PathBuf> {
         let spec = &manifest.spec;
 
         // Global cache path: ~/.vx/registry/<name>/<version>/<checksum>/
@@ -186,8 +198,10 @@ impl RegistryMaterializer {
 
                 // Create parent directory
                 if let Some(parent) = lock_path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("failed to create cache directory: {}", e))?;
+                    std::fs::create_dir_all(parent).map_err(|e| ExecdError::CreateDir {
+                        path: parent.to_owned(),
+                        message: e.to_string(),
+                    })?;
                 }
 
                 // Simple file-based lock (create exclusive)
@@ -208,26 +222,38 @@ impl RegistryMaterializer {
                 // Create temp directory for extraction
                 let temp_path = cache_path.with_extension("tmp");
                 if temp_path.exists() {
-                    std::fs::remove_dir_all(&temp_path)
-                        .map_err(|e| format!("failed to remove stale temp dir: {}", e))?;
+                    std::fs::remove_dir_all(&temp_path).map_err(|e| ExecdError::CreateDir {
+                        path: temp_path.clone(),
+                        message: format!("failed to remove stale temp dir: {}", e),
+                    })?;
                 }
-                std::fs::create_dir_all(&temp_path)
-                    .map_err(|e| format!("failed to create temp dir: {}", e))?;
+                std::fs::create_dir_all(&temp_path).map_err(|e| ExecdError::CreateDir {
+                    path: temp_path.clone(),
+                    message: e.to_string(),
+                })?;
 
                 // Stream and extract tarball
                 extract_crate_tarball(cas, tarball_blob, &temp_path).await?;
 
                 // Atomic rename to final location
                 if cache_path.exists() {
-                    std::fs::remove_dir_all(&cache_path)
-                        .map_err(|e| format!("failed to remove stale cache dir: {}", e))?;
+                    std::fs::remove_dir_all(&cache_path).map_err(|e| ExecdError::CreateDir {
+                        path: cache_path.clone(),
+                        message: format!("failed to remove stale cache dir: {}", e),
+                    })?;
                 }
-                std::fs::rename(&temp_path, &cache_path)
-                    .map_err(|e| format!("failed to rename to cache dir: {}", e))?;
+                std::fs::rename(&temp_path, &cache_path).map_err(|e| {
+                    ExecdError::RegistryCrateExtraction(format!(
+                        "failed to rename to cache dir: {}",
+                        e
+                    ))
+                })?;
 
                 // Write materialized marker
-                std::fs::write(&materialized_marker, "")
-                    .map_err(|e| format!("failed to write materialized marker: {}", e))?;
+                std::fs::write(&materialized_marker, "").map_err(|e| ExecdError::WriteFile {
+                    path: materialized_marker,
+                    message: e.to_string(),
+                })?;
 
                 Ok(cache_path)
             }
@@ -244,18 +270,18 @@ async fn extract_crate_tarball(
     cas: &CasClient,
     blob_hash: Blake3Hash,
     dest: &Utf8Path,
-) -> Result<(), String> {
+) -> Result<()> {
     debug!(blob = %blob_hash, dest = %dest, "extracting .crate tarball");
 
     // Stream blob from CAS
     let mut stream = cas
         .stream_blob(blob_hash)
         .await
-        .map_err(|e| format!("failed to start blob stream: {:?}", e))?;
+        .map_err(|e| ExecdError::CasRpc(e.to_string()))?;
     let mut compressed_data = Vec::new();
 
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| format!("failed to stream blob: {:?}", e))?;
+        let chunk = chunk_result.map_err(|e| ExecdError::CasRpc(e.to_string()))?;
         compressed_data.extend_from_slice(&chunk);
     }
 
@@ -263,7 +289,7 @@ async fn extract_crate_tarball(
     let cursor = std::io::Cursor::new(compressed_data);
     vx_tarball::extract(cursor, dest, Compression::Gzip, 1)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| ExecdError::RegistryCrateExtraction(e.to_string()))
 }
 
 /// Simple file-based lock guard
@@ -281,7 +307,7 @@ impl Drop for LockGuard {
 }
 
 #[allow(dead_code)]
-fn acquire_lock(path: &Utf8Path) -> Result<LockGuard, String> {
+fn acquire_lock(path: &Utf8Path) -> Result<LockGuard> {
     use std::fs::OpenOptions;
 
     // Try to create the lock file exclusively
@@ -312,12 +338,21 @@ fn acquire_lock(path: &Utf8Path) -> Result<LockGuard, String> {
                     }
                     continue;
                 }
-                return Err(format!("failed to acquire lock {}: file exists", path));
+                return Err(ExecdError::LockAcquisition {
+                    path: path.to_owned(),
+                    reason: "file exists".to_string(),
+                });
             }
             Err(e) => {
-                return Err(format!("failed to acquire lock {}: {}", path, e));
+                return Err(ExecdError::LockAcquisition {
+                    path: path.to_owned(),
+                    reason: e.to_string(),
+                });
             }
         }
     }
-    Err(format!("failed to acquire lock {} after retries", path))
+    Err(ExecdError::LockAcquisition {
+        path: path.to_owned(),
+        reason: "failed after retries".to_string(),
+    })
 }

@@ -24,8 +24,11 @@ use vx_io::atomic_write;
 
 #[derive(Debug)]
 struct Args {
-    /// Storage root directory
+    /// Storage root directory (typically .vx/cas)
     root: Utf8PathBuf,
+
+    /// VX home directory (typically .vx)
+    vx_home: Utf8PathBuf,
 
     /// Bind address (host:port)
     bind: String,
@@ -44,6 +47,7 @@ impl Args {
 
         Ok(Args {
             root: Utf8PathBuf::from(root),
+            vx_home: Utf8PathBuf::from(vx_home),
             bind,
         })
     }
@@ -66,7 +70,7 @@ async fn main() -> Result<()> {
 
     // Initialize CAS service
     tracing::info!("Initializing CAS at {}", args.root);
-    let cas = CasService::new(args.root);
+    let cas = CasService::new(args.root, args.vx_home);
     cas.init().await?;
 
     // Start TCP server
@@ -97,10 +101,11 @@ async fn main() -> Result<()> {
 }
 
 impl CasService {
-    fn new(root: Utf8PathBuf) -> Self {
+    fn new(root: Utf8PathBuf, vx_home: Utf8PathBuf) -> Self {
         Self {
             inner: Arc::new(CasServiceInner {
                 root,
+                vx_home,
                 toolchain_manager: ToolchainManager::new(),
                 registry_manager: RegistryManager::new(),
                 download_semaphore: Arc::new(tokio::sync::Semaphore::new(32)),
@@ -153,7 +158,9 @@ impl CasService {
     }
 
     fn toolchains_spec_dir(&self) -> Utf8PathBuf {
-        self.root.join("toolchains/spec")
+        // Use vx_home (not CAS root) so toolchain specs are at ~/.vx/toolchains/spec/
+        // This matches where vx-execd materializes toolchains
+        self.vx_home.join("toolchains/spec")
     }
 
     fn spec_path(&self, spec_key: &ToolchainSpecKey) -> Utf8PathBuf {
@@ -203,6 +210,7 @@ impl CasService {
         tokio::fs::create_dir_all(self.manifests_dir()).await?;
         tokio::fs::create_dir_all(self.cache_dir()).await?;
         tokio::fs::create_dir_all(self.tmp_dir()).await?;
+        tokio::fs::create_dir_all(self.toolchains_spec_dir()).await?;
         Ok(())
     }
 
