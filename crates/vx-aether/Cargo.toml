@@ -28,5 +28,4 @@ vx-io = { workspace = true }
 vx-manifest = { workspace = true }
 vx-report = { workspace = true }
 vx-rs = { path = "../vx-rs" }
-vx-tarball = { path = "../vx-tarball" }
 vx-toolchain = { path = "../vx-toolchain" }

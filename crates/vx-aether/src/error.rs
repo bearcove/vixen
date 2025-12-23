@@ -41,13 +41,6 @@ pub enum AetherError {
     #[error("registry crate {name}@{version}: no manifest hash returned")]
     RegistryCrateNoManifest { name: String, version: String },
 
-    #[error("registry crate {name}@{version} materialization failed: {reason}")]
-    RegistryCrateMaterialization {
-        name: String,
-        version: String,
-        reason: String,
-    },
-
     // === Graph/Module Errors ===
     #[error("failed to build crate graph: {0}")]
     CrateGraph(String),

@@ -57,9 +57,6 @@ pub struct AetherService {
     /// Exec client for compilation
     exec: Arc<RheaClient>,
 
-    /// VX_HOME directory (for local materialization)
-    vx_home: Utf8PathBuf,
-
     /// The host triple of the execd machine (used for toolchain selection + cache keys).
     exec_host_triple: String,
 
@@ -93,7 +90,6 @@ impl AetherService {
         Self {
             cas,
             exec,
-            vx_home,
             exec_host_triple,
             db: Arc::new(Mutex::new(db)),
             picante_cache: cache_path,
@@ -316,151 +312,6 @@ impl AetherService {
         Ok(results.into_iter().collect())
     }
 
-    /// Materialize registry crates from CAS to local workspace.
-    /// Returns mapping of (name, version) -> workspace-relative path.
-    async fn materialize_registry_crates(
-        &self,
-        workspace_root: &Utf8PathBuf,
-        registry_manifests: &HashMap<(String, String), Blake3Hash>,
-    ) -> Result<HashMap<(String, String), Utf8PathBuf>> {
-        use futures_util::StreamExt;
-
-        if registry_manifests.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        info!(
-            crate_count = registry_manifests.len(),
-            "materializing registry crates"
-        );
-
-        let mut materialized_paths = HashMap::new();
-
-        for ((name, version), manifest_hash) in registry_manifests {
-            // Workspace-relative path: .vx/registry/<name>/<version>/
-            let workspace_rel = Utf8PathBuf::from(format!(".vx/registry/{}/{}", name, version));
-            let local_path = workspace_root.join(&workspace_rel);
-
-            // Check if already materialized with checksum
-            let checksum_file = local_path.join(".checksum");
-            if let Ok(existing_checksum) = tokio::fs::read_to_string(&checksum_file).await {
-                if existing_checksum.trim() == manifest_hash.to_hex() {
-                    debug!(
-                        name = %name,
-                        version = %version,
-                        "registry crate already materialized"
-                    );
-                    materialized_paths.insert((name.clone(), version.clone()), workspace_rel);
-                    continue;
-                }
-                // Checksum mismatch, remove and re-extract
-                if let Err(e) = tokio::fs::remove_dir_all(&local_path).await {
-                    debug!(
-                        name = %name,
-                        version = %version,
-                        error = %e,
-                        "failed to remove stale registry crate"
-                    );
-                }
-            }
-
-            // Fetch the registry crate manifest to get the tarball blob hash
-            let crate_manifest = self
-                .cas
-                .get_registry_manifest(*manifest_hash)
-                .await
-                .map_err(|e| AetherError::CasRpc(e.to_string()))?
-                .ok_or_else(|| AetherError::RegistryCrateNoManifest {
-                    name: name.clone(),
-                    version: version.clone(),
-                })?;
-
-            // Fetch the tarball blob from CAS
-            let mut stream = self
-                .cas
-                .stream_blob(crate_manifest.crate_tarball_blob)
-                .await
-                .map_err(|e| AetherError::CasRpc(e.to_string()))?;
-
-            let mut tarball_data = Vec::new();
-            while let Some(chunk_result) = stream.next().await {
-                let chunk = chunk_result.map_err(|e| AetherError::CasRpc(e.to_string()))?;
-                tarball_data.extend_from_slice(&chunk);
-            }
-
-            // Create parent directory
-            if let Some(parent) = local_path.parent() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| AetherError::RegistryCrateMaterialization {
-                        name: name.clone(),
-                        version: version.clone(),
-                        reason: format!("failed to create directory: {}", e),
-                    })?;
-            }
-
-            // Extract to temp directory first, then rename atomically
-            let temp_path = local_path.with_extension("tmp");
-            if tokio::fs::try_exists(&temp_path).await.unwrap_or(false) {
-                let _ = tokio::fs::remove_dir_all(&temp_path).await;
-            }
-            tokio::fs::create_dir_all(&temp_path)
-                .await
-                .map_err(|e| AetherError::RegistryCrateMaterialization {
-                    name: name.clone(),
-                    version: version.clone(),
-                    reason: format!("failed to create temp directory: {}", e),
-                })?;
-
-            // Extract tarball (.crate files are gzipped tarballs with strip_components=1)
-            let cursor = std::io::Cursor::new(tarball_data);
-            vx_tarball::extract(cursor, &temp_path, vx_tarball::Compression::Gzip, 1)
-                .await
-                .map_err(|e| AetherError::RegistryCrateMaterialization {
-                    name: name.clone(),
-                    version: version.clone(),
-                    reason: format!("failed to extract tarball: {}", e),
-                })?;
-
-            // Write checksum file
-            tokio::fs::write(temp_path.join(".checksum"), manifest_hash.to_hex())
-                .await
-                .map_err(|e| AetherError::RegistryCrateMaterialization {
-                    name: name.clone(),
-                    version: version.clone(),
-                    reason: format!("failed to write checksum: {}", e),
-                })?;
-
-            // Atomic rename to final location
-            if tokio::fs::try_exists(&local_path).await.unwrap_or(false) {
-                let _ = tokio::fs::remove_dir_all(&local_path).await;
-            }
-            tokio::fs::rename(&temp_path, &local_path)
-                .await
-                .map_err(|e| AetherError::RegistryCrateMaterialization {
-                    name: name.clone(),
-                    version: version.clone(),
-                    reason: format!("failed to rename: {}", e),
-                })?;
-
-            debug!(
-                name = %name,
-                version = %version,
-                path = %workspace_rel,
-                "materialized registry crate"
-            );
-
-            materialized_paths.insert((name.clone(), version.clone()), workspace_rel);
-        }
-
-        info!(
-            materialized_count = materialized_paths.len(),
-            "all registry crates materialized"
-        );
-
-        Ok(materialized_paths)
-    }
-
     /// Build a project.
     pub async fn do_build(&self, request: BuildRequest) -> Result<BuildResult> {
         let project_path = &request.project_path;
@@ -472,7 +323,7 @@ impl AetherService {
         let target_triple = self.exec_host_triple.clone();
 
         // Build the crate graph with lockfile support (can happen while toolchain downloads)
-        let mut graph = CrateGraph::build_with_lockfile(project_path)
+        let graph = CrateGraph::build_with_lockfile(project_path)
             .map_err(|e| AetherError::CrateGraph(format!("{:?}", miette::Report::new(e))))?;
 
         // Acquire registry crates in parallel (can happen while toolchain downloads)
@@ -481,18 +332,6 @@ impl AetherService {
 
         // Now wait for both toolchain and registry crates
         let (rust_toolchain, registry_manifests) = tokio::try_join!(toolchain_fut, registry_fut)?;
-
-        // Materialize registry crates locally so we can parse their Cargo.toml files
-        let materialized_paths = self
-            .materialize_registry_crates(&graph.workspace_root, &registry_manifests)
-            .await?;
-
-        // Finalize the graph with registry crate information (parses their manifests, builds topo order)
-        if !materialized_paths.is_empty() {
-            graph
-                .finalize_with_registry(&materialized_paths)
-                .map_err(|e| AetherError::CrateGraph(format!("{:?}", miette::Report::new(e))))?;
-        }
 
         info!(
             workspace_root = %graph.workspace_root,

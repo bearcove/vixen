@@ -638,11 +638,76 @@ impl CrateGraph {
             nodes.insert(id, node);
         }
 
-        // Phase 5: Resolve path dependency edges (registry deps resolved in finalize)
+        // Phase 5: Create stub nodes for registry crates (from lockfile)
+        // These are minimal nodes just for topo order computation.
+        // Rhea will determine edition/lib_path when materializing.
+        let mut registry_id_map: HashMap<(String, String), CrateId> = HashMap::new();
+        if let Some(ref reachable) = reachable_packages {
+            for info in &registry_crates {
+                let id = CrateId::for_registry(&info.name, &info.version, &info.checksum);
+                let crate_name = info.name.replace('-', "_");
+
+                let source = CrateSource::Registry {
+                    name: info.name.clone(),
+                    version: info.version.clone(),
+                    checksum: info.checksum.clone(),
+                };
+
+                // Stub node - edition/crate_root are placeholders, rhea determines them
+                let node = CrateNode {
+                    id,
+                    package_name: info.name.clone(),
+                    crate_name,
+                    source,
+                    workspace_rel: Utf8PathBuf::from(format!(
+                        ".vx/registry/{}/{}",
+                        info.name, info.version
+                    )),
+                    crate_root_rel: Utf8PathBuf::from("src/lib.rs"), // Placeholder
+                    edition: Edition::E2021,                         // Placeholder
+                    crate_type: CrateType::Lib,
+                    deps: Vec::new(), // Filled in below
+                    build_script_rel: None,
+                    build_script_output: None,
+                };
+
+                registry_id_map.insert((info.name.clone(), info.version.clone()), id);
+                nodes.insert(id, node);
+            }
+
+            // Phase 5b: Resolve registry-to-registry deps from lockfile
+            for info in &registry_crates {
+                let id = registry_id_map[&(info.name.clone(), info.version.clone())];
+                let pkg = reachable
+                    .get_package(&info.name, &info.version)
+                    .expect("registry crate must be in reachable");
+
+                let mut deps: Vec<DepEdge> = Vec::new();
+                for dep_spec in &pkg.dependencies {
+                    let dep_name = dep_spec.split_whitespace().next().unwrap_or(dep_spec);
+                    if let Some(dep_pkg) = reachable.find_dependency(dep_spec) {
+                        if dep_pkg.is_registry() {
+                            let dep_key = (dep_pkg.name.clone(), dep_pkg.version.clone());
+                            if let Some(&dep_id) = registry_id_map.get(&dep_key) {
+                                deps.push(DepEdge {
+                                    extern_name: dep_name.replace('-', "_"),
+                                    crate_id: dep_id,
+                                });
+                            }
+                        }
+                    }
+                }
+                deps.sort_by(|a, b| a.extern_name.cmp(&b.extern_name));
+                nodes.get_mut(&id).unwrap().deps = deps;
+            }
+        }
+
+        // Phase 6: Resolve path dependency edges
         for (crate_dir, manifest) in &manifests {
             let crate_id = dir_to_id[crate_dir];
             let mut deps: Vec<DepEdge> = Vec::new();
 
+            // Path deps (local crates)
             for dep in &manifest.deps {
                 let dep_dir = crate_dir.join(&dep.path).canonicalize_utf8().map_err(|e| {
                     CrateGraphError::CanonicalizationError {
@@ -672,18 +737,40 @@ impl CrateGraph {
                 });
             }
 
+            // Version deps (registry crates) - resolve via lockfile
+            if let Some(ref reachable) = reachable_packages {
+                if let Some(path_pkg) = reachable.find_path_package(&manifest.name) {
+                    for version_dep in &manifest.version_deps {
+                        // Find this dep in the lockfile's dependency list for this package
+                        for dep_spec in &path_pkg.dependencies {
+                            let dep_name = dep_spec.split_whitespace().next().unwrap_or(dep_spec);
+                            if dep_name == version_dep.name {
+                                if let Some(dep_pkg) = reachable.find_dependency(dep_spec) {
+                                    if dep_pkg.is_registry() {
+                                        let dep_key =
+                                            (dep_pkg.name.clone(), dep_pkg.version.clone());
+                                        if let Some(&dep_id) = registry_id_map.get(&dep_key) {
+                                            deps.push(DepEdge {
+                                                extern_name: version_dep.name.replace('-', "_"),
+                                                crate_id: dep_id,
+                                            });
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             deps.sort_by(|a, b| a.extern_name.cmp(&b.extern_name));
             nodes.get_mut(&crate_id).unwrap().deps = deps;
         }
 
-        // Phase 6: Topological sort (partial - only path crates)
+        // Phase 7: Topological sort (now includes registry crates)
         let root_crate = dir_to_id[&invocation_dir];
-        let topo_order = if registry_crates.is_empty() {
-            topological_sort(&nodes, root_crate)?
-        } else {
-            // Will be recomputed in finalize_with_registry
-            Vec::new()
-        };
+        let topo_order = topological_sort(&nodes, root_crate)?;
 
         Ok(CrateGraph {
             workspace_root,
