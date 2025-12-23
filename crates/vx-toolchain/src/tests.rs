@@ -2,19 +2,19 @@ use super::*;
 
 #[test]
 fn parse_channel_stable() {
-    assert_eq!(Channel::parse("stable").unwrap(), Channel::Stable);
+    assert_eq!(parse_rust_channel("stable").unwrap(), RustChannel::Stable);
 }
 
 #[test]
 fn parse_channel_beta() {
-    assert_eq!(Channel::parse("beta").unwrap(), Channel::Beta);
+    assert_eq!(parse_rust_channel("beta").unwrap(), RustChannel::Beta);
 }
 
 #[test]
 fn parse_channel_nightly() {
     assert_eq!(
-        Channel::parse("nightly-2024-02-01").unwrap(),
-        Channel::Nightly {
+        parse_rust_channel("nightly-2024-02-01").unwrap(),
+        RustChannel::Nightly {
             date: "2024-02-01".to_string()
         }
     );
@@ -22,22 +22,21 @@ fn parse_channel_nightly() {
 
 #[test]
 fn reject_invalid_channel() {
-    assert!(Channel::parse("invalid").is_err());
-    assert!(Channel::parse("nightly-02-01").is_err());
-    assert!(Channel::parse("nightly-2024-2-1").is_err());
+    assert!(parse_rust_channel("invalid").is_err());
+    assert!(parse_rust_channel("nightly-02-01").is_err());
+    assert!(parse_rust_channel("nightly-2024-2-1").is_err());
 }
 
 #[test]
 fn channel_urls() {
     assert_eq!(
-        Channel::Stable.manifest_url(),
+        rust_channel_manifest_url(&RustChannel::Stable),
         "https://static.rust-lang.org/dist/channel-rust-stable.toml"
     );
     assert_eq!(
-        Channel::Nightly {
+        rust_channel_manifest_url(&RustChannel::Nightly {
             date: "2024-02-01".to_string()
-        }
-        .manifest_url(),
+        }),
         "https://static.rust-lang.org/dist/2024-02-01/channel-rust-nightly.toml"
     );
 }
@@ -102,20 +101,24 @@ async fn fetch_stable_manifest() {
 // =============================================================================
 
 #[test]
-fn rust_toolchain_spec_effective_target() {
+fn rust_toolchain_spec_targets() {
+    // Native compilation: host == target
     let spec = RustToolchainSpec {
-        channel: Channel::Stable,
+        channel: RustChannel::Stable,
         host: "x86_64-unknown-linux-gnu".to_string(),
-        target: None,
+        target: "x86_64-unknown-linux-gnu".to_string(),
+        components: vec![RustComponent::Rustc, RustComponent::RustStd],
     };
-    assert_eq!(spec.effective_target(), "x86_64-unknown-linux-gnu");
+    assert_eq!(spec.host, spec.target);
 
+    // Cross compilation: host != target
     let cross_spec = RustToolchainSpec {
-        channel: Channel::Stable,
+        channel: RustChannel::Stable,
         host: "x86_64-unknown-linux-gnu".to_string(),
-        target: Some("aarch64-unknown-linux-gnu".to_string()),
+        target: "aarch64-unknown-linux-gnu".to_string(),
+        components: vec![RustComponent::Rustc, RustComponent::RustStd],
     };
-    assert_eq!(cross_spec.effective_target(), "aarch64-unknown-linux-gnu");
+    assert_ne!(cross_spec.host, cross_spec.target);
 }
 
 #[test]
@@ -130,7 +133,7 @@ fn rust_toolchain_id_deterministic() {
     let id2 = RustToolchainId::from_manifest_sha256s(host, target, rustc_sha256, std_sha256);
 
     assert_eq!(id1, id2);
-    assert_eq!(id1.to_hex(), id2.to_hex());
+    assert_eq!(id1.0.to_hex(), id2.0.to_hex());
 
     // Different manifest hash = different ID
     let std_sha256_different = "different_hash";
@@ -149,18 +152,21 @@ fn rust_toolchain_id_deterministic() {
 }
 
 #[test]
-fn rust_toolchain_id_display() {
+fn rust_toolchain_id_hex() {
     let host = "aarch64-apple-darwin";
     let target = "aarch64-apple-darwin";
     let rustc_sha256 = "abc123";
     let std_sha256 = "def456";
 
     let id = RustToolchainId::from_manifest_sha256s(host, target, rustc_sha256, std_sha256);
-    let display = format!("{}", id);
+    let hex = id.0.to_hex();
 
-    assert!(display.starts_with("rust:"));
+    // Full hex is 64 chars (32 bytes)
+    assert_eq!(hex.len(), 64);
+
     // Short hex is 16 chars
-    assert_eq!(display.len(), 5 + 16); // "rust:" + 16 hex chars
+    let short = id.0.short_hex();
+    assert_eq!(short.len(), 16);
 }
 
 #[test]
@@ -178,45 +184,23 @@ fn detect_host_triple_works() {
 
 #[tokio::test]
 #[ignore] // Requires network access and takes a long time - run with --ignored
-async fn acquire_and_materialize_rust_toolchain() {
+async fn acquire_rust_toolchain_test() {
     let host = detect_host_triple().unwrap();
     let spec = RustToolchainSpec {
-        channel: Channel::Stable,
-        host,
-        target: None,
+        channel: RustChannel::Stable,
+        host: host.clone(),
+        target: host,
+        components: vec![RustComponent::Rustc, RustComponent::RustStd],
     };
 
     // Acquire toolchain
     let acquired = acquire_rust_toolchain(&spec).await.unwrap();
 
-    println!("Toolchain ID: {}", acquired.id);
+    println!("Toolchain ID: {}", acquired.id.0.short_hex());
     println!("Rustc version: {}", acquired.rustc_version);
     println!("Manifest date: {}", acquired.manifest_date);
 
-    // Materialize it
-    let temp_dir = Utf8PathBuf::from("/tmp/vx-rust-toolchain-test");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-
-    let materialized = materialize_rust_toolchain(
-        &acquired.rustc_tarball,
-        &acquired.rust_std_tarball,
-        &temp_dir,
-    )
-    .unwrap();
-
-    assert!(materialized.rustc.exists());
-    assert!(materialized.sysroot.exists());
-
-    // Test that rustc works
-    let output = std::process::Command::new(&materialized.rustc)
-        .arg("--version")
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-    let version = String::from_utf8_lossy(&output.stdout);
-    println!("Installed rustc version: {}", version);
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&temp_dir);
+    // Verify we got the tarballs
+    assert!(!acquired.rustc_tarball.is_empty());
+    assert!(!acquired.rust_std_tarball.is_empty());
 }

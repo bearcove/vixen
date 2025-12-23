@@ -767,7 +767,7 @@ dependencies = [
 [[package]]
 name = "facet-postcard"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#5add65fb36a664c4547b69e3da3e8f9db860975a"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -3410,6 +3410,7 @@ dependencies = [
  "camino",
  "facet",
  "facet-json",
+ "ulid",
  "vx-cas-proto",
 ]
 
@@ -3913,6 +3914,10 @@ dependencies = [
  "libc",
  "rustix",
 ]
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
 
 [[package]]
 name = "xz2"

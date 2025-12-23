@@ -62,6 +62,12 @@ impl Daemon for DaemonHandle {
             },
         }
     }
+
+    async fn shutdown(&self) {
+        tracing::info!("Shutdown requested");
+        // Exit the process - the spawn tracker will clean up child processes
+        std::process::exit(0);
+    }
 }
 
 #[derive(Debug)]

@@ -42,4 +42,7 @@ pub struct BuildResult {
 pub trait Daemon {
     /// Build a project
     async fn build(&self, request: BuildRequest) -> BuildResult;
+
+    /// Shutdown the daemon gracefully
+    async fn shutdown(&self);
 }
