@@ -22,7 +22,7 @@ vx-tarball = { path = "crates/vx-tarball" }
 vx-toolchain = { path = "crates/vx-toolchain" }
 
 # facet ecosystem
-facet = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jiff02"] }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jiff02", "camino"] }
 facet-args = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-json = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-toml = { git = "https://github.com/facet-rs/facet", branch = "main" }
