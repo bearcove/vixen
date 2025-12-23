@@ -593,7 +593,7 @@ pub struct Badge {
 
 impl CargoManifest {
     /// Parse Cargo.toml from a string
-    pub fn from_str(contents: &str) -> Result<Self, String> {
+    pub fn parse(contents: &str) -> Result<Self, String> {
         facet_toml::from_str(contents).map_err(|e| e.to_string())
     }
 
@@ -602,6 +602,6 @@ impl CargoManifest {
         path: impl AsRef<std::path::Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(path)?;
-        Ok(Self::from_str(&contents)?)
+        Ok(Self::parse(&contents)?)
     }
 }

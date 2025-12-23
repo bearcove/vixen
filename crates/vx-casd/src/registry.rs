@@ -211,11 +211,11 @@ impl CasService {
         let path = self.registry_spec_path(spec_key);
         let parent = path.parent().expect("spec path has parent").to_path_buf();
         let manifest_hex = manifest_hash.to_hex();
-        
+
         tokio::task::spawn_blocking(move || {
             use std::fs::{File, OpenOptions};
             use std::io::Write;
-            
+
             std::fs::create_dir_all(&parent)?;
 
             match OpenOptions::new().write(true).create_new(true).open(&path) {
@@ -255,8 +255,9 @@ impl CasService {
         let path = self.manifest_path(&hash);
 
         if !path.exists() {
-            // FIXME: why is this ignoring errors?
-            let _ = atomic_write(&path, json.as_bytes());
+            if let Err(e) = atomic_write(&path, json.as_bytes()).await {
+                tracing::warn!("failed to write registry manifest to {}: {}", path, e);
+            }
         }
 
         hash

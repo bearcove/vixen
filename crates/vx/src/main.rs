@@ -10,7 +10,7 @@ use owo_colors::OwoColorize;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-use vx_daemon_proto::{BuildRequest,  DaemonClient};
+use vx_daemon_proto::{BuildRequest, DaemonClient};
 use vx_report::{CacheOutcome, ReportStore, RunDiff};
 
 /// vx - Build execution engine with deterministic caching
@@ -23,6 +23,65 @@ struct Cli {
     /// Command to run
     #[facet(args::subcommand)]
     command: CliCommand,
+}
+
+/// Options for displaying the explain report
+#[derive(Debug, Clone, Copy)]
+struct ReportDisplayOptions {
+    /// Show all nodes including cache hits
+    show_all: bool,
+
+    /// Show verbose output (full hashes, unchanged deps)
+    verbose: bool,
+
+    /// Show only fanout analysis
+    fanout_only: bool,
+
+    /// Show detailed input diffs
+    show_inputs: bool,
+
+    /// Show detailed dependency diffs
+    show_deps: bool,
+}
+
+/// Arguments for the `explain` subcommand
+#[derive(Facet, Debug)]
+struct ExplainArgs {
+    /// Show all nodes including cache hits
+    #[facet(args::named)]
+    all: bool,
+
+    /// Show verbose output (full hashes, unchanged deps)
+    #[facet(args::named, args::short = 'v')]
+    verbose: bool,
+
+    /// Explain only this specific node ID
+    #[facet(args::named)]
+    node: Option<String>,
+
+    /// Show only fanout analysis
+    #[facet(args::named)]
+    fanout: bool,
+
+    /// Show detailed input diffs
+    #[facet(args::named)]
+    inputs: bool,
+
+    /// Show detailed dependency diffs
+    #[facet(args::named)]
+    deps: bool,
+
+    /// Output in JSON format
+    #[facet(args::named)]
+    json: bool,
+
+    /// Compare last two builds and show what changed
+    #[facet(args::named)]
+    diff: bool,
+
+    /// Show details of the last cache miss
+    #[facet(args::named)]
+    last_miss: bool,
 }
 
 #[derive(Facet, Debug)]
@@ -42,43 +101,7 @@ enum CliCommand {
     Clean,
 
     /// Explain the last build
-    Explain {
-        /// Show all nodes including cache hits
-        #[facet(args::named)]
-        all: bool,
-
-        /// Show verbose output (full hashes, unchanged deps)
-        #[facet(args::named, args::short = 'v')]
-        verbose: bool,
-
-        /// Explain only this specific node ID
-        #[facet(args::named)]
-        node: Option<String>,
-
-        /// Show only fanout analysis
-        #[facet(args::named)]
-        fanout: bool,
-
-        /// Show detailed input diffs
-        #[facet(args::named)]
-        inputs: bool,
-
-        /// Show detailed dependency diffs
-        #[facet(args::named)]
-        deps: bool,
-
-        /// Output in JSON format
-        #[facet(args::named)]
-        json: bool,
-
-        /// Compare last two builds and show what changed
-        #[facet(args::named)]
-        diff: bool,
-
-        /// Show details of the last cache miss
-        #[facet(args::named)]
-        last_miss: bool,
-    },
+    Explain(ExplainArgs),
 }
 
 fn init_tracing() {
@@ -123,30 +146,8 @@ async fn main() -> Result<()> {
         CliCommand::Build { release } => cmd_build(release).await,
         CliCommand::Kill => cmd_kill().await,
         CliCommand::Clean => cmd_clean(),
-        CliCommand::Explain {
-            all,
-            verbose,
-            node,
-            fanout,
-            inputs,
-            deps,
-            json,
-            diff,
-            last_miss,
-        } => cmd_explain(
-            all, verbose, node, fanout, inputs, deps, json, diff, last_miss,
-        ),
+        CliCommand::Explain(args) => cmd_explain(args),
     }
-}
-
-fn get_vx_home() -> Result<Utf8PathBuf> {
-    // Check VX_HOME env var first, then fall back to ~/.vx
-    if let Ok(vx_home) = std::env::var("VX_HOME") {
-        return Ok(Utf8PathBuf::from(vx_home));
-    }
-
-    let home = std::env::var("HOME").map_err(|_| eyre::eyre!("HOME not set"))?;
-    Ok(Utf8PathBuf::from(home).join(".vx"))
 }
 
 /// Display a hash in short form (first 8 hex chars) unless verbose
@@ -286,17 +287,7 @@ fn cmd_clean() -> Result<()> {
     Ok(())
 }
 
-fn cmd_explain(
-    show_all: bool,
-    verbose: bool,
-    node_filter: Option<String>,
-    fanout_only: bool,
-    show_inputs: bool,
-    show_deps: bool,
-    output_json: bool,
-    show_diff: bool,
-    show_last_miss: bool,
-) -> Result<()> {
+fn cmd_explain(args: ExplainArgs) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
     let store = ReportStore::new(&cwd);
 
@@ -311,7 +302,7 @@ fn cmd_explain(
     };
 
     // Handle --diff: compare last two builds
-    if show_diff {
+    if args.diff {
         let Some(prev_report) = store.load_previous()? else {
             println!(
                 "{} Need at least two builds to show diff. Run {} again.",
@@ -324,38 +315,32 @@ fn cmd_explain(
     }
 
     // Handle --last-miss: show details of the last cache miss
-    if show_last_miss {
+    if args.last_miss {
         return cmd_explain_last_miss(&report);
     }
 
     // Load previous report for diffing deps
     let prev_report = store.load_previous().ok().flatten();
 
-    if output_json {
-        cmd_explain_json(&report, prev_report.as_ref(), node_filter)
+    if args.json {
+        cmd_explain_json(&report, prev_report.as_ref(), args.node.clone())
     } else {
-        cmd_explain_report(
-            &report,
-            prev_report.as_ref(),
-            show_all,
-            verbose,
-            node_filter,
-            fanout_only,
-            show_inputs,
-            show_deps,
-        )
+        let options = ReportDisplayOptions {
+            show_all: args.all,
+            verbose: args.verbose,
+            fanout_only: args.fanout,
+            show_inputs: args.inputs,
+            show_deps: args.deps,
+        };
+        cmd_explain_report(&report, prev_report.as_ref(), args.node.clone(), options)
     }
 }
 
 fn cmd_explain_report(
     report: &vx_report::BuildReport,
     prev_report: Option<&vx_report::BuildReport>,
-    show_all: bool,
-    verbose: bool,
     node_filter: Option<String>,
-    fanout_only: bool,
-    _show_inputs: bool,
-    _show_deps: bool,
+    options: ReportDisplayOptions,
 ) -> Result<()> {
     use std::collections::HashMap;
 
@@ -383,12 +368,12 @@ fn cmd_explain_report(
     // Show toolchains
     if let Some(ref rust_tc) = report.toolchains.rust {
         let version_str = rust_tc.version.as_deref().unwrap_or("unknown");
-        let id_short = short_hex(&rust_tc.id, verbose);
+        let id_short = short_hex(&rust_tc.id, options.verbose);
         println!("  {} {} ({})", "Rust:".dimmed(), version_str, id_short);
     }
     if let Some(ref zig_tc) = report.toolchains.zig {
         let version_str = zig_tc.version.as_deref().unwrap_or("unknown");
-        let id_short = short_hex(&zig_tc.id, verbose);
+        let id_short = short_hex(&zig_tc.id, options.verbose);
         println!("  {} {} ({})", "Zig:".dimmed(), version_str, id_short);
     }
 
@@ -404,8 +389,8 @@ fn cmd_explain_report(
         .unwrap_or_default();
 
     // Handle fanout-only mode
-    if fanout_only {
-        print_fanout_analysis(report, verbose);
+    if options.fanout_only {
+        print_fanout_analysis(report, options.verbose);
         return Ok(());
     }
 
@@ -417,9 +402,10 @@ fn cmd_explain_report(
     for node in &report.nodes {
         // Apply node filter if specified
         if let Some(ref filter) = node_filter
-            && &node.node_id != filter {
-                continue;
-            }
+            && &node.node_id != filter
+        {
+            continue;
+        }
 
         match &node.cache {
             CacheOutcome::Miss { .. } => {
@@ -442,7 +428,7 @@ fn cmd_explain_report(
     if !failures.is_empty() {
         println!("{}", "Failures:".red().bold());
         for node in &failures {
-            print_node(node, None, verbose);
+            print_node(node, None, options.verbose);
         }
         println!();
     }
@@ -453,23 +439,23 @@ fn cmd_explain_report(
         println!();
         for node in &misses {
             let prev_node = prev_nodes.get(node.node_id.as_str()).copied();
-            print_node_explanation(node, prev_node, verbose);
+            print_node_explanation(node, prev_node, options.verbose);
         }
         println!();
     }
 
     // Compute and print fanout
     if !misses.is_empty() {
-        print_fanout_analysis(report, verbose);
+        print_fanout_analysis(report, options.verbose);
     }
 
     // Summary of hits (unless --all)
-    if !show_all && !hits.is_empty() {
+    if !options.show_all && !hits.is_empty() {
         println!("{} {} cached", "Cache hits:".green().bold(), hits.len());
-    } else if show_all && !hits.is_empty() {
+    } else if options.show_all && !hits.is_empty() {
         println!("{}", "Cache hits:".green().bold());
         for node in &hits {
-            print_node(node, None, verbose);
+            print_node(node, None, options.verbose);
         }
     }
 
@@ -736,9 +722,10 @@ fn cmd_explain_summary(report: &vx_report::BuildReport) -> Result<()> {
     println!("  {} {}", "Target:".dimmed(), report.target_triple);
 
     if let Some(rust) = &report.toolchains.rust
-        && let Some(version) = &rust.version {
-            println!("  {} {}", "Rust:".dimmed(), version);
-        }
+        && let Some(version) = &rust.version
+    {
+        println!("  {} {}", "Rust:".dimmed(), version);
+    }
 
     // Summary stats
     let hits = report.cache_hits();
@@ -965,9 +952,10 @@ fn cmd_explain_json(
     for node in &report.nodes {
         // Apply node filter if specified
         if let Some(ref filter) = node_filter
-            && &node.node_id != filter {
-                continue;
-            }
+            && &node.node_id != filter
+        {
+            continue;
+        }
 
         let prev_node = prev_nodes.get(node.node_id.as_str()).copied();
 

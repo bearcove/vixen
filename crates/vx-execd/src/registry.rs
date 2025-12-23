@@ -13,9 +13,13 @@ use vx_cas_proto::{Blake3Hash, CasClient};
 use vx_cas_proto::{RegistryCrateManifest, RegistryMaterializationResult};
 use vx_tarball::Compression;
 
+use crate::InflightMaterializations;
+
 /// Registry materialization manager.
 ///
 /// Handles global cache extraction and workspace-local copying.
+/// TODO: Wire this up - needs RustDep to include registry_crate_manifest field
+#[allow(dead_code)]
 pub struct RegistryMaterializer {
     cas: Arc<CasClient>,
 
@@ -23,13 +27,10 @@ pub struct RegistryMaterializer {
     global_cache_dir: Utf8PathBuf,
 
     /// In-flight global cache materializations (keyed by manifest_hash)
-    materializing: Arc<
-        tokio::sync::Mutex<
-            HashMap<Blake3Hash, Arc<tokio::sync::OnceCell<Result<Utf8PathBuf, String>>>>,
-        >,
-    >,
+    materializing: InflightMaterializations,
 }
 
+#[allow(dead_code)]
 impl RegistryMaterializer {
     pub fn new(cas: Arc<CasClient>, global_cache_dir: Utf8PathBuf) -> Self {
         Self {
@@ -241,6 +242,7 @@ impl RegistryMaterializer {
 
 /// Extract a .crate tarball (gzipped tar) from CAS to a destination directory.
 /// Uses strip_components=1 to remove the top-level <name>-<version>/ directory.
+#[allow(dead_code)]
 async fn extract_crate_tarball(
     cas: &CasClient,
     blob_hash: Blake3Hash,
@@ -268,6 +270,7 @@ async fn extract_crate_tarball(
 }
 
 /// Simple file-based lock guard
+#[allow(dead_code)]
 struct LockGuard {
     path: Utf8PathBuf,
 }
@@ -278,6 +281,7 @@ impl Drop for LockGuard {
     }
 }
 
+#[allow(dead_code)]
 fn acquire_lock(path: &Utf8Path) -> Result<LockGuard, String> {
     use std::fs::OpenOptions;
 
@@ -301,13 +305,12 @@ fn acquire_lock(path: &Utf8Path) -> Result<LockGuard, String> {
                 // Check if lock is stale (older than 5 minutes)
                 if let Ok(metadata) = std::fs::metadata(path)
                     && let Ok(modified) = metadata.modified()
-                        && modified.elapsed().unwrap_or_default()
-                            > std::time::Duration::from_secs(300)
-                        {
-                            warn!(path = %path, "removing stale lock file");
-                            let _ = std::fs::remove_file(path);
-                            continue;
-                        }
+                    && modified.elapsed().unwrap_or_default() > std::time::Duration::from_secs(300)
+                {
+                    warn!(path = %path, "removing stale lock file");
+                    let _ = std::fs::remove_file(path);
+                    continue;
+                }
                 return Err(format!("failed to acquire lock {}: file exists", path));
             }
             Err(e) => {

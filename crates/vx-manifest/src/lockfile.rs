@@ -118,11 +118,11 @@ impl Lockfile {
             path: path.to_owned(),
             source: e,
         })?;
-        Self::from_str(&contents)
+        Self::parse(&contents)
     }
 
     /// Parse Cargo.lock content
-    pub fn from_str(contents: &str) -> Result<Self, LockfileError> {
+    pub fn parse(contents: &str) -> Result<Self, LockfileError> {
         let raw: RawLockfile =
             facet_toml::from_str(contents).map_err(|e| LockfileError::ParseError(e.to_string()))?;
 
@@ -218,9 +218,10 @@ impl<'a> LockfileIndex<'a> {
         // Try name-only lookup (for unique deps)
         if !dep.contains(' ')
             && let Some(pkgs) = self.by_name.get(dep)
-                && pkgs.len() == 1 {
-                    return Some(pkgs[0]);
-                }
+            && pkgs.len() == 1
+        {
+            return Some(pkgs[0]);
+        }
 
         None
     }
@@ -310,9 +311,10 @@ impl ReachablePackages {
         // Try name-only lookup (for unique deps)
         if !dep_key.contains(' ')
             && let Some(indices) = self.by_name.get(dep_key)
-                && indices.len() == 1 {
-                    return Some(&self.packages[indices[0]]);
-                }
+            && indices.len() == 1
+        {
+            return Some(&self.packages[indices[0]]);
+        }
 
         None
     }
@@ -411,7 +413,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         assert_eq!(lockfile.version, 4);
         assert_eq!(lockfile.packages.len(), 2);
 
@@ -441,7 +443,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         assert_eq!(lockfile.version, 3);
     }
 
@@ -454,7 +456,7 @@ version = 2
 name = "myapp"
 version = "0.1.0"
 "#;
-        let err = Lockfile::from_str(contents).unwrap_err();
+        let err = Lockfile::parse(contents).unwrap_err();
         assert!(matches!(err, LockfileError::UnsupportedVersion(2)));
     }
 
@@ -465,7 +467,7 @@ version = "0.1.0"
 name = "myapp"
 version = "0.1.0"
 "#;
-        let err = Lockfile::from_str(contents).unwrap_err();
+        let err = Lockfile::parse(contents).unwrap_err();
         assert!(matches!(err, LockfileError::MissingVersion));
     }
 
@@ -487,7 +489,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let path_pkgs: Vec<_> = reachable.path_packages().collect();
@@ -527,7 +529,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let registry_pkgs: Vec<_> = reachable.registry_packages().collect();
@@ -561,7 +563,7 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let registry_pkgs: Vec<_> = reachable.registry_packages().collect();
@@ -586,7 +588,7 @@ name = "git_dep"
 version = "0.1.0"
 source = "git+https://github.com/example/repo#abcd1234"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         let err = lockfile.compute_reachable("myapp").unwrap_err();
         assert!(matches!(err, LockfileError::UnsupportedSource { name, .. } if name == "git_dep"));
     }
@@ -608,7 +610,7 @@ name = "bad_crate"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         let err = lockfile.compute_reachable("myapp").unwrap_err();
         assert!(matches!(err, LockfileError::MissingChecksum { name, .. } if name == "bad_crate"));
     }
@@ -638,7 +640,7 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let registry_pkgs: Vec<_> = reachable.registry_packages().collect();
@@ -667,7 +669,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aaaa"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let registry_pkgs: Vec<_> = reachable.registry_packages().collect();
@@ -700,7 +702,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aaaa"
 "#;
-        let lockfile = Lockfile::from_str(contents).unwrap();
+        let lockfile = Lockfile::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         // Both myapp and mylib are path deps

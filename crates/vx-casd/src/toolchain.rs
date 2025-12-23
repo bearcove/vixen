@@ -62,6 +62,7 @@ impl ToolchainManager {
         };
 
         // Initialize if we're first, otherwise wait
+        #[allow(clippy::redundant_closure)] // it's not
         cell.get_or_init(|| acquire_fn()).await.clone()
     }
 }
@@ -274,7 +275,7 @@ impl CasService {
             schema_version: TOOLCHAIN_MANIFEST_SCHEMA_VERSION,
             kind: ToolchainKind::Rust,
             spec_key,
-            toolchain_id: toolchain_id.0.clone(),
+            toolchain_id: toolchain_id.0,
             created_at: Timestamp::now().in_tz("UTC").unwrap().datetime(),
             rust_manifest_date: Some(manifest.date.clone()),
             rust_version: Some(manifest.rustc.version.clone()),

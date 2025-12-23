@@ -2221,6 +2221,7 @@ dependencies = [
  "bytes",
  "enum_dispatch",
  "facet",
+ "facet-postcard",
  "futures",
  "futures-timeout",
  "gloo-timers 0.3.0",

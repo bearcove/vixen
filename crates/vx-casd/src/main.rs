@@ -13,7 +13,6 @@ use crate::types::{CasService, CasServiceInner};
 use camino::Utf8PathBuf;
 use eyre::Result;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use tokio::net::TcpListener;
 use vx_cas_proto::CasServer;
 use vx_cas_proto::{
@@ -116,7 +115,6 @@ impl CasService {
         Self {
             inner: Arc::new(CasServiceInner {
                 root,
-                next_upload_id: AtomicU64::new(1),
                 toolchain_manager: ToolchainManager::new(),
                 registry_manager: RegistryManager::new(),
             }),

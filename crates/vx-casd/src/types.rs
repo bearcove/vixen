@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::AtomicU64};
+use std::sync::Arc;
 
 use camino::Utf8PathBuf;
 
@@ -23,9 +23,6 @@ impl std::ops::Deref for CasService {
 pub(crate) struct CasServiceInner {
     /// Root directory for CAS storage (typically .vx/cas)
     pub(crate) root: Utf8PathBuf,
-
-    /// Next upload session ID
-    pub(crate) next_upload_id: AtomicU64,
 
     /// Toolchain acquisition manager (handles inflight deduplication)
     pub(crate) toolchain_manager: ToolchainManager,

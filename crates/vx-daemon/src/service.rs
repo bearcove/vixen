@@ -11,7 +11,7 @@ use crate::db::Database;
 use crate::inputs::*;
 use crate::queries::*;
 use camino::Utf8PathBuf;
-// TODO: Re-enable picante cache persistence
+// TODO: Re-enable picante cache persistence - waiting for https://github.com/bearcove/picante/issues/32
 // use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,6 +41,7 @@ pub struct ToolchainInfo {
 pub struct AcquiredToolchains {
     /// Rust toolchain (if acquired)
     pub rust: Option<ToolchainInfo>,
+
     /// Zig toolchain (if acquired)
     pub zig: Option<ToolchainInfo>,
 }
@@ -50,16 +51,19 @@ pub struct AcquiredToolchains {
 pub struct DaemonService {
     /// CAS client for content-addressed storage
     cas: Arc<CasClient>,
+
     /// Exec client for compilation
     exec: Arc<ExecClient>,
+
     /// The picante incremental database
     db: Arc<Mutex<Database>>,
+
     /// Path to the picante cache file
-    cache_path: Utf8PathBuf,
-    /// VX_HOME directory
-    vx_home: Utf8PathBuf,
+    picante_cache: Utf8PathBuf,
+
     /// Acquired toolchains (manifest references only)
     toolchains: Arc<Mutex<AcquiredToolchains>>,
+
     /// Spawn tracker for child services
     spawn_tracker: Arc<Mutex<SpawnTracker>>,
 }
@@ -75,12 +79,13 @@ impl DaemonService {
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
 
+        // TODO: Load persisted picante cache when https://github.com/bearcove/picante/issues/32 is resolved
+
         Self {
             cas,
             exec,
             db: Arc::new(Mutex::new(db)),
-            cache_path,
-            vx_home,
+            picante_cache: cache_path,
             toolchains: Arc::new(Mutex::new(AcquiredToolchains {
                 rust: None,
                 zig: None,
@@ -179,7 +184,8 @@ impl DaemonService {
 
         for rel_path in paths {
             let abs_path = workspace_root.join(rel_path);
-            let contents = tokio::fs::read(&abs_path).await
+            let contents = tokio::fs::read(&abs_path)
+                .await
                 .map_err(|e| format!("failed to read {}: {}", abs_path, e))?;
 
             files.push(TreeFile {
@@ -420,7 +426,8 @@ impl DaemonService {
                     .join(&target_triple)
                     .join(profile);
 
-                tokio::fs::create_dir_all(&output_dir).await
+                tokio::fs::create_dir_all(&output_dir)
+                    .await
                     .map_err(|e| format!("failed to create output dir: {}", e))?;
 
                 let output_path = output_dir.join(&crate_node.crate_name);
@@ -451,6 +458,8 @@ impl DaemonService {
                 }
             }
         }
+
+        // TODO: Persist picante cache after build when https://github.com/bearcove/picante/issues/32 is resolved
 
         drop(db);
 

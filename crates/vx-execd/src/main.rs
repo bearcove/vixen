@@ -26,6 +26,13 @@ use vx_exec_proto::ExecServer;
 
 use crate::registry::RegistryMaterializer;
 
+/// Type alias for inflight materialization tracking
+type InflightMaterializations = Arc<
+    tokio::sync::Mutex<
+        HashMap<Blake3Hash, Arc<tokio::sync::OnceCell<Result<Utf8PathBuf, String>>>>,
+    >,
+>;
+
 #[derive(Debug)]
 struct Args {
     /// Toolchains directory
@@ -167,14 +174,10 @@ pub struct ExecServiceInner {
     pub(crate) toolchains_dir: Utf8PathBuf,
 
     /// In-flight toolchain materializations (keyed by manifest_hash)
-    /// Uses Arc<tokio::sync::Mutex> for async locking
-    materializing: Arc<
-        tokio::sync::Mutex<
-            HashMap<Blake3Hash, Arc<tokio::sync::OnceCell<Result<Utf8PathBuf, String>>>>,
-        >,
-    >,
+    materializing: InflightMaterializations,
 
-    /// Registry crate materializer (kept for future use)
+    /// Registry crate materializer
+    /// TODO: Wire this up in compile_rust when RustDep includes registry crate manifest hashes
     #[allow(dead_code)]
     registry_materializer: RegistryMaterializer,
 }
