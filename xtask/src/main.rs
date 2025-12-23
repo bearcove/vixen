@@ -35,8 +35,7 @@ fn install_all() -> Result<(), Box<dyn std::error::Error>> {
             .arg("install")
             .arg("--path")
             .arg(path)
-            .arg("--force")  // Overwrite existing installations
-            .arg("--quiet")  // Suppress warnings
+            .arg("--force") // Overwrite existing installations
             .status()?;
 
         if !status.success() {

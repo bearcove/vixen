@@ -93,9 +93,9 @@ dependencies = [
 
 [[package]]
 name = "arborium"
-version = "2.4.0"
+version = "2.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15b2802e052851be176d4237d09b694e1f0241c6151df81716ca01e493e88795"
+checksum = "9d9ce660dba3387b80daccbc9226acdda0b9434ae4eb39f61ed876248fb6e745"
 dependencies = [
  "arborium-highlight",
  "arborium-rust",
@@ -107,9 +107,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-highlight"
-version = "2.4.0"
+version = "2.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0a365288b90446586f233a147ff4ef33230b0267a2149e0b17762eb44ccd392"
+checksum = "64f28e2c149b5deba22c9a10f24d0f9edbc24c56d66cd7218e7ecc9112823a82"
 dependencies = [
  "arborium-theme",
  "arborium-tree-sitter",
@@ -118,9 +118,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-rust"
-version = "2.4.0"
+version = "2.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ca63f7b7cd7d57f0af354fe7d29171f8f5a70f0a9765e42bb7c52cf54e54a17"
+checksum = "0f5083c1d7a84bfebb11004d48d5934af4c5171ea97a3f9e1ecb32b16b7abe18"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -129,9 +129,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-sysroot"
-version = "2.4.0"
+version = "2.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8aa30c5369011c4b5f136fea1cd4c2d7e764ed6882537d090a6f279f31480c4"
+checksum = "11191b6161e636d36638a951c995e4ddf64c30d17b7c10974afca24478ec7a47"
 dependencies = [
  "cc",
  "dlmalloc",
@@ -139,15 +139,15 @@ dependencies = [
 
 [[package]]
 name = "arborium-theme"
-version = "2.4.0"
+version = "2.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef0b989ad89326a933995cd9904cf8b7c18e031f157345cc6bd11e4f885835ac"
+checksum = "a0bb6d4ebdc39276627d892cae95cdeae8e2474205e2596a3ee234abcf4292bd"
 
 [[package]]
 name = "arborium-toml"
-version = "2.4.0"
+version = "2.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d3b5bfb42ad623caf3d649db6a24e8532afc3391734fdce6f6840197742a5a7"
+checksum = "67199038d4d319e0d24d34af7770cbf8642e65102425f02a9afc7831c544cf91"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -156,9 +156,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-tree-sitter"
-version = "2.4.0"
+version = "2.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d862313cf59637a1320b3df8120f1fdbae1d7a7ed48fa68e217003ba4c1c59bc"
+checksum = "fbfc8e5763a6abd341c69a48e4334331b47859835a126fb0e2f811eb19dcce8f"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -640,7 +640,7 @@ dependencies = [
 [[package]]
 name = "facet-args"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#5add65fb36a664c4547b69e3da3e8f9db860975a"
 dependencies = [
  "facet",
  "facet-core",
@@ -708,7 +708,7 @@ dependencies = [
 [[package]]
 name = "facet-json"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#5add65fb36a664c4547b69e3da3e8f9db860975a"
 dependencies = [
  "facet",
  "facet-core",
@@ -797,7 +797,7 @@ dependencies = [
 [[package]]
 name = "facet-solver"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#5add65fb36a664c4547b69e3da3e8f9db860975a"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -807,7 +807,7 @@ dependencies = [
 [[package]]
 name = "facet-toml"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#5add65fb36a664c4547b69e3da3e8f9db860975a"
 dependencies = [
  "ariadne",
  "facet-core",
@@ -823,7 +823,7 @@ dependencies = [
 [[package]]
 name = "facet-value"
 version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#4595bac1f76016a8f1aa4a4b150614163a4d4fae"
+source = "git+https://github.com/facet-rs/facet?branch=main#5add65fb36a664c4547b69e3da3e8f9db860975a"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -1680,9 +1680,9 @@ dependencies = [
 
 [[package]]
 name = "miette-arborium"
-version = "2.4.0"
+version = "2.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7f8b64bfc052acbc93e93b7ea6cbcb4eba4a9fd37f9e27d51ec66201c55fbfd"
+checksum = "ef0fa26e7099eee2f599a828fffbdd1089f241b9c1ac74344b930acb96c7947b"
 dependencies = [
  "arborium",
  "arborium-highlight",
@@ -2289,9 +2289,9 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "reqwest"
-version = "0.12.26"
+version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b4c14b2d9afca6a60277086b0cc6a6ae0b568f6f7916c943a8cdc79f8be240f"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
@@ -2488,9 +2488,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.145"
+version = "1.0.146"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
+checksum = "217ca874ae0207aac254aa02c957ded05585a90892cc8d87f9e5fa49669dadd8"
 dependencies = [
  "itoa",
  "memchr",
