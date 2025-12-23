@@ -446,7 +446,12 @@ pub async fn materialize_tree(
                 }
 
                 // Remove existing file/symlink if present
-                let _ = tokio::fs::remove_file(&target_path).await;
+                if let Err(e) = tokio::fs::remove_file(&target_path).await {
+                    // NotFound is expected if the file doesn't exist
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!("Failed to remove existing file at {}: {e}", target_path);
+                    }
+                }
 
                 // Create symlink
                 #[cfg(unix)]

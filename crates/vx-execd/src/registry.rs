@@ -274,7 +274,9 @@ struct LockGuard {
 
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            warn!("failed to remove lock file {}: {e}", self.path);
+        }
     }
 }
 
@@ -305,7 +307,9 @@ fn acquire_lock(path: &Utf8Path) -> Result<LockGuard, String> {
                     && modified.elapsed().unwrap_or_default() > std::time::Duration::from_secs(300)
                 {
                     warn!(path = %path, "removing stale lock file");
-                    let _ = std::fs::remove_file(path);
+                    if let Err(e) = std::fs::remove_file(path) {
+                        warn!(path = %path, "failed to remove stale lock file: {e}");
+                    }
                     continue;
                 }
                 return Err(format!("failed to acquire lock {}: file exists", path));

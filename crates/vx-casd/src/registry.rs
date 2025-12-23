@@ -246,7 +246,9 @@ impl CasService {
                     file.write_all(manifest_hex.as_bytes())?;
                     file.sync_all()?;
                     if let Ok(dir) = File::open(&parent) {
-                        let _ = dir.sync_all();
+                        if let Err(e) = dir.sync_all() {
+                            tracing::warn!("failed to sync directory {}: {}", parent, e);
+                        }
                     }
                     Ok(true)
                 }

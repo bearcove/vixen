@@ -471,7 +471,12 @@ impl ReportStore {
 
         // Update "latest" symlink
         let latest_path = self.runs_dir.join("latest");
-        let _ = std::fs::remove_file(&latest_path);
+        if let Err(e) = std::fs::remove_file(&latest_path) {
+            // NotFound is expected if this is the first run
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("Warning: failed to remove old 'latest' file: {e}");
+            }
+        }
         std::fs::write(&latest_path, &report.run_id.0)?;
 
         Ok(())

@@ -399,7 +399,9 @@ impl CasService {
         let manifest_hash = self.put_toolchain_manifest(&toolchain_manifest).await;
 
         // Publish spec → manifest_hash mapping
-        let _ = self.publish_spec_mapping(&spec_key, &manifest_hash);
+        if let Err(e) = self.publish_spec_mapping(&spec_key, &manifest_hash).await {
+            tracing::warn!("failed to publish spec mapping for {}: {}", spec_key.short_hex(), e);
+        }
 
         tracing::info!(
             spec_key = %spec_key.short_hex(),

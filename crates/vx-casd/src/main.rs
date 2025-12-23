@@ -213,7 +213,9 @@ impl CasService {
         let path = self.manifest_path(&hash);
 
         if !path.exists() {
-            let _ = atomic_write(&path, json.as_bytes()).await;
+            if let Err(e) = atomic_write(&path, json.as_bytes()).await {
+                tracing::warn!("failed to write toolchain manifest to {}: {}", path, e);
+            }
         }
 
         hash

@@ -249,7 +249,9 @@ async fn cmd_kill() -> Result<()> {
     match try_connect_daemon(&endpoint).await {
         Ok(daemon) => {
             println!("{} daemon at {}", "Stopping".green().bold(), endpoint);
-            let _ = daemon.shutdown().await;
+            if let Err(e) = daemon.shutdown().await {
+                tracing::warn!("Failed to send shutdown to daemon: {e}");
+            }
             // Give it a moment to shut down
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             println!("{} daemon stopped", "✓".green().bold());
@@ -266,8 +268,18 @@ fn cmd_clean() -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
     let vx_dir = cwd.join(".vx");
 
-    // First, try to kill the daemon (no-op for v0)
-    let _ = cmd_kill();
+    // First, try to kill the daemon (best-effort, ignore errors since daemon may not be running)
+    if let Err(e) = tokio::runtime::Handle::try_current()
+        .ok()
+        .map(|h| h.block_on(cmd_kill()))
+        .unwrap_or_else(|| {
+            tokio::runtime::Runtime::new()
+                .map(|rt| rt.block_on(cmd_kill()))
+                .unwrap_or_else(|e| Err(eyre::eyre!("Failed to create runtime: {e}")))
+        })
+    {
+        tracing::debug!("Failed to kill daemon during clean (may not be running): {e}");
+    }
 
     // Then remove .vx/ if it exists
     if vx_dir.exists() {

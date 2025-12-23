@@ -133,11 +133,15 @@ impl SpawnTracker {
     pub fn kill_all(&mut self) {
         if let Some(mut child) = self.casd.take() {
             tracing::info!("Killing spawned vx-casd (pid: {})", child.id());
-            let _ = child.kill();
+            if let Err(e) = child.kill() {
+                tracing::warn!("Failed to kill vx-casd (pid: {}): {e}", child.id());
+            }
         }
         if let Some(mut child) = self.execd.take() {
             tracing::info!("Killing spawned vx-execd (pid: {})", child.id());
-            let _ = child.kill();
+            if let Err(e) = child.kill() {
+                tracing::warn!("Failed to kill vx-execd (pid: {}): {e}", child.id());
+            }
         }
     }
 }
@@ -250,7 +254,9 @@ async fn main() -> Result<()> {
         .init();
 
     // Install miette-arborium for rich syntax-highlighted diagnostics
-    let _ = miette_arborium::install_global();
+    if let Err(e) = miette_arborium::install_global() {
+        tracing::warn!("Failed to install miette-arborium global handler: {e}");
+    }
 
     let args = Args::from_env()?;
     tracing::info!("Starting vx-daemon");

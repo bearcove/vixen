@@ -64,7 +64,9 @@ impl Cas for CasService {
         let hash = ManifestHash::from_bytes(json.as_bytes());
         let dest = self.manifest_path(&hash);
 
-        let _ = atomic_write(&dest, json.as_bytes()).await;
+        if let Err(e) = atomic_write(&dest, json.as_bytes()).await {
+            tracing::warn!("failed to write node manifest to {}: {}", dest, e);
+        }
 
         hash
     }
@@ -79,7 +81,9 @@ impl Cas for CasService {
         let hash = BlobHash::from_bytes(&data);
         let dest = self.blob_path(&hash);
 
-        let _ = atomic_write(&dest, &data).await;
+        if let Err(e) = atomic_write(&dest, &data).await {
+            tracing::warn!("failed to write blob to {}: {}", dest, e);
+        }
 
         hash
     }
@@ -159,7 +163,9 @@ impl Cas for CasService {
                     let manifest_hash = this2.put_registry_manifest(&manifest).await;
 
                     // Publish spec → manifest_hash mapping
-                    let _ = this2.publish_registry_spec_mapping(&spec_key, &manifest_hash).await;
+                    if let Err(e) = this2.publish_registry_spec_mapping(&spec_key, &manifest_hash).await {
+                        tracing::warn!("failed to publish registry spec mapping for {}: {}", spec_key.short_hex(), e);
+                    }
 
                     tracing::info!(
                         name = %spec.name,
