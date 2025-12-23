@@ -1,4 +1,4 @@
-//! vx-casd - Content-Addressed Storage daemon
+//! vx-oort - Content-Addressed Storage daemon
 //!
 //! Provides CAS, toolchain, and registry services over TCP using rapace.
 
@@ -11,12 +11,12 @@ pub(crate) mod types;
 
 use crate::registry::RegistryManager;
 use crate::toolchain::ToolchainManager;
-use crate::types::{CasService, CasServiceInner};
+use crate::types::{OortService, OortServiceInner};
 use camino::Utf8PathBuf;
 use eyre::Result;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use vx_cas_proto::CasServer;
+use vx_cas_proto::OortServer;
 use vx_cas_proto::{
     Blake3Hash, BlobHash, CacheKey, ManifestHash, ToolchainManifest, ToolchainSpecKey,
 };
@@ -24,7 +24,7 @@ use vx_io::atomic_write;
 
 #[derive(Debug)]
 struct Args {
-    /// Storage root directory (typically .vx/cas)
+    /// Storage root directory (typically .vx/oort)
     root: Utf8PathBuf,
 
     /// VX home directory (typically .vx)
@@ -40,9 +40,9 @@ impl Args {
             let home = std::env::var("HOME").expect("HOME not set");
             format!("{}/.vx", home)
         });
-        let root = format!("{}/cas", vx_home);
+        let root = format!("{}/oort", vx_home);
 
-        let bind_raw = std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let bind_raw = std::env::var("VX_OORT").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
         let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
 
         Ok(Args {
@@ -62,24 +62,24 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_casd=info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_oort=info")),
         )
         .init();
 
     let args = Args::from_env()?;
 
-    // Initialize CAS service
-    tracing::info!("Initializing CAS at {}", args.root);
-    let cas = CasService::new(args.root, args.vx_home);
-    cas.init().await?;
+    // Initialize oort service
+    tracing::info!("Initializing oort at {}", args.root);
+    let oort = OortService::new(args.root, args.vx_home);
+    oort.init().await?;
 
     // Start TCP server
     let listener = TcpListener::bind(&args.bind).await?;
-    tracing::info!("CAS listening on {}", args.bind);
+    tracing::info!("oort listening on {}", args.bind);
 
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let cas = cas.clone();
+        let oort = oort.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
@@ -87,10 +87,10 @@ async fn main() -> Result<()> {
             // Create transport from TCP stream
             let transport = rapace::Transport::stream(socket);
 
-            // Serve the Cas service
-            // Note: CasService implements the Cas trait, which is the only rapace service
+            // Serve the oort service
+            // Note: OortService implements the Oort trait, which is the only rapace service
             // Toolchain and registry are internal implementation details, not separate services
-            let server = CasServer::new(cas);
+            let server = OortServer::new(oort);
             if let Err(e) = server.serve(transport).await {
                 tracing::warn!("Connection error from {}: {}", peer_addr, e);
             }
@@ -100,10 +100,10 @@ async fn main() -> Result<()> {
     }
 }
 
-impl CasService {
+impl OortService {
     fn new(root: Utf8PathBuf, vx_home: Utf8PathBuf) -> Self {
         Self {
-            inner: Arc::new(CasServiceInner {
+            inner: Arc::new(OortServiceInner {
                 root,
                 vx_home,
                 toolchain_manager: ToolchainManager::new(),
@@ -158,9 +158,7 @@ impl CasService {
     }
 
     fn toolchains_spec_dir(&self) -> Utf8PathBuf {
-        // Use vx_home (not CAS root) so toolchain specs are at ~/.vx/toolchains/spec/
-        // This matches where vx-execd materializes toolchains
-        self.vx_home.join("toolchains/spec")
+        self.root.join("toolchains")
     }
 
     fn spec_path(&self, spec_key: &ToolchainSpecKey) -> Utf8PathBuf {

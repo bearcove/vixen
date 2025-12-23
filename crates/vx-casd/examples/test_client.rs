@@ -3,7 +3,7 @@
 use eyre::Result;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use vx_cas_proto::CasClient;
+use vx_cas_proto::OortClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     });
 
     // Create CAS client
-    let client = CasClient::new(session.clone());
+    let client = OortClient::new(session.clone());
 
     // Test: put a blob
     tracing::info!("Testing put_blob...");

@@ -23,8 +23,8 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use vx_aether_proto::{AETHER_PROTOCOL_VERSION, Aether, AetherServer, BuildRequest, BuildResult};
-use vx_cas_proto::{CasClient, ServiceVersion};
-use vx_exec_proto::RheaClient;
+use vx_cas_proto::{OortClient, ServiceVersion};
+use vx_rhea_proto::RheaClient;
 
 pub use db::Database;
 pub use inputs::*;
@@ -292,7 +292,7 @@ async fn main() -> Result<()> {
     let cas_stream = TcpStream::connect(&args.cas_endpoint).await?;
     let cas_transport = rapace::Transport::stream(cas_stream);
     let cas_session = Arc::new(rapace::RpcSession::new(cas_transport));
-    let cas_client = Arc::new(CasClient::new(cas_session.clone()));
+    let cas_client = Arc::new(OortClient::new(cas_session.clone()));
 
     tracing::info!("Connecting to Exec at {}", args.exec_endpoint);
     let exec_stream = TcpStream::connect(&args.exec_endpoint).await?;

@@ -5,8 +5,8 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 use vx_cas_proto::ServiceVersion;
 use vx_cas_proto::{NodeId, NodeManifest, OutputEntry};
-use vx_exec_proto::{
-    CcCompileRequest, CcCompileResult, Rhea, RHEA_PROTOCOL_VERSION, RustCompileRequest,
+use vx_rhea_proto::{
+    CcCompileRequest, CcCompileResult, RHEA_PROTOCOL_VERSION, Rhea, RustCompileRequest,
     RustCompileResult,
 };
 

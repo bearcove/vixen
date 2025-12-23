@@ -24,8 +24,8 @@ use eyre::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use vx_cas_proto::{Blake3Hash, CasClient};
-use vx_exec_proto::RheaServer;
+use vx_cas_proto::{Blake3Hash, OortClient};
+use vx_rhea_proto::RheaServer;
 
 use crate::registry::RegistryMaterializer;
 
@@ -76,13 +76,13 @@ impl Args {
 }
 
 /// Connect to CAS and return a client handle
-async fn connect_to_cas(endpoint: &str) -> Result<vx_cas_proto::CasClient> {
+async fn connect_to_cas(endpoint: &str) -> Result<vx_cas_proto::OortClient> {
     let stream = TcpStream::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 
     // Create RPC session and client
     let session = Arc::new(rapace::RpcSession::new(transport));
-    let client = CasClient::new(session.clone());
+    let client = OortClient::new(session.clone());
 
     // CRITICAL: spawn session.run() in background
     // rapace requires explicit receive loop
@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
 /// Inner Exec service implementation
 pub struct ExecServiceInner {
     /// CAS client for storing outputs and fetching toolchains
-    pub(crate) cas: Arc<CasClient>,
+    pub(crate) cas: Arc<OortClient>,
 
     /// Toolchain materialization directory
     pub(crate) toolchains_dir: Utf8PathBuf,
@@ -182,7 +182,7 @@ impl std::ops::Deref for ExecService {
 
 impl ExecService {
     pub fn new(
-        cas: Arc<CasClient>,
+        cas: Arc<OortClient>,
         toolchains_dir: Utf8PathBuf,
         registry_cache_dir: Utf8PathBuf,
     ) -> Self {

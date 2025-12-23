@@ -1,7 +1,7 @@
-//! Registry crate acquisition for casd.
+//! Registry crate acquisition for oort.
 //!
 //! Downloads .crate tarballs from crates.io, validates checksums and structure,
-//! and stores them in CAS.
+//! and stores them in oort.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use vx_cas_proto::{
     EnsureRegistryCrateResult, EnsureStatus, RegistryCrateManifest, RegistrySpecKey,
 };
 
-use crate::CasService;
+use crate::OortService;
 use vx_io::atomic_write;
 
 /// Maximum retry attempts for transient failures
@@ -141,7 +141,10 @@ pub(crate) async fn download_crate(
 }
 
 /// Single download attempt with streaming verification
-async fn download_crate_attempt(url: &str, expected_checksum: &str) -> Result<Vec<u8>, DownloadError> {
+async fn download_crate_attempt(
+    url: &str,
+    expected_checksum: &str,
+) -> Result<Vec<u8>, DownloadError> {
     use http_body_util::BodyExt;
     use tokio::io::AsyncReadExt;
 
@@ -167,15 +170,14 @@ async fn download_crate_attempt(url: &str, expected_checksum: &str) -> Result<Ve
 
     // Wrap the response body in a hash-verifying reader
     let body_reader = tokio_util::io::StreamReader::new(
-        response.into_body().into_data_stream().map(|result| {
-            result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        }),
+        response
+            .into_body()
+            .into_data_stream()
+            .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
     );
 
-    let mut verifying_reader = crate::hash_reader::Sha256VerifyingReader::new(
-        body_reader,
-        expected_checksum.to_string(),
-    );
+    let mut verifying_reader =
+        crate::hash_reader::Sha256VerifyingReader::new(body_reader, expected_checksum.to_string());
 
     // Read through the verifying reader (hash verification happens on EOF)
     let mut bytes = Vec::new();
@@ -205,10 +207,10 @@ fn is_retryable_error(error: &DownloadError) -> bool {
 }
 
 // =============================================================================
-// CasRegistry Implementation
+// OortRegistry Implementation
 // =============================================================================
 
-impl CasService {
+impl OortService {
     /// Get the registry spec directory
     fn registry_spec_dir(&self) -> camino::Utf8PathBuf {
         self.root.join("registry/spec")

@@ -1,27 +1,27 @@
 use jiff::Timestamp;
-use vx_cas_proto::Cas;
+use vx_cas_proto::Oort;
 use vx_cas_proto::{
-    Blake3Hash, BlobHash, CAS_PROTOCOL_VERSION, CacheKey, EnsureRegistryCrateResult, EnsureStatus,
-    EnsureToolchainResult, IngestTreeRequest, IngestTreeResult, ManifestHash, MaterializationPlan,
-    MaterializeStep, NodeManifest, PublishResult, RegistryCrateManifest, RegistrySpec,
+    Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, EnsureToolchainResult,
+    IngestTreeRequest, IngestTreeResult, ManifestHash, MaterializationPlan, MaterializeStep,
+    NodeManifest, OORT_PROTOCOL_VERSION, PublishResult, RegistryCrateManifest, RegistrySpec,
     RegistrySpecKey, RustToolchainSpec, ServiceVersion, TREE_MANIFEST_SCHEMA_VERSION,
     ToolchainKind, ToolchainManifest, ToolchainSpecKey, TreeManifest, ZigToolchainSpec,
 };
 
 use crate::registry::download_crate;
-use crate::types::CasService;
+use crate::types::OortService;
 use vx_io::atomic_write;
 
 const CRATES_IO_REGISTRY: &str = "https://crates.io";
 const REGISTRY_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MATERIALIZATION_LAYOUT_VERSION: u32 = 1;
 
-impl Cas for CasService {
+impl Oort for OortService {
     async fn version(&self) -> ServiceVersion {
         ServiceVersion {
-            service: "vx-casd".to_string(),
+            service: "vx-oort".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: CAS_PROTOCOL_VERSION,
+            protocol_version: OORT_PROTOCOL_VERSION,
         }
     }
 
@@ -163,8 +163,15 @@ impl Cas for CasService {
                     let manifest_hash = this2.put_registry_manifest(&manifest).await;
 
                     // Publish spec → manifest_hash mapping
-                    if let Err(e) = this2.publish_registry_spec_mapping(&spec_key, &manifest_hash).await {
-                        tracing::warn!("failed to publish registry spec mapping for {}: {}", spec_key.short_hex(), e);
+                    if let Err(e) = this2
+                        .publish_registry_spec_mapping(&spec_key, &manifest_hash)
+                        .await
+                    {
+                        tracing::warn!(
+                            "failed to publish registry spec mapping for {}: {}",
+                            spec_key.short_hex(),
+                            e
+                        );
                     }
 
                     tracing::info!(
@@ -199,12 +206,12 @@ impl Cas for CasService {
 
     async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
         // Delegate to the inherent method which handles deduplication via ToolchainManager
-        CasService::ensure_rust_toolchain(self, spec).await
+        OortService::ensure_rust_toolchain(self, spec).await
     }
 
     async fn ensure_zig_toolchain(&self, spec: ZigToolchainSpec) -> EnsureToolchainResult {
         // Delegate to the inherent method
-        CasService::ensure_zig_toolchain(self, spec).await
+        OortService::ensure_zig_toolchain(self, spec).await
     }
 
     async fn lookup_toolchain_spec(&self, spec_key: ToolchainSpecKey) -> Option<Blake3Hash> {

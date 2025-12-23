@@ -2591,10 +2591,10 @@ dependencies = [
  "vx-aether-proto",
  "vx-cas-proto",
  "vx-cc",
- "vx-exec-proto",
  "vx-io",
  "vx-manifest",
  "vx-report",
+ "vx-rhea-proto",
  "vx-rs",
  "vx-toolchain",
 ]
@@ -2615,7 +2615,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "vx-cas-proto",
- "vx-exec-proto",
+ "vx-rhea-proto",
 ]
 
 [[package]]
@@ -2677,42 +2677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vx-exec-proto"
-version = "0.1.0"
-dependencies = [
- "facet",
- "facet-postcard",
- "rapace",
- "vx-cas-proto",
-]
-
-[[package]]
-name = "vx-execd"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "camino",
- "clonetree",
- "eyre",
- "facet",
- "facet-json",
- "futures-util",
- "jiff",
- "rapace",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "ur-taking-me-with-you",
- "vx-cache",
- "vx-cas-proto",
- "vx-cc",
- "vx-exec-proto",
- "vx-io",
- "vx-tarball",
-]
-
-[[package]]
 name = "vx-io"
 version = "0.1.0"
 dependencies = [
@@ -2742,6 +2706,42 @@ dependencies = [
  "facet",
  "facet-json",
  "ulid",
+ "vx-cas-proto",
+]
+
+[[package]]
+name = "vx-rhea"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "camino",
+ "clonetree",
+ "eyre",
+ "facet",
+ "facet-json",
+ "futures-util",
+ "jiff",
+ "rapace",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ur-taking-me-with-you",
+ "vx-cache",
+ "vx-cas-proto",
+ "vx-cc",
+ "vx-io",
+ "vx-rhea-proto",
+ "vx-tarball",
+]
+
+[[package]]
+name = "vx-rhea-proto"
+version = "0.1.0"
+dependencies = [
+ "facet",
+ "facet-postcard",
+ "rapace",
  "vx-cas-proto",
 ]
 

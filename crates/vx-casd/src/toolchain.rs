@@ -12,7 +12,7 @@ use vx_cas_proto::{
 };
 use vx_tarball::Compression;
 
-use crate::types::CasService;
+use crate::types::OortService;
 
 // =============================================================================
 // HTTP Download Functions (Rust Toolchains)
@@ -26,29 +26,33 @@ async fn fetch_channel_manifest(
 
     tracing::debug!(url = %url, "fetching channel manifest");
 
-    let body = crate::http::get_text(&url)
-        .await
-        .map_err(|e| vx_toolchain::ToolchainError::FetchError {
+    let body = crate::http::get_text(&url).await.map_err(|e| {
+        vx_toolchain::ToolchainError::FetchError {
             url: url.clone(),
             source: Box::new(e),
-        })?;
+        }
+    })?;
 
     vx_toolchain::ChannelManifest::from_toml(&body)
 }
 
 /// Download a component with streaming checksum verification
-async fn download_component(url: &str, expected_hash: &str) -> Result<Vec<u8>, vx_toolchain::ToolchainError> {
+async fn download_component(
+    url: &str,
+    expected_hash: &str,
+) -> Result<Vec<u8>, vx_toolchain::ToolchainError> {
     use http_body_util::BodyExt;
     use tokio::io::AsyncReadExt;
 
     tracing::debug!(url = %url, "downloading component");
 
-    let response = crate::http::get(url)
-        .await
-        .map_err(|e| vx_toolchain::ToolchainError::FetchError {
-            url: url.to_string(),
-            source: Box::new(e),
-        })?;
+    let response =
+        crate::http::get(url)
+            .await
+            .map_err(|e| vx_toolchain::ToolchainError::FetchError {
+                url: url.to_string(),
+                source: Box::new(e),
+            })?;
 
     let status = response.status();
     if !status.is_success() {
@@ -63,15 +67,14 @@ async fn download_component(url: &str, expected_hash: &str) -> Result<Vec<u8>, v
 
     // Wrap the response body in a hash-verifying reader
     let body_reader = tokio_util::io::StreamReader::new(
-        response.into_body().into_data_stream().map(|result| {
-            result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        }),
+        response
+            .into_body()
+            .into_data_stream()
+            .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
     );
 
-    let mut verifying_reader = crate::hash_reader::Sha256VerifyingReader::new(
-        body_reader,
-        expected_hash.to_string(),
-    );
+    let mut verifying_reader =
+        crate::hash_reader::Sha256VerifyingReader::new(body_reader, expected_hash.to_string());
 
     // Read through the verifying reader (hash verification happens on EOF)
     let mut bytes = Vec::new();
@@ -100,8 +103,8 @@ type InflightFuture = Arc<tokio::sync::OnceCell<EnsureToolchainResult>>;
 ///
 /// Inflight entries are never removed. This is intentional:
 /// - Memory cost is negligible (one OnceCell per unique ToolchainSpecKey)
-/// - Avoids race between CAS lookup miss and inflight insert
-/// - Once CAS has the mapping, lookup_fn fast-paths and OnceCell is never awaited
+/// - Avoids race between oort lookup miss and inflight insert
+/// - Once oort has the mapping, lookup_fn fast-paths and OnceCell is never awaited
 pub(crate) struct ToolchainManager {
     inflight: tokio::sync::Mutex<HashMap<ToolchainSpecKey, InflightFuture>>,
 }
@@ -115,14 +118,14 @@ impl ToolchainManager {
 
     /// Ensure a toolchain, deduplicating concurrent requests.
     ///
-    /// `lookup_fn` is async because CAS is remote in production.
+    /// `lookup_fn` is async because oort is remote in production.
     pub(crate) async fn ensure(
         &self,
         spec_key: ToolchainSpecKey,
         lookup_fn: impl AsyncFn() -> Option<Blake3Hash>,
         acquire_fn: impl AsyncFn() -> EnsureToolchainResult,
     ) -> EnsureToolchainResult {
-        // Fast path: check if already in CAS (async RPC)
+        // Fast path: check if already in oort (async RPC)
         if let Some(manifest_hash) = lookup_fn().await {
             return EnsureToolchainResult {
                 spec_key: Some(spec_key),
@@ -149,11 +152,11 @@ impl ToolchainManager {
 }
 
 // =============================================================================
-// Toolchain methods (Inherent methods, NOT part of Cas RPC trait)
+// Toolchain methods (Inherent methods, NOT part of Oort RPC trait)
 // =============================================================================
 
-impl CasService {
-    /// Ensure a Rust toolchain exists in CAS (internal helper, not an RPC method).
+impl OortService {
+    /// Ensure a Rust toolchain exists in oort (internal helper, not an RPC method).
     #[tracing::instrument(skip(self), fields(spec_key = tracing::field::Empty))]
     pub async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
         // Validate and compute spec_key first
@@ -400,14 +403,18 @@ impl CasService {
 
         // Publish spec → manifest_hash mapping
         if let Err(e) = self.publish_spec_mapping(&spec_key, &manifest_hash).await {
-            tracing::warn!("failed to publish spec mapping for {}: {}", spec_key.short_hex(), e);
+            tracing::warn!(
+                "failed to publish spec mapping for {}: {}",
+                spec_key.short_hex(),
+                e
+            );
         }
 
         tracing::info!(
             spec_key = %spec_key.short_hex(),
             toolchain_id = %toolchain_id.short_hex(),
             manifest_hash = %manifest_hash.short_hex(),
-            "stored Rust toolchain in CAS"
+            "stored Rust toolchain in Oort"
         );
 
         EnsureToolchainResult {
@@ -419,7 +426,7 @@ impl CasService {
         }
     }
 
-    /// Ensure a Zig toolchain exists in CAS (internal helper, not an RPC method).
+    /// Ensure a Zig toolchain exists in Oort (internal helper, not an RPC method).
     pub async fn ensure_zig_toolchain(&self, _spec: ZigToolchainSpec) -> EnsureToolchainResult {
         // TODO: Implement Zig toolchain acquisition
         EnsureToolchainResult {

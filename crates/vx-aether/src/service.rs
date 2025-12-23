@@ -20,10 +20,10 @@ use tokio::sync::Mutex;
 use tracing::{debug, info};
 use vx_aether_proto::{BuildRequest, BuildResult};
 use vx_cas_proto::{
-    Blake3Hash, CasClient, EnsureStatus, IngestTreeRequest, RegistrySpec, RustChannel,
+    Blake3Hash, EnsureStatus, IngestTreeRequest, OortClient, RegistrySpec, RustChannel,
     RustComponent, RustToolchainSpec, TreeFile,
 };
-use vx_exec_proto::{RheaClient, RustCompileRequest, RustDep};
+use vx_rhea_proto::{RheaClient, RustCompileRequest, RustDep};
 use vx_rs::crate_graph::CrateSource;
 use vx_rs::{CrateGraph, CrateId, CrateType};
 
@@ -52,7 +52,7 @@ pub struct AcquiredToolchains {
 #[derive(Clone)]
 pub struct AetherService {
     /// CAS client for content-addressed storage
-    cas: Arc<CasClient>,
+    cas: Arc<OortClient>,
 
     /// Exec client for compilation
     exec: Arc<RheaClient>,
@@ -76,7 +76,7 @@ pub struct AetherService {
 impl AetherService {
     /// Create a new daemon service
     pub fn new(
-        cas: Arc<CasClient>,
+        cas: Arc<OortClient>,
         exec: Arc<RheaClient>,
         vx_home: Utf8PathBuf,
         exec_host_triple: String,
@@ -228,7 +228,7 @@ impl AetherService {
 
     /// Acquire a single registry crate
     async fn acquire_single_registry_crate(
-        cas: Arc<CasClient>,
+        cas: Arc<OortClient>,
         name: String,
         version: String,
         checksum: String,

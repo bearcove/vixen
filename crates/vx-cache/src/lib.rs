@@ -6,7 +6,7 @@
 //! Cache keys are blake3 hashes of all inputs that affect the build output.
 
 use vx_cas_proto::Blake3Hash;
-use vx_exec_proto::RustCompileRequest;
+use vx_rhea_proto::RustCompileRequest;
 
 /// Current cache key schema version for Rust compilation.
 /// Bump this when the cache key format changes.
@@ -80,7 +80,7 @@ pub fn rust_compile_cache_key(request: &RustCompileRequest) -> Blake3Hash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vx_exec_proto::RustDep;
+    use vx_rhea_proto::RustDep;
 
     #[test]
     fn test_cache_key_determinism() {
