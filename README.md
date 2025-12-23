@@ -16,7 +16,7 @@ Outputs go to `.vx/build/` (not `target/`).
 
 ## Caching
 
-vertex uses content-addressed storage and picante (incremental queries) to cache builds correctly:
+vixen uses content-addressed storage and picante (incremental queries) to cache builds correctly:
 
 - Second build with unchanged inputs = instant (zero rustc invocations)
 - Change source, edition, or profile = rebuild
@@ -27,7 +27,7 @@ Global cache lives at `~/.vx/` (or `$VX_HOME`).
 
 ## Limitations (v0)
 
-vertex explicitly rejects (with clear errors):
+vixen explicitly rejects (with clear errors):
 
 - Workspaces
 - Dependencies

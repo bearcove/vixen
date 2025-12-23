@@ -1,4 +1,4 @@
-//! Cache key computation for vertex build artifacts.
+//! Cache key computation for vixen build artifacts.
 //!
 //! This crate centralizes all cache key computation logic to ensure
 //! consistency between daemon (for cache lookups) and execd (for cache storage).

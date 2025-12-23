@@ -1,4 +1,4 @@
-//! Common I/O utilities for vertex crates
+//! Common I/O utilities for vixen crates
 
 use camino::{Utf8Path, Utf8PathBuf};
 

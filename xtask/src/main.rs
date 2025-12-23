@@ -27,7 +27,7 @@ fn install_all() -> Result<(), Box<dyn std::error::Error>> {
         ("vx-aether", "./crates/vx-aether"),
     ];
 
-    println!("Installing all vertex binaries...\n");
+    println!("Installing all vixen binaries...\n");
 
     for (name, path) in &binaries {
         println!("Installing {}...", name);
