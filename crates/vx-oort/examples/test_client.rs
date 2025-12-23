@@ -3,7 +3,7 @@
 use eyre::Result;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use vx_cas_proto::OortClient;
+use vx_oort_proto::OortClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {

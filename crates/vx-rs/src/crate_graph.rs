@@ -23,9 +23,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::Diagnostic;
 use thiserror::Error;
-use vx_cas_proto::Blake3Hash;
 use vx_manifest::lockfile::{CargoLock, CargoLockExt, LockfileError, ReachablePackages};
 use vx_manifest::{Edition, Manifest, ManifestError};
+use vx_oort_proto::Blake3Hash;
 
 /// Errors during crate graph construction
 #[derive(Debug, Error, Diagnostic)]
@@ -759,9 +759,10 @@ impl CrateGraph {
             let crate_root_rel = normalize_path(&lib_path, &self.workspace_root)?;
 
             // Extract package name
-            let package_name = package.name.clone().ok_or({
-                CrateGraphError::ManifestError(ManifestError::MissingField("name"))
-            })?;
+            let package_name = package
+                .name
+                .clone()
+                .ok_or({ CrateGraphError::ManifestError(ManifestError::MissingField("name")) })?;
 
             // Extract edition, converting from facet_cargo_toml::Edition to vx_manifest::Edition
             let edition = match &package.edition {
@@ -877,16 +878,17 @@ impl CrateGraph {
                                 if dep_name == version_dep.name {
                                     // Found the matching dep - resolve it via the lockfile
                                     if let Some(dep_pkg) = reachable.find_dependency(dep_spec)
-                                        && dep_pkg.is_registry() {
-                                            let dep_key =
-                                                (dep_pkg.name.clone(), dep_pkg.version.clone());
-                                            if let Some(&dep_id) = registry_id_map.get(&dep_key) {
-                                                node.deps.push(DepEdge {
-                                                    extern_name: version_dep.name.replace('-', "_"),
-                                                    crate_id: dep_id,
-                                                });
-                                            }
+                                        && dep_pkg.is_registry()
+                                    {
+                                        let dep_key =
+                                            (dep_pkg.name.clone(), dep_pkg.version.clone());
+                                        if let Some(&dep_id) = registry_id_map.get(&dep_key) {
+                                            node.deps.push(DepEdge {
+                                                extern_name: version_dep.name.replace('-', "_"),
+                                                crate_id: dep_id,
+                                            });
                                         }
+                                    }
                                     break; // Found the dep, no need to continue
                                 }
                             }
@@ -1103,13 +1105,14 @@ fn topological_sort(
         // For each node that depends on this one, decrement their remaining count
         for &other_id in &reachable {
             if let Some(node) = nodes.get(&other_id)
-                && node.deps.iter().any(|d| d.crate_id == id) {
-                    let count = remaining_deps.get_mut(&other_id).unwrap();
-                    *count -= 1;
-                    if *count == 0 {
-                        ready.push_back(other_id);
-                    }
+                && node.deps.iter().any(|d| d.crate_id == id)
+            {
+                let count = remaining_deps.get_mut(&other_id).unwrap();
+                *count -= 1;
+                if *count == 0 {
+                    ready.push_back(other_id);
                 }
+            }
         }
     }
 

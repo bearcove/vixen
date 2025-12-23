@@ -2589,10 +2589,10 @@ dependencies = [
  "tracing-subscriber",
  "ur-taking-me-with-you",
  "vx-aether-proto",
- "vx-cas-proto",
  "vx-cc",
  "vx-io",
  "vx-manifest",
+ "vx-oort-proto",
  "vx-report",
  "vx-rhea-proto",
  "vx-rs",
@@ -2606,7 +2606,7 @@ dependencies = [
  "camino",
  "facet",
  "rapace",
- "vx-cas-proto",
+ "vx-oort-proto",
 ]
 
 [[package]]
@@ -2614,24 +2614,45 @@ name = "vx-cache"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "vx-cas-proto",
+ "vx-oort-proto",
  "vx-rhea-proto",
 ]
 
 [[package]]
-name = "vx-cas-proto"
+name = "vx-cc"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "camino",
  "facet",
- "facet-postcard",
- "jiff",
- "rapace",
+ "thiserror",
+ "vx-oort-proto",
 ]
 
 [[package]]
-name = "vx-casd"
+name = "vx-io"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "eyre",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "vx-manifest"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "facet",
+ "facet-cargo-toml",
+ "miette",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "vx-oort"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -2659,43 +2680,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ur-taking-me-with-you",
- "vx-cas-proto",
  "vx-io",
+ "vx-oort-proto",
  "vx-tarball",
  "vx-toolchain",
 ]
 
 [[package]]
-name = "vx-cc"
+name = "vx-oort-proto"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "camino",
  "facet",
- "thiserror",
- "vx-cas-proto",
-]
-
-[[package]]
-name = "vx-io"
-version = "0.1.0"
-dependencies = [
- "camino",
- "eyre",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "vx-manifest"
-version = "0.1.0"
-dependencies = [
- "camino",
- "facet",
- "facet-cargo-toml",
- "miette",
- "tempfile",
- "thiserror",
+ "facet-postcard",
+ "jiff",
+ "rapace",
 ]
 
 [[package]]
@@ -2706,7 +2706,7 @@ dependencies = [
  "facet",
  "facet-json",
  "ulid",
- "vx-cas-proto",
+ "vx-oort-proto",
 ]
 
 [[package]]
@@ -2728,9 +2728,9 @@ dependencies = [
  "tracing-subscriber",
  "ur-taking-me-with-you",
  "vx-cache",
- "vx-cas-proto",
  "vx-cc",
  "vx-io",
+ "vx-oort-proto",
  "vx-rhea-proto",
  "vx-tarball",
 ]
@@ -2742,7 +2742,7 @@ dependencies = [
  "facet",
  "facet-postcard",
  "rapace",
- "vx-cas-proto",
+ "vx-oort-proto",
 ]
 
 [[package]]
@@ -2759,8 +2759,8 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
- "vx-cas-proto",
  "vx-manifest",
+ "vx-oort-proto",
 ]
 
 [[package]]
@@ -2776,7 +2776,7 @@ dependencies = [
  "tokio-tar",
  "tokio-util",
  "tracing",
- "vx-cas-proto",
+ "vx-oort-proto",
 ]
 
 [[package]]
@@ -2796,7 +2796,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "vx-cas-proto",
+ "vx-oort-proto",
  "walkdir",
 ]
 

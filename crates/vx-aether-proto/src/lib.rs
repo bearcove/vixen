@@ -45,7 +45,7 @@ pub struct BuildResult {
 #[rapace::service]
 pub trait Aether {
     /// Get service version information (for health checks and compatibility)
-    async fn version(&self) -> vx_cas_proto::ServiceVersion;
+    async fn version(&self) -> vx_oort_proto::ServiceVersion;
 
     /// Build a project
     async fn build(&self, request: BuildRequest) -> BuildResult;

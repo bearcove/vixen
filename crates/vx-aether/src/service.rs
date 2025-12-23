@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 use vx_aether_proto::{BuildRequest, BuildResult};
-use vx_cas_proto::{
+use vx_oort_proto::{
     Blake3Hash, EnsureStatus, IngestTreeRequest, OortClient, RegistrySpec, RustChannel,
     RustComponent, RustToolchainSpec, TreeFile,
 };

@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use vx_aether_proto::{AETHER_PROTOCOL_VERSION, Aether, AetherServer, BuildRequest, BuildResult};
-use vx_cas_proto::{OortClient, ServiceVersion};
+use vx_oort_proto::{OortClient, ServiceVersion};
 use vx_rhea_proto::RheaClient;
 
 pub use db::Database;

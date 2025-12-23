@@ -5,7 +5,7 @@
 //!
 //! Cache keys are blake3 hashes of all inputs that affect the build output.
 
-use vx_cas_proto::Blake3Hash;
+use vx_oort_proto::Blake3Hash;
 use vx_rhea_proto::RustCompileRequest;
 
 /// Current cache key schema version for Rust compilation.

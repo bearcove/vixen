@@ -8,4 +8,4 @@ facet = { workspace = true }
 facet-json = { workspace = true }
 camino = { workspace = true }
 ulid = "1.2"
-vx-cas-proto = { workspace = true }
+vx-oort-proto = { workspace = true }

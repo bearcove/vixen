@@ -9,8 +9,8 @@ use std::sync::Arc;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
-use vx_cas_proto::{Blake3Hash, OortClient};
-use vx_cas_proto::{RegistryCrateManifest, RegistryMaterializationResult};
+use vx_oort_proto::{Blake3Hash, OortClient};
+use vx_oort_proto::{RegistryCrateManifest, RegistryMaterializationResult};
 use vx_tarball::Compression;
 
 use crate::InflightMaterializations;

@@ -4,8 +4,8 @@ use futures_util::StreamExt;
 use jiff::Timestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
-use vx_cas_proto::*;
-use vx_cas_proto::{
+use vx_oort_proto::*;
+use vx_oort_proto::{
     EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult, RustChannel, RustToolchainSpec,
     TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentTree, ToolchainKind, ToolchainManifest,
     ToolchainSpecKey, ZigToolchainSpec,

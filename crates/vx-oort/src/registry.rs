@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use thiserror::Error;
-use vx_cas_proto::Blake3Hash;
-use vx_cas_proto::{
+use vx_oort_proto::Blake3Hash;
+use vx_oort_proto::{
     EnsureRegistryCrateResult, EnsureStatus, RegistryCrateManifest, RegistrySpecKey,
 };
 

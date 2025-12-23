@@ -1,7 +1,7 @@
 //! Picante input definitions for incremental builds.
 
-use vx_cas_proto::Blake3Hash;
 use vx_manifest::Edition;
+use vx_oort_proto::Blake3Hash;
 use vx_rs::CrateId;
 
 // =============================================================================

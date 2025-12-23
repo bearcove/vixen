@@ -1,7 +1,7 @@
 use camino::Utf8Path;
 use futures_util::StreamExt;
 use tracing::debug;
-use vx_cas_proto::{Blake3Hash, TreeManifest};
+use vx_oort_proto::{Blake3Hash, TreeManifest};
 
 use crate::ExecService;
 use crate::error::{Result, RheaError};

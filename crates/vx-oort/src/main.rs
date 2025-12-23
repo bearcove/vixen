@@ -16,11 +16,11 @@ use camino::Utf8PathBuf;
 use eyre::Result;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use vx_cas_proto::OortServer;
-use vx_cas_proto::{
+use vx_io::atomic_write;
+use vx_oort_proto::OortServer;
+use vx_oort_proto::{
     Blake3Hash, BlobHash, CacheKey, ManifestHash, ToolchainManifest, ToolchainSpecKey,
 };
-use vx_io::atomic_write;
 
 #[derive(Debug)]
 struct Args {

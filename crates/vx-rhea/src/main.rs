@@ -24,7 +24,7 @@ use eyre::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use vx_cas_proto::{Blake3Hash, OortClient};
+use vx_oort_proto::{Blake3Hash, OortClient};
 use vx_rhea_proto::RheaServer;
 
 use crate::registry::RegistryMaterializer;
@@ -76,7 +76,7 @@ impl Args {
 }
 
 /// Connect to CAS and return a client handle
-async fn connect_to_cas(endpoint: &str) -> Result<vx_cas_proto::OortClient> {
+async fn connect_to_cas(endpoint: &str) -> Result<vx_oort_proto::OortClient> {
     let stream = TcpStream::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 

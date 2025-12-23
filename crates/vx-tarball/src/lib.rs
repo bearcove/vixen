@@ -12,7 +12,7 @@
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use vx_cas_proto::{Blake3Hash, TreeManifest};
+use vx_oort_proto::{Blake3Hash, TreeManifest};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TarballError {
@@ -179,15 +179,16 @@ async fn extract_tar<R: AsyncRead + Unpin>(
         {
             use std::os::unix::fs::PermissionsExt;
             if let Ok(mode) = entry.header().mode()
-                && mode & 0o111 != 0 {
-                    let perms = std::fs::Permissions::from_mode(mode);
-                    tokio::fs::set_permissions(&target_path, perms)
-                        .await
-                        .map_err(|e| TarballError::SetPermissions {
-                            path: target_path.clone(),
-                            source: e,
-                        })?;
-                }
+                && mode & 0o111 != 0
+            {
+                let perms = std::fs::Permissions::from_mode(mode);
+                tokio::fs::set_permissions(&target_path, perms)
+                    .await
+                    .map_err(|e| TarballError::SetPermissions {
+                        path: target_path.clone(),
+                        source: e,
+                    })?;
+            }
         }
     }
 
@@ -368,7 +369,7 @@ pub async fn materialize_tree(
     dest: &Utf8Path,
     get_blob: impl AsyncFn(Blake3Hash) -> Result<Vec<u8>, String>,
 ) -> Result<(), TarballError> {
-    use vx_cas_proto::TreeEntryKind;
+    use vx_oort_proto::TreeEntryKind;
 
     // Create destination directory
     tokio::fs::create_dir_all(dest)
@@ -408,9 +409,7 @@ pub async fn materialize_tree(
                 }
 
                 // Fetch blob contents
-                let contents = get_blob(*blob)
-                    .await
-                    .map_err(TarballError::BlobStore)?;
+                let contents = get_blob(*blob).await.map_err(TarballError::BlobStore)?;
 
                 // Write file
                 tokio::fs::write(&target_path, &contents)

@@ -1,6 +1,6 @@
 use jiff::Timestamp;
-use vx_cas_proto::Oort;
-use vx_cas_proto::{
+use vx_oort_proto::Oort;
+use vx_oort_proto::{
     Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, EnsureToolchainResult,
     IngestTreeRequest, IngestTreeResult, ManifestHash, MaterializationPlan, MaterializeStep,
     NodeManifest, OORT_PROTOCOL_VERSION, PublishResult, RegistryCrateManifest, RegistrySpec,

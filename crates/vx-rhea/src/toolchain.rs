@@ -1,9 +1,9 @@
 use camino::Utf8PathBuf;
 use tracing::{debug, info};
-use vx_cas_proto::{Blake3Hash, MaterializeStep};
+use vx_oort_proto::{Blake3Hash, MaterializeStep};
 
 use crate::ExecService;
-use crate::error::{RheaError, Result};
+use crate::error::{Result, RheaError};
 
 impl ExecService {
     /// Materialize a toolchain from CAS to local directory

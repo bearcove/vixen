@@ -7,7 +7,7 @@ use std::io::Write;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use thiserror::Error;
-use vx_cas_proto::Blake3Hash;
+use vx_oort_proto::Blake3Hash;
 
 /// Errors that can occur during Zig toolchain operations
 #[derive(Debug, Error)]
@@ -532,5 +532,4 @@ mod tests {
         assert!(!platform.os.is_empty());
         assert!(!platform.arch.is_empty());
     }
-
 }
