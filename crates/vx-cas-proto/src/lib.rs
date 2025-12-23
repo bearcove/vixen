@@ -687,6 +687,12 @@ pub enum TreeEntryKind {
     Directory,
 }
 
+impl Default for TreeManifest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TreeManifest {
     /// Create a new empty tree manifest
     pub fn new() -> Self {

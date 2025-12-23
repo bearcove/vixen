@@ -323,17 +323,17 @@ impl DaemonService {
             let cache_key = match crate_node.crate_type {
                 CrateType::Lib => {
                     if dep_rlib_hashes.is_empty() {
-                        cache_key_compile_rlib(&*db, rust_crate.clone())
+                        cache_key_compile_rlib(&*db, rust_crate)
                             .await
                             .map_err(|e| format!("cache key error: {}", e))?
                     } else {
-                        cache_key_compile_rlib_with_deps(&*db, rust_crate.clone(), dep_rlib_hashes)
+                        cache_key_compile_rlib_with_deps(&*db, rust_crate, dep_rlib_hashes)
                             .await
                             .map_err(|e| format!("cache key error: {}", e))?
                     }
                 }
                 CrateType::Bin => {
-                    cache_key_compile_bin_with_deps(&*db, rust_crate.clone(), dep_rlib_hashes)
+                    cache_key_compile_bin_with_deps(&*db, rust_crate, dep_rlib_hashes)
                         .await
                         .map_err(|e| format!("cache key error: {}", e))?
                 }
@@ -386,7 +386,7 @@ impl DaemonService {
                     return Err(format!(
                         "compilation failed for {}: {}",
                         crate_node.crate_name,
-                        result.error.unwrap_or_else(|| result.stderr)
+                        result.error.unwrap_or(result.stderr)
                     ));
                 }
 

@@ -520,15 +520,12 @@ impl ReportStore {
         for entry in std::fs::read_dir(&self.runs_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if let Some(ext) = path.extension() {
-                if ext == "json" {
-                    if let Some(stem) = path.file_stem() {
-                        if let Some(run_id) = RunId::from_str(&stem.to_string_lossy()) {
+            if let Some(ext) = path.extension()
+                && ext == "json"
+                    && let Some(stem) = path.file_stem()
+                        && let Some(run_id) = RunId::from_str(&stem.to_string_lossy()) {
                             runs.push(run_id);
                         }
-                    }
-                }
-            }
         }
 
         // Sort lexicographically (ULIDs are time-ordered, so this gives chronological order)
@@ -641,26 +638,22 @@ impl RunDiff {
         // Check toolchain changes
         if let (Some(before_rust), Some(after_rust)) =
             (&before.toolchains.rust, &after.toolchains.rust)
-        {
-            if before_rust.id != after_rust.id {
+            && before_rust.id != after_rust.id {
                 diff.toolchain_changes.push(ToolchainChange {
                     name: "rust".to_string(),
                     old: before_rust.version.clone(),
                     new: after_rust.version.clone(),
                 });
             }
-        }
 
         if let (Some(before_zig), Some(after_zig)) = (&before.toolchains.zig, &after.toolchains.zig)
-        {
-            if before_zig.id != after_zig.id {
+            && before_zig.id != after_zig.id {
                 diff.toolchain_changes.push(ToolchainChange {
                     name: "zig".to_string(),
                     old: before_zig.version.clone(),
                     new: after_zig.version.clone(),
                 });
             }
-        }
 
         diff
     }

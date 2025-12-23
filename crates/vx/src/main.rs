@@ -166,7 +166,7 @@ async fn get_or_spawn_daemon() -> Result<DaemonClient> {
 
     // Try to connect first
     match try_connect_daemon(&endpoint).await {
-        Ok(client) => return Ok(client),
+        Ok(client) => Ok(client),
         Err(_) => {
             // Spawn daemon
             tracing::info!("Daemon not running, spawning vx-daemon on {}", endpoint);
@@ -416,11 +416,10 @@ fn cmd_explain_report(
 
     for node in &report.nodes {
         // Apply node filter if specified
-        if let Some(ref filter) = node_filter {
-            if &node.node_id != filter {
+        if let Some(ref filter) = node_filter
+            && &node.node_id != filter {
                 continue;
             }
-        }
 
         match &node.cache {
             CacheOutcome::Miss { .. } => {
@@ -736,11 +735,10 @@ fn cmd_explain_summary(report: &vx_report::BuildReport) -> Result<()> {
     println!("  {} {}", "Profile:".dimmed(), report.profile);
     println!("  {} {}", "Target:".dimmed(), report.target_triple);
 
-    if let Some(rust) = &report.toolchains.rust {
-        if let Some(version) = &rust.version {
+    if let Some(rust) = &report.toolchains.rust
+        && let Some(version) = &rust.version {
             println!("  {} {}", "Rust:".dimmed(), version);
         }
-    }
 
     // Summary stats
     let hits = report.cache_hits();
@@ -966,11 +964,10 @@ fn cmd_explain_json(
 
     for node in &report.nodes {
         // Apply node filter if specified
-        if let Some(ref filter) = node_filter {
-            if &node.node_id != filter {
+        if let Some(ref filter) = node_filter
+            && &node.node_id != filter {
                 continue;
             }
-        }
 
         let prev_node = prev_nodes.get(node.node_id.as_str()).copied();
 

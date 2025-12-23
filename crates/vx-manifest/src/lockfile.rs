@@ -216,13 +216,11 @@ impl<'a> LockfileIndex<'a> {
         }
 
         // Try name-only lookup (for unique deps)
-        if !dep.contains(' ') {
-            if let Some(pkgs) = self.by_name.get(dep) {
-                if pkgs.len() == 1 {
+        if !dep.contains(' ')
+            && let Some(pkgs) = self.by_name.get(dep)
+                && pkgs.len() == 1 {
                     return Some(pkgs[0]);
                 }
-            }
-        }
 
         None
     }
@@ -310,13 +308,11 @@ impl ReachablePackages {
         }
 
         // Try name-only lookup (for unique deps)
-        if !dep_key.contains(' ') {
-            if let Some(indices) = self.by_name.get(dep_key) {
-                if indices.len() == 1 {
+        if !dep_key.contains(' ')
+            && let Some(indices) = self.by_name.get(dep_key)
+                && indices.len() == 1 {
                     return Some(&self.packages[indices[0]]);
                 }
-            }
-        }
 
         None
     }

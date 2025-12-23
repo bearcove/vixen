@@ -3,7 +3,7 @@
 use eyre::Result;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use vx_cas_proto::{BlobHash, CasClient};
+use vx_cas_proto::CasClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
 
     // Test: get the blob back
     tracing::info!("Testing get_blob...");
-    let retrieved = client.get_blob(blob_hash.clone()).await?;
+    let retrieved = client.get_blob(blob_hash).await?;
     match retrieved {
         Some(data) => {
             assert_eq!(data, test_data);

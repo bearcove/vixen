@@ -299,17 +299,15 @@ fn acquire_lock(path: &Utf8Path) -> Result<LockGuard, String> {
                     continue;
                 }
                 // Check if lock is stale (older than 5 minutes)
-                if let Ok(metadata) = std::fs::metadata(path) {
-                    if let Ok(modified) = metadata.modified() {
-                        if modified.elapsed().unwrap_or_default()
+                if let Ok(metadata) = std::fs::metadata(path)
+                    && let Ok(modified) = metadata.modified()
+                        && modified.elapsed().unwrap_or_default()
                             > std::time::Duration::from_secs(300)
                         {
                             warn!(path = %path, "removing stale lock file");
                             let _ = std::fs::remove_file(path);
                             continue;
                         }
-                    }
-                }
                 return Err(format!("failed to acquire lock {}: file exists", path));
             }
             Err(e) => {

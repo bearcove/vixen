@@ -209,8 +209,8 @@ async fn extract_tar<R: AsyncRead + Unpin>(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(mode) = entry.header().mode() {
-                if mode & 0o111 != 0 {
+            if let Ok(mode) = entry.header().mode()
+                && mode & 0o111 != 0 {
                     let perms = std::fs::Permissions::from_mode(mode);
                     tokio::fs::set_permissions(&target_path, perms)
                         .await
@@ -219,7 +219,6 @@ async fn extract_tar<R: AsyncRead + Unpin>(
                             source: e,
                         })?;
                 }
-            }
         }
     }
 
@@ -662,7 +661,7 @@ pub async fn materialize_tree(
                 // Fetch blob contents
                 let contents = get_blob(*blob)
                     .await
-                    .map_err(|e| TarballError::BlobStore(e))?;
+                    .map_err(TarballError::BlobStore)?;
 
                 // Write file
                 tokio::fs::write(&target_path, &contents)

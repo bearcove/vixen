@@ -71,8 +71,8 @@ impl Exec for ExecService {
 
         // 3. Materialize dependencies (rlibs) into scratch_dir/.vx/deps/<extern_name>.rlib
         let deps_dir = scratch_dir.join(".vx/deps");
-        if !request.deps.is_empty() {
-            if let Err(e) = tokio::fs::create_dir_all(&deps_dir).await {
+        if !request.deps.is_empty()
+            && let Err(e) = tokio::fs::create_dir_all(&deps_dir).await {
                 let _ = tokio::fs::remove_dir_all(&scratch_dir).await;
                 return RustCompileResult {
                     success: false,
@@ -84,7 +84,6 @@ impl Exec for ExecService {
                     error: Some(format!("failed to create deps directory: {}", e)),
                 };
             }
-        }
 
         let mut extern_args: Vec<(String, Utf8PathBuf)> = Vec::new();
         for dep in &request.deps {

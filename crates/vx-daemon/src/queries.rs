@@ -306,7 +306,7 @@ pub async fn cache_key_cc_compile<DB: Db>(db: &DB, source: CSourceFile) -> Pican
     let deps_hash = match db.discovered_deps_keys().intern(tu_key.clone()) {
         Ok(intern_id) => {
             if let Some(data) = db.discovered_deps_data().get(db, &intern_id)? {
-                data.deps_hash.clone()
+                data.deps_hash
             } else {
                 Blake3Hash::from_bytes(b"no-deps-yet")
             }

@@ -203,82 +203,74 @@ impl Manifest {
             .ok_or(ManifestError::MissingSection("package"))?;
 
         // Validate unsupported features
-        if let Some(ref dev_deps) = cargo.dev_dependencies {
-            if !dev_deps.is_empty() {
+        if let Some(ref dev_deps) = cargo.dev_dependencies
+            && !dev_deps.is_empty() {
                 return Err(ManifestError::Unsupported {
                     feature: "[dev-dependencies]",
                     details: "dev-dependencies are not supported yet".into(),
                 });
             }
-        }
-        if let Some(ref build_deps) = cargo.build_dependencies {
-            if !build_deps.is_empty() {
+        if let Some(ref build_deps) = cargo.build_dependencies
+            && !build_deps.is_empty() {
                 return Err(ManifestError::Unsupported {
                     feature: "[build-dependencies]",
                     details: "build-dependencies are not supported yet".into(),
                 });
             }
-        }
         if cargo.workspace.is_some() {
             return Err(ManifestError::Unsupported {
                 feature: "[workspace]",
                 details: "workspaces are not supported yet".into(),
             });
         }
-        if let Some(ref features) = cargo.features {
-            if !features.is_empty() {
+        if let Some(ref features) = cargo.features
+            && !features.is_empty() {
                 return Err(ManifestError::Unsupported {
                     feature: "[features]",
                     details: "features are not supported yet".into(),
                 });
             }
-        }
 
         // Check for proc-macro crates
-        if let Some(ref lib) = cargo.lib {
-            if lib.proc_macro == Some(true) {
+        if let Some(ref lib) = cargo.lib
+            && lib.proc_macro == Some(true) {
                 return Err(ManifestError::Unsupported {
                     feature: "proc-macro crates",
                     details: "[lib] proc-macro = true is not supported yet".into(),
                 });
             }
-        }
 
         // Check for test/bench/example targets
-        if let Some(ref tests) = cargo.test {
-            if !tests.is_empty() {
+        if let Some(ref tests) = cargo.test
+            && !tests.is_empty() {
                 return Err(ManifestError::Unsupported {
                     feature: "[[test]] targets",
                     details: "test targets are not supported yet".into(),
                 });
             }
-        }
-        if let Some(ref benches) = cargo.bench {
-            if !benches.is_empty() {
+        if let Some(ref benches) = cargo.bench
+            && !benches.is_empty() {
                 return Err(ManifestError::Unsupported {
                     feature: "[[bench]] targets",
                     details: "bench targets are not supported yet".into(),
                 });
             }
-        }
-        if let Some(ref examples) = cargo.example {
-            if !examples.is_empty() {
+        if let Some(ref examples) = cargo.example
+            && !examples.is_empty() {
                 return Err(ManifestError::Unsupported {
                     feature: "[[example]] targets",
                     details: "example targets are not supported yet".into(),
                 });
             }
-        }
 
         // Check for multiple binary targets
-        if let Some(ref bins) = cargo.bin {
-            if bins.len() > 1 {
+        if let Some(ref bins) = cargo.bin
+            && bins.len() > 1 {
                 return Err(ManifestError::Unsupported {
                     feature: "multiple [[bin]] targets",
                     details: format!("found {} binary targets, only 1 is supported", bins.len()),
                 });
             }
-        }
 
         // Check for build script
         if let Some(ref build) = package.build {
@@ -392,8 +384,8 @@ fn parse_dependencies(
                     });
                 }
 
-                if let Some(ref optional) = detail.optional {
-                    if *optional.value() {
+                if let Some(ref optional) = detail.optional
+                    && *optional.value() {
                         let span = optional.span();
                         return Err(ManifestError::InvalidDependency {
                             name: name.clone(),
@@ -402,7 +394,6 @@ fn parse_dependencies(
                             span: Some(SourceSpan::new(span.offset.into(), span.len)),
                         });
                     }
-                }
                 if let Some(ref default_features) = detail.default_features {
                     let span = default_features.span();
                     return Err(ManifestError::InvalidDependency {
