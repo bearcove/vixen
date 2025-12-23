@@ -91,7 +91,7 @@ pub struct CargoToml {
 // HERMETIC TOOLCHAIN INPUTS
 // =============================================================================
 
-/// Rust toolchain identity (singleton picante input)
+/// Rust toolchain identity (keyed picante input)
 ///
 /// This represents a hermetically acquired Rust toolchain from static.rust-lang.org.
 /// The toolchain_id is derived from publisher SHA256s + host/target triples.
@@ -101,6 +101,7 @@ pub struct CargoToml {
 #[picante::input]
 pub struct RustToolchain {
     /// Content-derived toolchain identifier
+    #[key]
     pub toolchain_id: Blake3Hash,
     /// CAS blob hash of the ToolchainManifest (for provenance)
     pub toolchain_manifest: Blake3Hash,
@@ -134,15 +135,26 @@ pub struct ZigToolchain {
     pub zig_path: String,
 }
 
-/// Build configuration (singleton)
+/// Build configuration (keyed picante input)
 #[picante::input]
 pub struct BuildConfig {
+    /// Composite key derived from profile, target, and workspace
+    #[key]
+    pub build_key: String,
     /// Profile: "debug" or "release"
     pub profile: String,
     /// Target triple (e.g., "aarch64-apple-darwin")
     pub target_triple: String,
     /// Workspace root (for --remap-path-prefix)
     pub workspace_root: String,
+}
+
+impl BuildConfig {
+    /// Compute a unique key for this build configuration
+    pub fn compute_key(profile: &str, target_triple: &str, workspace_root: &str) -> String {
+        // Use a simple concatenation since this is just for keying
+        format!("{}:{}:{}", profile, target_triple, workspace_root)
+    }
 }
 
 // =============================================================================

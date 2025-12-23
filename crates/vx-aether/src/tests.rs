@@ -6,9 +6,11 @@ fn test_db() -> Database {
 }
 
 /// Set up common build configuration for C builds
-fn setup_cc_config(db: &Database) {
-    BuildConfig::set(
+fn setup_cc_config(db: &Database) -> BuildConfig {
+    let build_key = BuildConfig::compute_key("debug", "x86_64-linux-musl", "/test/workspace");
+    let config = BuildConfig::new(
         db,
+        build_key,
         "debug".to_string(),
         "x86_64-linux-musl".to_string(),
         "/test/workspace".to_string(),
@@ -16,12 +18,14 @@ fn setup_cc_config(db: &Database) {
     .unwrap();
 
     ZigToolchainConfig::set(db, "0.13.0".to_string(), "zig:abc123def456".to_string()).unwrap();
+
+    config
 }
 
 #[tokio::test]
 async fn test_cache_key_cc_compile_deterministic() {
     let db = test_db();
-    setup_cc_config(&db);
+    let config = setup_cc_config(&db);
 
     let source_hash = Blake3Hash::from_bytes(b"int main() { return 0; }");
 
@@ -29,8 +33,8 @@ async fn test_cache_key_cc_compile_deterministic() {
     let source = CSourceFile::new(&db, "src/main.c".to_string(), source_hash.clone()).unwrap();
 
     // Compute cache key twice
-    let key1 = cache_key_cc_compile(&db, source).await.unwrap();
-    let key2 = cache_key_cc_compile(&db, source).await.unwrap();
+    let key1 = cache_key_cc_compile(&db, source, config).await.unwrap();
+    let key2 = cache_key_cc_compile(&db, source, config).await.unwrap();
 
     // Should be identical (deterministic)
     assert_eq!(key1, key2);
@@ -39,7 +43,7 @@ async fn test_cache_key_cc_compile_deterministic() {
 #[tokio::test]
 async fn test_cache_key_cc_compile_changes_with_source() {
     let db = test_db();
-    setup_cc_config(&db);
+    let config = setup_cc_config(&db);
 
     // First source
     let source1 = CSourceFile::new(
@@ -49,7 +53,7 @@ async fn test_cache_key_cc_compile_changes_with_source() {
     )
     .unwrap();
 
-    let key1 = cache_key_cc_compile(&db, source1).await.unwrap();
+    let key1 = cache_key_cc_compile(&db, source1, config).await.unwrap();
 
     // Different source content
     let source2 = CSourceFile::new(
@@ -59,7 +63,7 @@ async fn test_cache_key_cc_compile_changes_with_source() {
     )
     .unwrap();
 
-    let key2 = cache_key_cc_compile(&db, source2).await.unwrap();
+    let key2 = cache_key_cc_compile(&db, source2, config).await.unwrap();
 
     // Keys should be different
     assert_ne!(key1, key2);
@@ -74,8 +78,10 @@ async fn test_cache_key_cc_compile_changes_with_profile() {
     let source_hash = Blake3Hash::from_bytes(b"int main() { return 0; }");
 
     // Debug profile
-    BuildConfig::set(
+    let build_key_debug = BuildConfig::compute_key("debug", "x86_64-linux-musl", "/test/workspace");
+    BuildConfig::new(
         &db,
+        build_key_debug,
         "debug".to_string(),
         "x86_64-linux-musl".to_string(),
         "/test/workspace".to_string(),
@@ -84,11 +90,21 @@ async fn test_cache_key_cc_compile_changes_with_profile() {
 
     let source_debug =
         CSourceFile::new(&db, "src/main.c".to_string(), source_hash.clone()).unwrap();
-    let key_debug = cache_key_cc_compile(&db, source_debug).await.unwrap();
+    let config_debug = BuildConfig::new(
+        &db,
+        build_key_debug,
+        "debug".to_string(),
+        "x86_64-linux-musl".to_string(),
+        "/test/workspace".to_string(),
+    )
+    .unwrap();
+    let key_debug = cache_key_cc_compile(&db, source_debug, config_debug).await.unwrap();
 
     // Release profile
-    BuildConfig::set(
+    let build_key_release = BuildConfig::compute_key("release", "x86_64-linux-musl", "/test/workspace");
+    let config_release = BuildConfig::new(
         &db,
+        build_key_release,
         "release".to_string(),
         "x86_64-linux-musl".to_string(),
         "/test/workspace".to_string(),
@@ -96,7 +112,7 @@ async fn test_cache_key_cc_compile_changes_with_profile() {
     .unwrap();
 
     let source_release = CSourceFile::new(&db, "src/main.c".to_string(), source_hash).unwrap();
-    let key_release = cache_key_cc_compile(&db, source_release).await.unwrap();
+    let key_release = cache_key_cc_compile(&db, source_release, config_release).await.unwrap();
 
     // Keys should be different
     assert_ne!(key_debug, key_release);
@@ -165,8 +181,10 @@ async fn test_plan_cc_compile_release_flags() {
     ZigToolchainConfig::set(&db, "0.13.0".to_string(), "zig:abc123def456".to_string()).unwrap();
 
     // Release profile
-    BuildConfig::set(
+    let build_key = BuildConfig::compute_key("release", "x86_64-linux-musl", "/test/workspace");
+    BuildConfig::new(
         &db,
+        build_key,
         "release".to_string(),
         "x86_64-linux-musl".to_string(),
         "/test/workspace".to_string(),
@@ -193,7 +211,7 @@ async fn test_plan_cc_compile_release_flags() {
 #[tokio::test]
 async fn test_node_id_cc_compile_format() {
     let db = test_db();
-    setup_cc_config(&db);
+    let config = setup_cc_config(&db);
 
     let source = CSourceFile::new(
         &db,
@@ -202,7 +220,7 @@ async fn test_node_id_cc_compile_format() {
     )
     .unwrap();
 
-    let node_id = node_id_cc_compile(&db, source).await.unwrap();
+    let node_id = node_id_cc_compile(&db, source, config).await.unwrap();
 
     // Should be formatted as "cc-compile:path:triple:profile"
     assert!(node_id.0.starts_with("cc-compile:"));
@@ -315,8 +333,10 @@ async fn test_plan_cc_link_release_strips() {
     ZigToolchainConfig::set(&db, "0.13.0".to_string(), "zig:abc123def456".to_string()).unwrap();
 
     // Release profile
-    BuildConfig::set(
+    let build_key = BuildConfig::compute_key("release", "x86_64-linux-musl", "/test/workspace");
+    BuildConfig::new(
         &db,
+        build_key,
         "release".to_string(),
         "x86_64-linux-musl".to_string(),
         "/test/workspace".to_string(),
@@ -340,7 +360,7 @@ async fn test_plan_cc_link_release_strips() {
 #[tokio::test]
 async fn test_node_id_cc_link_format() {
     let db = test_db();
-    setup_cc_config(&db);
+    let config = setup_cc_config(&db);
 
     let target = CTarget::new(
         &db,
@@ -350,7 +370,7 @@ async fn test_node_id_cc_link_format() {
     )
     .unwrap();
 
-    let node_id = node_id_cc_link(&db, target).await.unwrap();
+    let node_id = node_id_cc_link(&db, target, config).await.unwrap();
 
     // Should be formatted as "cc-link:name:triple:profile"
     assert!(node_id.0.starts_with("cc-link:"));
@@ -362,13 +382,13 @@ async fn test_node_id_cc_link_format() {
 #[tokio::test]
 async fn test_discovered_deps_affects_cache_key() {
     let db = test_db();
-    setup_cc_config(&db);
+    let config = setup_cc_config(&db);
 
     let source_hash = Blake3Hash::from_bytes(b"#include \"header.h\"\nint main() {}");
 
     // First compile: no discovered deps yet
     let source1 = CSourceFile::new(&db, "src/main.c".to_string(), source_hash.clone()).unwrap();
-    let key1 = cache_key_cc_compile(&db, source1).await.unwrap();
+    let key1 = cache_key_cc_compile(&db, source1, config).await.unwrap();
 
     // After first compile, we discover header.h dependency
     // Set discovered deps for this translation unit
@@ -378,7 +398,7 @@ async fn test_discovered_deps_affects_cache_key() {
 
     // Second compile with same source but now with discovered deps
     let source2 = CSourceFile::new(&db, "src/main.c".to_string(), source_hash).unwrap();
-    let key2 = cache_key_cc_compile(&db, source2).await.unwrap();
+    let key2 = cache_key_cc_compile(&db, source2, config).await.unwrap();
 
     // Cache keys should be different because discovered deps changed
     assert_ne!(key1, key2);

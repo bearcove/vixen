@@ -407,7 +407,7 @@ impl AetherService {
         // Set up picante inputs
         let db = self.db.lock().await;
 
-        RustToolchain::set(
+        let toolchain = RustToolchain::new(
             &*db,
             rust_toolchain.toolchain_id,
             rust_toolchain.manifest_hash,
@@ -419,8 +419,14 @@ impl AetherService {
         RustToolchainManifest::set(&*db, rust_toolchain.manifest_hash)
             .map_err(|e| AetherError::Picante(e.to_string()))?;
 
-        BuildConfig::set(
+        let build_key = BuildConfig::compute_key(
+            &profile,
+            &target_triple,
+            &graph.workspace_root.to_string(),
+        );
+        let config = BuildConfig::new(
             &*db,
+            build_key,
             profile.to_string(),
             target_triple.clone(),
             graph.workspace_root.to_string(),
@@ -526,17 +532,17 @@ impl AetherService {
             let cache_key = match crate_node.crate_type {
                 CrateType::Lib => {
                     if dep_rlib_hashes.is_empty() {
-                        cache_key_compile_rlib(&*db, rust_crate)
+                        cache_key_compile_rlib(&*db, rust_crate, toolchain, config)
                             .await
                             .map_err(|e| AetherError::CacheKey(e.to_string()))?
                     } else {
-                        cache_key_compile_rlib_with_deps(&*db, rust_crate, dep_rlib_hashes)
+                        cache_key_compile_rlib_with_deps(&*db, rust_crate, toolchain, config, dep_rlib_hashes)
                             .await
                             .map_err(|e| AetherError::CacheKey(e.to_string()))?
                     }
                 }
                 CrateType::Bin => {
-                    cache_key_compile_bin_with_deps(&*db, rust_crate, dep_rlib_hashes)
+                    cache_key_compile_bin_with_deps(&*db, rust_crate, toolchain, config, dep_rlib_hashes)
                         .await
                         .map_err(|e| AetherError::CacheKey(e.to_string()))?
                 }
