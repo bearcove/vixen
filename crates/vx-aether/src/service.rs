@@ -433,23 +433,37 @@ impl AetherService {
         )
         .map_err(|e| AetherError::Picante(e.to_string()))?;
 
-        // TODO(Phase 1): Replace sequential loop with action graph executor
-        // Uncomment this block to enable action graph execution:
-        /*
+        // Action graph execution (Phase 1.5)
         use crate::action_graph::ActionGraph;
         use crate::executor::Executor;
 
         let action_graph = ActionGraph::from_crate_graph(&graph, toolchain, config, &*db)?;
+        let max_concurrency = std::thread::available_parallelism()
+            .map(|n| n.get() * 2)
+            .unwrap_or(16);
         let mut executor = Executor::new(
             action_graph,
             self.tui.clone(),
             self.cas.clone(),
             self.exec.clone(),
             self.db.clone(),
-            num_cpus::get() * 2,
+            registry_manifests,
+            max_concurrency,
         );
         executor.execute().await?;
-        */
+
+        // TODO(Phase 1.5): Materialize bin outputs
+        // The sequential loop below handles bin materialization, which needs to be
+        // integrated into the executor or done post-execution.
+        let duration = total_start.elapsed();
+        return Ok(BuildResult {
+            success: true,
+            message: "Build completed via action graph".to_string(),
+            cached: false, // TODO: track cache hits from executor
+            duration_ms: duration.as_millis() as u64,
+            output_path: None, // TODO: track bin outputs from executor
+            error: None,
+        });
 
         // Track compiled outputs for dependencies
         // Maps CrateId -> manifest_hash of the compiled output

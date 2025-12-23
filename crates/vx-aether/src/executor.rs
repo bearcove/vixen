@@ -15,6 +15,7 @@ use crate::error::AetherError;
 use crate::tui::TuiHandle;
 use vx_oort_proto::{Blake3Hash, OortClient};
 use vx_rhea_proto::RheaClient;
+use vx_rs::CrateId;
 
 /// State of an individual action
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub enum ActionState {
 pub enum ActionResult {
     /// Rust crate compiled successfully
     CrateCompiled {
+        /// CrateId of the compiled crate
+        crate_id: CrateId,
         /// Output manifest hash from CAS
         output_manifest: Blake3Hash,
     },
@@ -70,6 +73,9 @@ pub struct Executor {
 
     /// Picante database
     db: Arc<Mutex<crate::db::Database>>,
+
+    /// Registry crate manifests (for registry dependencies)
+    registry_manifests: Arc<HashMap<(String, String), Blake3Hash>>,
 }
 
 impl Executor {
@@ -80,6 +86,7 @@ impl Executor {
         cas: Arc<OortClient>,
         exec: Arc<RheaClient>,
         db: Arc<Mutex<crate::db::Database>>,
+        registry_manifests: HashMap<(String, String), Blake3Hash>,
         max_concurrency: usize,
     ) -> Self {
         let graph_ref = Arc::new(RwLock::new(graph));
@@ -120,6 +127,7 @@ impl Executor {
             cas,
             exec,
             db,
+            registry_manifests: Arc::new(registry_manifests),
         }
     }
 
@@ -186,6 +194,7 @@ impl Executor {
         let exec = self.exec.clone();
         let db = self.db.clone();
         let tui = self.tui.clone();
+        let registry_manifests = self.registry_manifests.clone();
 
         tokio::spawn(async move {
             // Mark as running
@@ -202,7 +211,7 @@ impl Executor {
             let action_id = tui.start_action(action_type).await;
 
             // Execute action
-            let result = execute_action(action, &cas, &exec, &db).await;
+            let result = execute_action(action, &cas, &exec, &db, &registry_manifests, &results).await;
 
             // Complete TUI tracking
             tui.complete_action(action_id).await;
@@ -268,17 +277,273 @@ impl Executor {
 /// Execute a single action
 async fn execute_action(
     action: Action,
-    _cas: &Arc<OortClient>,
-    _exec: &Arc<RheaClient>,
-    _db: &Arc<Mutex<crate::db::Database>>,
+    cas: &Arc<OortClient>,
+    exec: &Arc<RheaClient>,
+    db: &Arc<Mutex<crate::db::Database>>,
+    registry_manifests: &Arc<HashMap<(String, String), Blake3Hash>>,
+    results: &Arc<RwLock<HashMap<NodeIndex, ActionResult>>>,
 ) -> Result<ActionResult, AetherError> {
+    use camino::Utf8PathBuf;
+    use vx_rhea_proto::{RustCompileRequest, RustDep};
+    use vx_oort_proto::{TreeFile, IngestTreeRequest};
+    use vx_rs::crate_graph::CrateSource;
+    use crate::queries::*;
+
     match action {
-        Action::CompileRustCrate { crate_name, .. } => {
-            // TODO: Implement actual compilation
-            // For now, just return a placeholder
-            debug!(crate_name, "Would compile crate (not implemented yet)");
+        Action::CompileRustCrate {
+            crate_id,
+            crate_name,
+            crate_type,
+            edition,
+            crate_root_rel,
+            source,
+            deps: action_deps,
+            workspace_root: workspace_root_str,
+            target_triple,
+            profile,
+            toolchain_manifest,
+            mut rust_crate,
+            toolchain,
+            config,
+        } => {
+            let workspace_root = Utf8PathBuf::from(&workspace_root_str);
+
+            // Compute source closure and hash (for path crates)
+            let (closure_paths, closure_hash) = match &source {
+                CrateSource::Path { .. } => {
+                    let crate_root_abs = workspace_root.join(&crate_root_rel);
+                    let paths = vx_rs::rust_source_closure(&crate_root_abs, &workspace_root)
+                        .map_err(|e| AetherError::SourceClosure {
+                            crate_name: crate_name.clone(),
+                            message: e.to_string(),
+                        })?;
+
+                    let hash = vx_rs::hash_source_closure(&paths, &workspace_root)
+                        .map_err(|e| AetherError::SourceHash(e.to_string()))?;
+
+                    (paths, hash)
+                }
+                CrateSource::Registry { .. } => {
+                    // Registry crates don't need source closure
+                    (vec![], Blake3Hash([0u8; 32]))
+                }
+            };
+
+            // Update RustCrate with actual closure hash
+            let crate_id_hex = crate_id.short_hex();
+            let db_guard = db.lock().await;
+            rust_crate = crate::inputs::RustCrate::new(
+                &*db_guard,
+                crate_id_hex,
+                crate_name.clone(),
+                edition.clone(),
+                crate_type.as_str().to_string(),
+                crate_root_rel.clone(),
+                closure_hash,
+            )
+            .map_err(|e| AetherError::Picante(e.to_string()))?;
+            drop(db_guard);
+
+            // Collect dependency results from completed actions
+            let deps: Vec<RustDep> = {
+                let results_lock = results.read().await;
+
+                // Build map of CrateId -> output_manifest from completed actions
+                let completed_manifests: HashMap<CrateId, Blake3Hash> = results_lock
+                    .iter()
+                    .filter_map(|(_, result)| {
+                        match result {
+                            ActionResult::CrateCompiled {
+                                crate_id,
+                                output_manifest,
+                            } => Some((*crate_id, *output_manifest)),
+                        }
+                    })
+                    .collect();
+
+                // Build RustDep list by resolving each ActionDep
+                action_deps
+                    .iter()
+                    .map(|action_dep| {
+                        let manifest_hash = completed_manifests
+                            .get(&action_dep.crate_id)
+                            .ok_or_else(|| AetherError::DependencyNotCompiled {
+                                dep_name: action_dep.extern_name.clone(),
+                                crate_name: crate_name.clone(),
+                            })?;
+
+                        // Determine registry_crate_manifest based on source
+                        let registry_crate_manifest = match &action_dep.source {
+                            CrateSource::Registry { name, version, .. } => {
+                                registry_manifests.get(&(name.clone(), version.clone())).copied()
+                            }
+                            CrateSource::Path { .. } => None,
+                        };
+
+                        Ok(RustDep {
+                            extern_name: action_dep.extern_name.clone(),
+                            manifest_hash: *manifest_hash,
+                            registry_crate_manifest,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, AetherError>>()?
+            };
+
+            let dep_rlib_hashes: Vec<(String, Blake3Hash)> = deps
+                .iter()
+                .map(|d| (d.extern_name.clone(), d.manifest_hash))
+                .collect();
+
+            // Compute cache key
+            let db_guard = db.lock().await;
+            let cache_key = match crate_type {
+                vx_rs::CrateType::Lib => {
+                    if dep_rlib_hashes.is_empty() {
+                        cache_key_compile_rlib(&*db_guard, rust_crate, toolchain, config)
+                            .await
+                            .map_err(|e| AetherError::CacheKey(e.to_string()))?
+                    } else {
+                        cache_key_compile_rlib_with_deps(&*db_guard, rust_crate, toolchain, config, dep_rlib_hashes.clone())
+                            .await
+                            .map_err(|e| AetherError::CacheKey(e.to_string()))?
+                    }
+                }
+                vx_rs::CrateType::Bin => {
+                    cache_key_compile_bin_with_deps(&*db_guard, rust_crate, toolchain, config, dep_rlib_hashes.clone())
+                        .await
+                        .map_err(|e| AetherError::CacheKey(e.to_string()))?
+                }
+            };
+            drop(db_guard);
+
+            // Check cache
+            let output_manifest = if let Some(cached) = cas
+                .lookup(cache_key)
+                .await
+                .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
+            {
+                info!(
+                    crate_name = %crate_name,
+                    manifest = %cached.short_hex(),
+                    "cache hit"
+                );
+                cached
+            } else {
+                // Cache miss - need to compile
+                info!(
+                    crate_name = %crate_name,
+                    "cache miss, compiling"
+                );
+
+                // Build compile request based on crate source
+                let compile_request = match &source {
+                    CrateSource::Path { .. } => {
+                        // Path crate - ingest source tree to CAS
+                        let mut files = Vec::with_capacity(closure_paths.len());
+
+                        for rel_path in &closure_paths {
+                            let abs_path = workspace_root.join(rel_path);
+                            let contents = tokio::fs::read(&abs_path)
+                                .await
+                                .map_err(|e| AetherError::FileRead {
+                                    path: abs_path.clone(),
+                                    message: e.to_string(),
+                                })?;
+
+                            files.push(TreeFile {
+                                path: rel_path.to_string(),
+                                contents,
+                                executable: false,
+                            });
+                        }
+
+                        let ingest_req = IngestTreeRequest { files };
+                        let ingest_result = cas
+                            .ingest_tree(ingest_req)
+                            .await
+                            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
+
+                        if !ingest_result.success {
+                            return Err(AetherError::TreeIngestion(
+                                ingest_result
+                                    .error
+                                    .unwrap_or_else(|| "tree ingestion failed".to_string()),
+                            ));
+                        }
+
+                        let source_manifest = ingest_result.manifest_hash.ok_or_else(|| {
+                            AetherError::TreeIngestion("missing manifest hash".to_string())
+                        })?;
+
+                        RustCompileRequest {
+                            toolchain_manifest,
+                            source_manifest,
+                            crate_root: crate_root_rel.clone(),
+                            crate_name: crate_name.clone(),
+                            crate_type: crate_type.as_str().to_string(),
+                            edition: edition.clone(),
+                            target_triple: target_triple.clone(),
+                            profile: profile.clone(),
+                            deps: deps.clone(),
+                            registry_crate_manifest: None,
+                        }
+                    }
+                    CrateSource::Registry { name, version, .. } => {
+                        // Registry crate - rhea will extract and determine edition/lib_path
+                        let registry_manifest = registry_manifests
+                            .get(&(name.clone(), version.clone()))
+                            .copied()
+                            .ok_or_else(|| AetherError::RegistryCrateNoManifest {
+                                name: name.clone(),
+                                version: version.clone(),
+                            })?;
+
+                        RustCompileRequest {
+                            toolchain_manifest,
+                            source_manifest: Blake3Hash([0u8; 32]), // Placeholder, rhea ignores
+                            crate_root: String::new(),              // Placeholder, rhea ignores
+                            crate_name: crate_name.clone(),
+                            crate_type: crate_type.as_str().to_string(),
+                            edition: String::new(), // Placeholder, rhea reads from Cargo.toml
+                            target_triple: target_triple.clone(),
+                            profile: profile.clone(),
+                            deps: deps.clone(),
+                            registry_crate_manifest: Some(registry_manifest),
+                        }
+                    }
+                };
+
+                let result = exec
+                    .compile_rust(compile_request)
+                    .await
+                    .map_err(|e| AetherError::ExecRpc(std::sync::Arc::new(e)))?;
+
+                if !result.success {
+                    return Err(AetherError::Compilation {
+                        crate_name: crate_name.clone(),
+                        message: result.error.unwrap_or(result.stderr),
+                    });
+                }
+
+                let output_manifest =
+                    result
+                        .output_manifest
+                        .ok_or_else(|| AetherError::NoOutputManifest {
+                            crate_name: crate_name.clone(),
+                        })?;
+
+                // Publish to cache
+                cas
+                    .publish(cache_key, output_manifest)
+                    .await
+                    .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
+
+                output_manifest
+            };
+
             Ok(ActionResult::CrateCompiled {
-                output_manifest: Blake3Hash([0u8; 32]),
+                crate_id,
+                output_manifest,
             })
         }
     }

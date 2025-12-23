@@ -7,9 +7,20 @@
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
 use vx_oort_proto::Blake3Hash;
-use vx_rs::{CrateGraph, CrateId, CrateType};
+use vx_rs::crate_graph::{CrateGraph, CrateId, CrateSource, CrateType};
 
 use crate::inputs::{BuildConfig, RustCrate, RustToolchain};
+
+/// Dependency with source information (for building RustDep at execution time)
+#[derive(Debug, Clone)]
+pub struct ActionDep {
+    /// The extern crate name
+    pub extern_name: String,
+    /// CrateId of the dependency
+    pub crate_id: CrateId,
+    /// Source of the dependency (to determine if registry_crate_manifest is needed)
+    pub source: CrateSource,
+}
 
 /// A single unit of work in the build process
 #[derive(Debug, Clone)]
@@ -19,11 +30,27 @@ pub enum Action {
         crate_id: CrateId,
         crate_name: String,
         crate_type: CrateType,
-        /// Picante input for this crate
+        /// Rust edition
+        edition: String,
+        /// Crate root path (workspace-relative)
+        crate_root_rel: String,
+        /// Source type (Path or Registry)
+        source: CrateSource,
+        /// Dependencies this crate needs (with source info for RustDep construction)
+        deps: Vec<ActionDep>,
+        /// Workspace root path
+        workspace_root: String,
+        /// Target triple
+        target_triple: String,
+        /// Build profile
+        profile: String,
+        /// Toolchain manifest hash
+        toolchain_manifest: Blake3Hash,
+        /// Picante input for this crate (for cache key computation)
         rust_crate: RustCrate,
-        /// Toolchain to use
+        /// Toolchain to use (for cache key computation)
         toolchain: RustToolchain,
-        /// Build configuration
+        /// Build configuration (for cache key computation)
         config: BuildConfig,
     },
 }
@@ -94,10 +121,36 @@ impl ActionGraph {
             )
             .map_err(|e| crate::error::AetherError::Picante(e.to_string()))?;
 
+            // Build ActionDep list with source information
+            let action_deps: Vec<ActionDep> = crate_node
+                .deps
+                .iter()
+                .map(|dep| {
+                    let dep_node = &crate_graph.nodes[&dep.crate_id];
+                    ActionDep {
+                        extern_name: dep.extern_name.clone(),
+                        crate_id: dep.crate_id,
+                        source: dep_node.source.clone(),
+                    }
+                })
+                .collect();
+
+            let target_triple_str = toolchain.target(db).map_err(|e| crate::error::AetherError::Picante(e.to_string()))?;
+            let profile_str = config.profile(db).map_err(|e| crate::error::AetherError::Picante(e.to_string()))?;
+            let manifest_hash = toolchain.toolchain_manifest(db).map_err(|e| crate::error::AetherError::Picante(e.to_string()))?;
+
             let action = Action::CompileRustCrate {
                 crate_id: crate_node.id,
                 crate_name: crate_node.crate_name.clone(),
                 crate_type: crate_node.crate_type,
+                edition: crate_node.edition.as_str().to_string(),
+                crate_root_rel: crate_node.crate_root_rel.to_string(),
+                source: crate_node.source.clone(),
+                deps: action_deps,
+                workspace_root: crate_graph.workspace_root.to_string(),
+                target_triple: target_triple_str,
+                profile: profile_str,
+                toolchain_manifest: manifest_hash,
                 rust_crate,
                 toolchain,
                 config,
