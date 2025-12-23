@@ -23,7 +23,7 @@ use vx_cas_proto::{
 };
 use vx_daemon_proto::{BuildRequest, BuildResult};
 use vx_exec_proto::{ExecClient, RustCompileRequest, RustDep};
-use vx_rs::{CrateGraph, CrateGraphError, CrateId, CrateType, ModuleError};
+use vx_rs::{CrateGraph, CrateId, CrateType, ModuleError};
 use vx_rs::crate_graph::CrateSource;
 
 /// Toolchain information (manifest-only, no materialization)
@@ -315,7 +315,7 @@ impl DaemonService {
 
         // Build the crate graph with lockfile support
         let graph = CrateGraph::build_with_lockfile(project_path)
-            .map_err(|e: CrateGraphError| format_diagnostic(&e))?;
+            .map_err(|e| format!("{:?}", miette::Report::new(e)))?;
 
         info!(
             workspace_root = %graph.workspace_root,
@@ -584,17 +584,6 @@ impl DaemonService {
             output_path: final_output_path,
             error: None,
         })
-    }
-}
-
-/// Format a diagnostic error using miette
-fn format_diagnostic(err: &dyn miette::Diagnostic) -> String {
-    let mut buf = String::new();
-    let handler = miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::unicode());
-    if handler.render_report(&mut buf, err).is_ok() {
-        buf
-    } else {
-        format!("{}", err)
     }
 }
 

@@ -10,7 +10,7 @@
 mod harness;
 use harness::{TestEnv, create_diamond_dependency_project, create_multi_crate_project};
 
-#[test]
+#[test_log::test]
 fn multi_crate_build_succeeds() {
     let env = TestEnv::new();
     create_multi_crate_project(&env);
@@ -29,7 +29,7 @@ fn multi_crate_build_succeeds() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn multi_crate_second_build_is_cache_hit() {
     let env = TestEnv::new();
     create_multi_crate_project(&env);
@@ -58,7 +58,7 @@ fn multi_crate_second_build_is_cache_hit() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn dep_change_rebuilds_both() {
     let env = TestEnv::new();
     create_multi_crate_project(&env);
@@ -90,7 +90,7 @@ fn dep_change_rebuilds_both() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn app_change_rebuilds_only_app() {
     let env = TestEnv::new();
     create_multi_crate_project(&env);
@@ -124,7 +124,7 @@ fn app_change_rebuilds_only_app() {
     // The key success criterion is that the build succeeds
 }
 
-#[test]
+#[test_log::test]
 fn multi_crate_path_independence() {
     // Same project content in different directories should be a cache hit
     let env1 = TestEnv::new();
@@ -158,7 +158,7 @@ fn multi_crate_path_independence() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn module_rename_invalidates_cache() {
     let env = TestEnv::new();
     create_multi_crate_project(&env);
@@ -220,7 +220,7 @@ pub use greeter::greet;
     );
 }
 
-#[test]
+#[test_log::test]
 fn diamond_dependency_builds() {
     let env = TestEnv::new();
     create_diamond_dependency_project(&env);
@@ -235,7 +235,7 @@ fn diamond_dependency_builds() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn diamond_dependency_cache_hit() {
     let env = TestEnv::new();
     create_diamond_dependency_project(&env);
@@ -259,7 +259,7 @@ fn diamond_dependency_cache_hit() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn diamond_shared_dep_change_rebuilds_dependents() {
     let env = TestEnv::new();
     create_diamond_dependency_project(&env);

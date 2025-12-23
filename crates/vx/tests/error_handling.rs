@@ -7,7 +7,7 @@ use harness::{
     TestEnv, create_project_with_build_script, create_project_with_deps, create_workspace,
 };
 
-#[test]
+#[test_log::test]
 fn rejects_registry_deps_without_lockfile() {
     let env = TestEnv::new();
     create_project_with_deps(&env);
@@ -27,7 +27,7 @@ fn rejects_registry_deps_without_lockfile() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn rejects_workspace() {
     let env = TestEnv::new();
     create_workspace(&env);
@@ -43,7 +43,7 @@ fn rejects_workspace() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn rejects_build_script() {
     let env = TestEnv::new();
     create_project_with_build_script(&env);
@@ -59,7 +59,7 @@ fn rejects_build_script() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn rejects_features() {
     let env = TestEnv::new();
     env.write_file(
@@ -85,7 +85,7 @@ foo = []
     );
 }
 
-#[test]
+#[test_log::test]
 fn rejects_proc_macros() {
     let env = TestEnv::new();
     env.write_file(

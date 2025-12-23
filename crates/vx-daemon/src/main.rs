@@ -246,6 +246,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Install miette-arborium for rich syntax-highlighted diagnostics
+    miette_arborium::install_global();
+
     let args = Args::from_env()?;
     tracing::info!("Starting vx-daemon");
     tracing::info!("  VX_HOME: {}", args.vx_home);

@@ -213,17 +213,13 @@ pub fn extract_zig_tarball(
     extract_dir: &Utf8Path,
 ) -> Result<(Utf8PathBuf, Utf8PathBuf), ZigError> {
     use std::fs;
-    use std::io::Read;
-    use xz2::read::XzDecoder;
 
     // Create extraction directory
     fs::create_dir_all(extract_dir)?;
 
     // Decompress xz
-    let mut decoder = XzDecoder::new(tarball);
     let mut decompressed = Vec::new();
-    decoder
-        .read_to_end(&mut decompressed)
+    lzma_rs::xz_decompress(&mut std::io::Cursor::new(tarball), &mut decompressed)
         .map_err(|e| ZigError::ExtractionFailed(format!("xz decompression failed: {}", e)))?;
 
     // Extract tar

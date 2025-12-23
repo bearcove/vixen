@@ -29,4 +29,3 @@ vx-cas-proto = { workspace = true }
 vx-io = { workspace = true }
 vx-tarball = { workspace = true }
 vx-toolchain = { workspace = true }
-xz2 = "0.1"

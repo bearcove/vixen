@@ -8,7 +8,7 @@
 mod harness;
 use harness::{TestEnv, create_hello_world};
 
-#[test]
+#[test_log::test]
 fn cache_persists_across_sessions() {
     // This test verifies that cache hits work across separate vx invocations
     let env = TestEnv::new();
@@ -27,7 +27,7 @@ fn cache_persists_across_sessions() {
     assert!(result2.was_cached(), "build should hit global CAS cache");
 }
 
-#[test]
+#[test_log::test]
 fn picante_cache_is_persisted() {
     // This test verifies that picante's incremental database is persisted to disk.
     // The picante.cache file should be created after a build and contain
@@ -79,7 +79,7 @@ fn picante_cache_is_persisted() {
     );
 }
 
-#[test]
+#[test_log::test]
 fn picante_memoization_skips_query_recomputation() {
     // This test verifies that picante's memoization is actually working:
     // - First build: queries are computed (we see "COMPUTING" in logs)

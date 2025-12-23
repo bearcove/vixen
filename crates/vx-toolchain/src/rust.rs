@@ -3,7 +3,6 @@
 //! Downloads Rust toolchains from static.rust-lang.org without requiring rustup.
 
 use facet::Facet;
-use facet_value::Value;
 use std::collections::HashMap;
 
 use crate::{ToolchainError, detect_host_triple};
@@ -92,128 +91,43 @@ pub struct TargetManifest {
 #[derive(Facet, Debug)]
 #[facet(rename_all = "kebab-case")]
 struct RawChannelManifest {
-    manifest_version: Option<String>,
-    date: Option<String>,
-    pkg: Option<Value>,
+    date: String,
+    pkg: RawPkgTable,
+}
+
+#[derive(Facet, Debug)]
+struct RawPkgTable {
+    rustc: RawPackage,
+    #[facet(rename = "rust-std")]
+    rust_std: RawPackage,
 }
 
 #[derive(Facet, Debug)]
 struct RawPackage {
-    version: Option<String>,
+    version: String,
     git_commit_hash: Option<String>,
-    target: Option<Value>,
+    target: HashMap<String, RawTarget>,
 }
 
 #[derive(Facet, Debug)]
 struct RawTarget {
-    available: Option<bool>,
+    #[facet(default)]
+    available: bool,
     url: Option<String>,
     hash: Option<String>,
     xz_url: Option<String>,
     xz_hash: Option<String>,
-    components: Option<Value>,
-    extensions: Option<Value>,
 }
 
 impl ChannelManifest {
     pub fn from_toml(contents: &str) -> Result<Self, ToolchainError> {
-        let doc: toml::Value = contents
-            .parse()
+        let raw: RawChannelManifest = facet_toml::from_str(contents)
             .map_err(|e| ToolchainError::ParseError(format!("TOML parse error: {}", e)))?;
 
-        let date = doc
-            .get("date")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolchainError::ParseError("missing 'date' field".into()))?
-            .to_string();
-
-        let pkg = doc
-            .get("pkg")
-            .and_then(|v| v.as_table())
-            .ok_or_else(|| ToolchainError::ParseError("missing 'pkg' table".into()))?;
-
-        let rustc = pkg
-            .get("rustc")
-            .ok_or_else(|| ToolchainError::ParseError("missing 'pkg.rustc'".into()))?;
-        let rust_std = pkg
-            .get("rust-std")
-            .ok_or_else(|| ToolchainError::ParseError("missing 'pkg.rust-std'".into()))?;
-
         Ok(ChannelManifest {
-            date,
-            rustc: Self::parse_package(rustc)?,
-            rust_std: Self::parse_package(rust_std)?,
-        })
-    }
-
-    fn parse_package(pkg_value: &toml::Value) -> Result<PackageManifest, ToolchainError> {
-        let pkg_table = pkg_value
-            .as_table()
-            .ok_or_else(|| ToolchainError::ParseError("package is not a table".into()))?;
-
-        let version = pkg_table
-            .get("version")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolchainError::ParseError("missing package version".into()))?
-            .to_string();
-
-        let git_commit_hash = pkg_table
-            .get("git_commit_hash")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-
-        let target_table = pkg_table
-            .get("target")
-            .and_then(|v| v.as_table())
-            .ok_or_else(|| ToolchainError::ParseError("missing 'target' table".into()))?;
-
-        let mut targets = HashMap::new();
-        for (target_name, target_value) in target_table {
-            let target = Self::parse_target(target_value)?;
-            targets.insert(target_name.clone(), target);
-        }
-
-        Ok(PackageManifest {
-            version,
-            git_commit_hash,
-            targets,
-        })
-    }
-
-    fn parse_target(target_value: &toml::Value) -> Result<TargetManifest, ToolchainError> {
-        let target_table = target_value
-            .as_table()
-            .ok_or_else(|| ToolchainError::ParseError("target is not a table".into()))?;
-
-        let available = target_table
-            .get("available")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let xz_url = target_table
-            .get("xz_url")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let url = target_table
-            .get("url")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let url = xz_url.or(url).unwrap_or_default();
-
-        let xz_hash = target_table
-            .get("xz_hash")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let hash = target_table
-            .get("hash")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let hash = xz_hash.or(hash).unwrap_or_default();
-
-        Ok(TargetManifest {
-            available,
-            url,
-            hash,
+            date: raw.date,
+            rustc: raw.pkg.rustc.into(),
+            rust_std: raw.pkg.rust_std.into(),
         })
     }
 
@@ -237,6 +151,36 @@ impl ChannelManifest {
                 component: "rust-std".to_string(),
                 target: target.to_string(),
             })
+    }
+}
+
+impl From<RawPackage> for PackageManifest {
+    fn from(raw: RawPackage) -> Self {
+        let targets = raw
+            .target
+            .into_iter()
+            .map(|(name, raw_target)| (name, raw_target.into()))
+            .collect();
+
+        PackageManifest {
+            version: raw.version,
+            git_commit_hash: raw.git_commit_hash,
+            targets,
+        }
+    }
+}
+
+impl From<RawTarget> for TargetManifest {
+    fn from(raw: RawTarget) -> Self {
+        // Prefer xz_url over url, and xz_hash over hash
+        let url = raw.xz_url.or(raw.url).unwrap_or_default();
+        let hash = raw.xz_hash.or(raw.hash).unwrap_or_default();
+
+        TargetManifest {
+            available: raw.available,
+            url,
+            hash,
+        }
     }
 }
 
