@@ -11,7 +11,7 @@ backtrace = { path = "../..", features = ["std"] }
 "#;
 
     println!("=== Testing inline table syntax ===");
-    match facet_toml::from_str::<vx_manifest::full::CargoManifest>(toml1) {
+    match facet_toml::from_str::<facet_cargo_toml::CargoToml>(toml1) {
         Ok(manifest) => {
             println!("Successfully parsed!");
             println!("Dependencies: {:#?}", manifest.dependencies);
@@ -37,7 +37,7 @@ features = ["router"]
 "#;
 
     println!("\n=== Testing table header syntax ===");
-    match facet_toml::from_str::<vx_manifest::full::CargoManifest>(toml2) {
+    match facet_toml::from_str::<facet_cargo_toml::CargoToml>(toml2) {
         Ok(manifest) => {
             println!("Successfully parsed!");
             println!("Dependencies: {:#?}", manifest.dependencies);

@@ -10,6 +10,7 @@ blake3 = { workspace = true }
 camino = { workspace = true }
 tracing = { workspace = true }
 facet = { workspace = true }
+facet-cargo-toml = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }

@@ -639,8 +639,8 @@ dependencies = [
 
 [[package]]
 name = "facet"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "autocfg",
  "facet-core",
@@ -650,8 +650,8 @@ dependencies = [
 
 [[package]]
 name = "facet-args"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet",
  "facet-core",
@@ -663,9 +663,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-cargo-toml"
+version = "0.1.0"
+source = "git+https://github.com/bearcove/facet-cargo-toml?branch=main#eb5bd313b71dd8a81971a51364f4ffa4b4461e5a"
+dependencies = [
+ "camino",
+ "facet",
+ "facet-toml",
+ "facet-value",
+ "thiserror",
+]
+
+[[package]]
 name = "facet-core"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "autocfg",
  "camino",
@@ -675,8 +687,8 @@ dependencies = [
 
 [[package]]
 name = "facet-json"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet",
  "facet-core",
@@ -693,8 +705,8 @@ dependencies = [
 
 [[package]]
 name = "facet-macro-parse"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet-macro-types",
  "proc-macro2",
@@ -703,8 +715,8 @@ dependencies = [
 
 [[package]]
 name = "facet-macro-types"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -713,16 +725,16 @@ dependencies = [
 
 [[package]]
 name = "facet-macros"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet-macros-impl",
 ]
 
 [[package]]
 name = "facet-macros-impl"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet-macro-parse",
  "facet-macro-types",
@@ -734,8 +746,8 @@ dependencies = [
 
 [[package]]
 name = "facet-path"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "arborium",
  "facet-core",
@@ -746,8 +758,8 @@ dependencies = [
 
 [[package]]
 name = "facet-postcard"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet-core",
  "facet-path",
@@ -758,8 +770,8 @@ dependencies = [
 
 [[package]]
 name = "facet-pretty"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -768,8 +780,8 @@ dependencies = [
 
 [[package]]
 name = "facet-reflect"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet-core",
  "miette",
@@ -777,8 +789,8 @@ dependencies = [
 
 [[package]]
 name = "facet-solver"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -787,8 +799,8 @@ dependencies = [
 
 [[package]]
 name = "facet-toml"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "ariadne",
  "facet-core",
@@ -803,8 +815,8 @@ dependencies = [
 
 [[package]]
 name = "facet-value"
-version = "0.33.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#49f2fd407116790b84a00ed413927ccf81e0e645"
+version = "0.34.0"
+source = "git+https://github.com/facet-rs/facet?branch=main#3799542f14ec4eaee0032a2ba0aa7877f9aac60d"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -1853,8 +1865,7 @@ dependencies = [
 name = "rapace-macros"
 version = "0.5.0"
 dependencies = [
- "facet",
- "facet-toml",
+ "facet-cargo-toml",
  "heck 0.4.1",
  "proc-macro2",
  "quote",
@@ -2792,8 +2803,7 @@ dependencies = [
  "camino",
  "datatest-stable",
  "facet",
- "facet-toml",
- "facet-value",
+ "facet-cargo-toml",
  "miette",
  "tempfile",
  "thiserror",
@@ -2817,6 +2827,7 @@ dependencies = [
  "blake3",
  "camino",
  "facet",
+ "facet-cargo-toml",
  "hex",
  "miette",
  "ra-ap-rustc_lexer",

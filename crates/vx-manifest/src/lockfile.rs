@@ -1,13 +1,7 @@
-//! Cargo.lock parsing and dependency reachability analysis.
+//! Cargo.lock reachability analysis.
 //!
-//! This module parses Cargo.lock files (v3 and v4 formats) and computes
-//! the set of reachable registry packages from the root crate.
-//!
-//! ## Lockfile Format
-//!
-//! Cargo.lock contains:
-//! - `version`: lockfile format version (3 or 4)
-//! - `[[package]]`: array of package entries with name, version, source, checksum, dependencies
+//! This module extends facet-cargo-toml's lockfile parsing with dependency
+//! reachability analysis.
 //!
 //! ## Reachability
 //!
@@ -16,30 +10,16 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use camino::{Utf8Path, Utf8PathBuf};
-use facet::Facet;
 use thiserror::Error;
 
-/// The crates.io registry source string in Cargo.lock
-pub const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
+// Re-export from facet-cargo-toml
+pub use facet_cargo_toml::{CargoLock, LockPackage, CRATES_IO_SOURCE};
 
-/// Errors that can occur during lockfile parsing
+/// Errors that can occur during lockfile reachability analysis
 #[derive(Debug, Error)]
 pub enum LockfileError {
-    #[error("failed to read {path}: {source}")]
-    ReadError {
-        path: Utf8PathBuf,
-        source: std::io::Error,
-    },
-
-    #[error("failed to parse Cargo.lock: {0}")]
-    ParseError(String),
-
     #[error("unsupported lockfile version: {0} (supported: 3, 4)")]
     UnsupportedVersion(u32),
-
-    #[error("missing lockfile version field")]
-    MissingVersion,
 
     #[error("package '{name}' has unsupported source: {source_url}")]
     UnsupportedSource { name: String, source_url: String },
@@ -54,125 +34,9 @@ pub enum LockfileError {
     DependencyNotFound { package: String, dep: String },
 }
 
-/// A package entry from Cargo.lock
-#[derive(Debug, Clone)]
-pub struct LockPackage {
-    /// Package name
-    pub name: String,
-    /// Version string
-    pub version: String,
-    /// Source (None for path deps, Some for registry/git)
-    pub source: Option<String>,
-    /// SHA256 checksum (required for registry packages)
-    pub checksum: Option<String>,
-    /// Dependencies as "name" or "name version" or "name version (source)"
-    pub dependencies: Vec<String>,
-}
-
-impl LockPackage {
-    /// Returns true if this is a registry package (from crates.io)
-    pub fn is_registry(&self) -> bool {
-        self.source.as_deref() == Some(CRATES_IO_SOURCE)
-    }
-
-    /// Returns true if this is a path dependency (no source)
-    pub fn is_path(&self) -> bool {
-        self.source.is_none()
-    }
-
-    /// Returns a unique key for this package: "name version"
-    pub fn key(&self) -> String {
-        format!("{} {}", self.name, self.version)
-    }
-}
-
-/// Parsed Cargo.lock file
-#[derive(Debug)]
-pub struct Lockfile {
-    /// Lockfile format version (3 or 4)
-    pub version: u32,
-    /// All packages in the lockfile
-    pub packages: Vec<LockPackage>,
-}
-
-/// Raw TOML structure for parsing
-#[derive(Facet, Debug)]
-struct RawLockfile {
-    version: Option<u32>,
-    package: Option<Vec<RawPackage>>,
-}
-
-#[derive(Facet, Debug)]
-struct RawPackage {
-    name: String,
-    version: String,
-    source: Option<String>,
-    checksum: Option<String>,
-    dependencies: Option<Vec<String>>,
-}
-
-impl Lockfile {
-    /// Parse a Cargo.lock file from disk
-    pub fn from_path(path: &Utf8Path) -> Result<Self, LockfileError> {
-        let contents = std::fs::read_to_string(path).map_err(|e| LockfileError::ReadError {
-            path: path.to_owned(),
-            source: e,
-        })?;
-        Self::parse(&contents)
-    }
-
-    /// Parse Cargo.lock content
-    pub fn parse(contents: &str) -> Result<Self, LockfileError> {
-        let raw: RawLockfile =
-            facet_toml::from_str(contents).map_err(|e| LockfileError::ParseError(e.to_string()))?;
-
-        let version = raw.version.ok_or(LockfileError::MissingVersion)?;
-
-        // We support v3 and v4
-        if version != 3 && version != 4 {
-            return Err(LockfileError::UnsupportedVersion(version));
-        }
-
-        let packages = raw
-            .package
-            .unwrap_or_default()
-            .into_iter()
-            .map(|p| LockPackage {
-                name: p.name,
-                version: p.version,
-                source: p.source,
-                checksum: p.checksum,
-                dependencies: p.dependencies.unwrap_or_default(),
-            })
-            .collect();
-
-        Ok(Lockfile { version, packages })
-    }
-
-    /// Find a package by name (for path deps with unique names)
-    pub fn find_by_name(&self, name: &str) -> Option<&LockPackage> {
-        self.packages.iter().find(|p| p.name == name)
-    }
-
-    /// Find a path package by name (source is None).
-    /// Use this for root package lookup to avoid matching registry crates.
-    pub fn find_path_by_name(&self, name: &str) -> Option<&LockPackage> {
-        self.packages
-            .iter()
-            .find(|p| p.name == name && p.source.is_none())
-    }
-
-    /// Find a package by name and version
-    pub fn find_by_name_version(&self, name: &str, version: &str) -> Option<&LockPackage> {
-        self.packages
-            .iter()
-            .find(|p| p.name == name && p.version == version)
-    }
-
-    /// Build an index for efficient lookups
-    pub fn build_index(&self) -> LockfileIndex<'_> {
-        LockfileIndex::new(self)
-    }
+/// Returns a unique key for a package: "name version"
+fn package_key(pkg: &LockPackage) -> String {
+    format!("{} {}", pkg.name, pkg.version)
 }
 
 /// Index for efficient package lookups
@@ -184,12 +48,12 @@ pub struct LockfileIndex<'a> {
 }
 
 impl<'a> LockfileIndex<'a> {
-    fn new(lockfile: &'a Lockfile) -> Self {
+    fn new(lockfile: &'a CargoLock) -> Self {
         let mut by_key = HashMap::new();
         let mut by_name: HashMap<&str, Vec<&LockPackage>> = HashMap::new();
 
         for pkg in &lockfile.packages {
-            by_key.insert(pkg.key(), pkg);
+            by_key.insert(package_key(pkg), pkg);
             by_name.entry(&pkg.name).or_default().push(pkg);
         }
 
@@ -245,7 +109,7 @@ impl ReachablePackages {
         let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
 
         for (idx, pkg) in packages.iter().enumerate() {
-            by_key.insert(pkg.key(), idx);
+            by_key.insert(package_key(pkg), idx);
             by_name.entry(pkg.name.clone()).or_default().push(idx);
         }
 
@@ -326,12 +190,39 @@ impl ReachablePackages {
     }
 }
 
-impl Lockfile {
+/// Extension trait for CargoLock with reachability analysis
+pub trait CargoLockExt {
+    /// Find a path package by name (source = None).
+    /// This prevents matching a registry crate with the same name.
+    fn find_path_by_name(&self, name: &str) -> Option<&LockPackage>;
+
+    /// Build an index for efficient lookups
+    fn build_index(&self) -> LockfileIndex<'_>;
+
     /// Compute reachable packages starting from the root package name.
     ///
     /// This performs BFS through the dependency graph and returns all
     /// reachable registry and path packages.
-    pub fn compute_reachable(&self, root_name: &str) -> Result<ReachablePackages, LockfileError> {
+    fn compute_reachable(&self, root_name: &str) -> Result<ReachablePackages, LockfileError>;
+}
+
+impl CargoLockExt for CargoLock {
+    fn find_path_by_name(&self, name: &str) -> Option<&LockPackage> {
+        self.packages
+            .iter()
+            .find(|p| p.name == name && p.source.is_none())
+    }
+
+    fn build_index(&self) -> LockfileIndex<'_> {
+        LockfileIndex::new(self)
+    }
+
+    fn compute_reachable(&self, root_name: &str) -> Result<ReachablePackages, LockfileError> {
+        // Validate version
+        if self.version != 3 && self.version != 4 {
+            return Err(LockfileError::UnsupportedVersion(self.version));
+        }
+
         let index = self.build_index();
 
         // Find root package - must be a path package (source = None).
@@ -347,7 +238,7 @@ impl Lockfile {
         let mut reachable_packages: Vec<LockPackage> = Vec::new();
 
         queue.push_back(root);
-        visited.insert(root.key());
+        visited.insert(package_key(root));
 
         while let Some(pkg) = queue.pop_front() {
             // Validate the package source
@@ -374,12 +265,12 @@ impl Lockfile {
             for dep_str in &pkg.dependencies {
                 let dep_pkg = index.resolve_dep(dep_str).ok_or_else(|| {
                     LockfileError::DependencyNotFound {
-                        package: pkg.key(),
+                        package: package_key(pkg),
                         dep: dep_str.clone(),
                     }
                 })?;
 
-                let dep_key = dep_pkg.key();
+                let dep_key = package_key(dep_pkg);
                 if !visited.contains(&dep_key) {
                     visited.insert(dep_key);
                     queue.push_back(dep_pkg);
@@ -413,7 +304,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         assert_eq!(lockfile.version, 4);
         assert_eq!(lockfile.packages.len(), 2);
 
@@ -443,7 +334,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         assert_eq!(lockfile.version, 3);
     }
 
@@ -456,19 +347,9 @@ version = 2
 name = "myapp"
 version = "0.1.0"
 "#;
-        let err = Lockfile::parse(contents).unwrap_err();
+        let lockfile = CargoLock::parse(contents).unwrap();
+        let err = lockfile.compute_reachable("myapp").unwrap_err();
         assert!(matches!(err, LockfileError::UnsupportedVersion(2)));
-    }
-
-    #[test]
-    fn reject_missing_version() {
-        let contents = r#"
-[[package]]
-name = "myapp"
-version = "0.1.0"
-"#;
-        let err = Lockfile::parse(contents).unwrap_err();
-        assert!(matches!(err, LockfileError::MissingVersion));
     }
 
     #[test]
@@ -489,7 +370,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let path_pkgs: Vec<_> = reachable.path_packages().collect();
@@ -529,7 +410,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let registry_pkgs: Vec<_> = reachable.registry_packages().collect();
@@ -563,7 +444,7 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let registry_pkgs: Vec<_> = reachable.registry_packages().collect();
@@ -588,7 +469,7 @@ name = "git_dep"
 version = "0.1.0"
 source = "git+https://github.com/example/repo#abcd1234"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         let err = lockfile.compute_reachable("myapp").unwrap_err();
         assert!(matches!(err, LockfileError::UnsupportedSource { name, .. } if name == "git_dep"));
     }
@@ -610,7 +491,7 @@ name = "bad_crate"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         let err = lockfile.compute_reachable("myapp").unwrap_err();
         assert!(matches!(err, LockfileError::MissingChecksum { name, .. } if name == "bad_crate"));
     }
@@ -640,7 +521,7 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let registry_pkgs: Vec<_> = reachable.registry_packages().collect();
@@ -669,7 +550,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aaaa"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         let registry_pkgs: Vec<_> = reachable.registry_packages().collect();
@@ -702,7 +583,7 @@ version = "1.0.197"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aaaa"
 "#;
-        let lockfile = Lockfile::parse(contents).unwrap();
+        let lockfile = CargoLock::parse(contents).unwrap();
         let reachable = lockfile.compute_reachable("myapp").unwrap();
 
         // Both myapp and mylib are path deps

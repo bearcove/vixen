@@ -1,8 +1,8 @@
 //! Cargo.toml and Cargo.lock parsing for vx
 //!
 //! This crate provides:
-//! - `Manifest`: Cargo.toml parsing using the full parser with policy validation
-//! - `Lockfile`: Cargo.lock parsing with reachability analysis
+//! - `Manifest`: Cargo.toml parsing using facet-cargo-toml with policy validation
+//! - Lockfile and reachability analysis for Cargo.lock files
 //!
 //! ## Policy Validation
 //!
@@ -14,16 +14,12 @@
 
 pub mod lockfile;
 
-pub mod full;
-
 use std::sync::Arc;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use thiserror::Error;
-
-pub use full::CargoManifest;
 
 /// Errors that can occur during manifest parsing
 #[derive(Debug, Error, Diagnostic)]
@@ -97,13 +93,13 @@ impl Edition {
     }
 }
 
-impl From<full::Edition> for Edition {
-    fn from(e: full::Edition) -> Self {
+impl From<facet_cargo_toml::Edition> for Edition {
+    fn from(e: facet_cargo_toml::Edition) -> Self {
         match e {
-            full::Edition::E2015 => Edition::E2015,
-            full::Edition::E2018 => Edition::E2018,
-            full::Edition::E2021 => Edition::E2021,
-            full::Edition::E2024 => Edition::E2024,
+            facet_cargo_toml::Edition::E2015 => Edition::E2015,
+            facet_cargo_toml::Edition::E2018 => Edition::E2018,
+            facet_cargo_toml::Edition::E2021 => Edition::E2021,
+            facet_cargo_toml::Edition::E2024 => Edition::E2024,
         }
     }
 }
@@ -193,8 +189,8 @@ impl Manifest {
 
     /// Parse Cargo.toml content with a base directory for resolving paths
     pub fn parse(contents: &str, base_dir: Option<&Utf8Path>) -> Result<Self, ManifestError> {
-        let cargo: full::CargoManifest =
-            full::CargoManifest::parse(contents).map_err(ManifestError::ParseError)?;
+        let cargo = facet_cargo_toml::CargoToml::parse(contents)
+            .map_err(|e| ManifestError::ParseError(e.to_string()))?;
 
         // Extract package
         let package = cargo
@@ -283,8 +279,8 @@ impl Manifest {
         // Check for build script
         if let Some(ref build) = package.build {
             let has_build = match build {
-                full::StringOrBool::String(_) => true,
-                full::StringOrBool::Bool(b) => *b,
+                facet_cargo_toml::StringOrBool::String(_) => true,
+                facet_cargo_toml::StringOrBool::Bool(b) => *b,
             };
             if has_build {
                 return Err(ManifestError::Unsupported {
@@ -300,7 +296,7 @@ impl Manifest {
             .ok_or(ManifestError::MissingField("name"))?;
 
         let edition = match &package.edition {
-            Some(full::EditionOrWorkspace::Edition(e)) => Edition::from(*e),
+            Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => Edition::from(*e),
             _ => Edition::default(),
         };
 
@@ -339,7 +335,7 @@ struct ParsedDependencies {
 
 /// Parse [dependencies] table, extracting path and version dependencies
 fn parse_dependencies(
-    cargo: &full::CargoManifest,
+    cargo: &facet_cargo_toml::CargoToml,
     source: &str,
 ) -> Result<ParsedDependencies, ManifestError> {
     let Some(ref deps) = cargo.dependencies else {
@@ -357,7 +353,7 @@ fn parse_dependencies(
 
     for (name, dep) in deps {
         match dep {
-            full::Dependency::Version(version) => {
+            facet_cargo_toml::Dependency::Version(version) => {
                 // Simple version string: `foo = "1.0"`
                 version_deps.push(VersionDependency {
                     name: name.clone(),
@@ -365,7 +361,7 @@ fn parse_dependencies(
                     features: Vec::new(),
                 });
             }
-            full::Dependency::Workspace(_) => {
+            facet_cargo_toml::Dependency::Workspace(_) => {
                 return Err(ManifestError::InvalidDependency {
                     name: name.clone(),
                     reason: "workspace dependencies are not supported".into(),
@@ -373,7 +369,7 @@ fn parse_dependencies(
                     span: None,
                 });
             }
-            full::Dependency::Detailed(detail) => {
+            facet_cargo_toml::Dependency::Detailed(detail) => {
                 // Check for unsupported fields first - all with span information
                 if let Some(ref git) = detail.git {
                     let span = git.span();
@@ -482,7 +478,7 @@ fn parse_dependencies(
 /// Determine the library target from parsed manifest data
 fn determine_lib_target(
     package_name: &str,
-    lib: Option<&full::LibTarget>,
+    lib: Option<&facet_cargo_toml::LibTarget>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<LibTarget> {
     if let Some(lib) = lib {
@@ -524,7 +520,7 @@ fn determine_lib_target(
 /// Determine the binary target from parsed manifest data
 fn determine_bin_target(
     package_name: &str,
-    bins: Option<&Vec<full::BinTarget>>,
+    bins: Option<&Vec<facet_cargo_toml::BinTarget>>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<BinTarget> {
     if let Some(bins) = bins {

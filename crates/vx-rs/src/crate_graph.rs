@@ -24,8 +24,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use miette::Diagnostic;
 use thiserror::Error;
 use vx_cas_proto::Blake3Hash;
-use vx_manifest::full::CargoManifest;
-use vx_manifest::lockfile::{Lockfile, LockfileError, ReachablePackages};
+use vx_manifest::lockfile::{CargoLock, CargoLockExt, LockfileError, ReachablePackages};
 use vx_manifest::{Edition, Manifest, ManifestError};
 
 /// Errors during crate graph construction
@@ -38,6 +37,10 @@ pub enum CrateGraphError {
     #[error("failed to parse lockfile: {0}")]
     #[diagnostic(code(vx_rs::lockfile_error))]
     LockfileError(#[from] LockfileError),
+
+    #[error("failed to read lockfile: {0}")]
+    #[diagnostic(code(vx_rs::lockfile_read_error))]
+    LockfileReadError(#[from] facet_cargo_toml::Error),
 
     #[error("failed to canonicalize path {path}: {source}")]
     #[diagnostic(code(vx_rs::canonicalization_error))]
@@ -570,7 +573,7 @@ impl CrateGraph {
                 }
             };
 
-            let lockfile = Lockfile::from_path(&lockfile_path)?;
+            let lockfile = CargoLock::from_path(&lockfile_path)?;
             let root_name = manifests[&invocation_dir].name.as_str();
             let reachable = lockfile.compute_reachable(root_name)?;
 
@@ -722,7 +725,7 @@ impl CrateGraph {
 
             // Parse the manifest using the full parser (accepts all Cargo.toml features)
             let manifest_path = self.workspace_root.join(workspace_rel).join("Cargo.toml");
-            let manifest = CargoManifest::from_path(&manifest_path).map_err(|e| {
+            let manifest = facet_cargo_toml::CargoToml::from_path(&manifest_path).map_err(|e| {
                 CrateGraphError::ManifestError(ManifestError::ParseError(e.to_string()))
             })?;
 
@@ -760,13 +763,13 @@ impl CrateGraph {
                 CrateGraphError::ManifestError(ManifestError::MissingField("name"))
             })?;
 
-            // Extract edition, converting from full::Edition to vx_manifest::Edition
+            // Extract edition, converting from facet_cargo_toml::Edition to vx_manifest::Edition
             let edition = match &package.edition {
-                Some(vx_manifest::full::EditionOrWorkspace::Edition(e)) => match e {
-                    vx_manifest::full::Edition::E2015 => Edition::E2015,
-                    vx_manifest::full::Edition::E2018 => Edition::E2018,
-                    vx_manifest::full::Edition::E2021 => Edition::E2021,
-                    vx_manifest::full::Edition::E2024 => Edition::E2024,
+                Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => match e {
+                    facet_cargo_toml::Edition::E2015 => Edition::E2015,
+                    facet_cargo_toml::Edition::E2018 => Edition::E2018,
+                    facet_cargo_toml::Edition::E2021 => Edition::E2021,
+                    facet_cargo_toml::Edition::E2024 => Edition::E2024,
                 },
                 _ => Edition::E2021, // Default
             };

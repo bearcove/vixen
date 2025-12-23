@@ -4,11 +4,10 @@
 //! Each Cargo.toml becomes a separate test case with proper reporting.
 
 use std::path::Path;
-use vx_manifest::full::CargoManifest;
 
 /// Test function that parses a single Cargo.toml file
 fn parse_manifest(path: &Path) -> datatest_stable::Result<()> {
-    let manifest = match CargoManifest::from_path(path) {
+    let manifest = match facet_cargo_toml::CargoToml::from_path(path) {
         Ok(manifest) => manifest,
         Err(e) => {
             eprintln!("{e}");
