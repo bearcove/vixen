@@ -13,12 +13,10 @@ use crate::inputs::*;
 use crate::queries::*;
 use crate::tui::{ActionType, TuiHandle};
 use camino::Utf8PathBuf;
-// TODO: Re-enable picante cache persistence - waiting for https://github.com/bearcove/picante/issues/32
-// use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use vx_aether_proto::{BuildRequest, BuildResult};
 use vx_oort_proto::{
     Blake3Hash, EnsureStatus, IngestTreeRequest, OortClient, RegistrySpec, RustChannel,
@@ -79,7 +77,7 @@ pub struct AetherService {
 
 impl AetherService {
     /// Create a new daemon service
-    pub fn new(
+    pub async fn new(
         cas: Arc<OortClient>,
         exec: Arc<RheaClient>,
         vx_home: Utf8PathBuf,
@@ -89,7 +87,18 @@ impl AetherService {
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
 
-        // TODO: Load persisted picante cache when https://github.com/bearcove/picante/issues/32 is resolved
+        // Load persisted picante cache
+        match db.load_from_cache(&cache_path).await {
+            Ok(true) => {
+                info!(path = %cache_path, "loaded picante cache");
+            }
+            Ok(false) => {
+                debug!(path = %cache_path, "no picante cache found, starting fresh");
+            }
+            Err(e) => {
+                warn!(path = %cache_path, error = %e, "failed to load picante cache, starting fresh");
+            }
+        }
 
         Self {
             cas,
@@ -635,7 +644,16 @@ impl AetherService {
             }
         }
 
-        // TODO: Persist picante cache after build when https://github.com/bearcove/picante/issues/32 is resolved
+        // Persist picante cache after build
+        if let Err(e) = db.save_to_cache(&self.picante_cache).await {
+            warn!(
+                path = %self.picante_cache,
+                error = %e,
+                "failed to save picante cache"
+            );
+        } else {
+            debug!(path = %self.picante_cache, "saved picante cache");
+        }
 
         drop(db);
 
