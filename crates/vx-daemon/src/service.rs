@@ -317,25 +317,30 @@ impl DaemonService {
         let project_path = &request.project_path;
         let total_start = std::time::Instant::now();
 
-        // Acquire hermetic Rust toolchain
-        let rust_toolchain = self.ensure_rust_toolchain(RustChannel::Stable).await?;
+        // Start toolchain acquisition in background - doesn't block manifest parsing
+        let toolchain_fut = self.ensure_rust_toolchain(RustChannel::Stable);
 
         let target_triple = self.exec_host_triple.clone();
 
-        // Build the crate graph with lockfile support
+        // Build the crate graph with lockfile support (can happen while toolchain downloads)
         let graph = CrateGraph::build_with_lockfile(project_path)
             .map_err(|e| DaemonError::CrateGraph(format!("{:?}", miette::Report::new(e))))?;
+
+        // Acquire registry crates in parallel (can happen while toolchain downloads)
+        // This spawns all crate downloads concurrently
+        let registry_fut = self.acquire_registry_crates(&graph);
+
+        // Now wait for both toolchain and registry crates
+        let (rust_toolchain, registry_manifests) =
+            tokio::try_join!(toolchain_fut, registry_fut)?;
 
         info!(
             workspace_root = %graph.workspace_root,
             path_crate_count = graph.nodes.len(),
             registry_crate_count = graph.iter_registry_crates().count(),
             toolchain_id = %rust_toolchain.toolchain_id.short_hex(),
-            "resolved crate graph"
+            "resolved crate graph, toolchain and crates ready"
         );
-
-        // Acquire registry crates in parallel
-        let registry_manifests = self.acquire_registry_crates(&graph).await?;
 
         let profile = if request.release { "release" } else { "debug" };
 
