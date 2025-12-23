@@ -1,8 +1,8 @@
 //! Cargo.toml and Cargo.lock parsing for vx
 //!
 //! This crate provides:
-//! - `Manifest`: Cargo.toml parsing using the full parser with policy validation
-//! - `Lockfile`: Cargo.lock parsing with reachability analysis
+//! - `Manifest`: Cargo.toml parsing using facet-cargo-toml with policy validation
+//! - Lockfile and reachability analysis for Cargo.lock files
 //!
 //! ## Policy Validation
 //!
@@ -14,16 +14,12 @@
 
 pub mod lockfile;
 
-pub mod full;
-
 use std::sync::Arc;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use thiserror::Error;
-
-pub use full::CargoManifest;
 
 /// Errors that can occur during manifest parsing
 #[derive(Debug, Error, Diagnostic)]
@@ -97,13 +93,13 @@ impl Edition {
     }
 }
 
-impl From<full::Edition> for Edition {
-    fn from(e: full::Edition) -> Self {
+impl From<facet_cargo_toml::Edition> for Edition {
+    fn from(e: facet_cargo_toml::Edition) -> Self {
         match e {
-            full::Edition::E2015 => Edition::E2015,
-            full::Edition::E2018 => Edition::E2018,
-            full::Edition::E2021 => Edition::E2021,
-            full::Edition::E2024 => Edition::E2024,
+            facet_cargo_toml::Edition::E2015 => Edition::E2015,
+            facet_cargo_toml::Edition::E2018 => Edition::E2018,
+            facet_cargo_toml::Edition::E2021 => Edition::E2021,
+            facet_cargo_toml::Edition::E2024 => Edition::E2024,
         }
     }
 }
@@ -129,6 +125,8 @@ pub struct PathDependency {
     pub name: String,
     /// Path to the dependency (relative to manifest directory)
     pub path: Utf8PathBuf,
+    /// Features to enable
+    pub features: Vec<String>,
 }
 
 /// A versioned (registry) dependency
@@ -138,6 +136,8 @@ pub struct VersionDependency {
     pub name: String,
     /// Version requirement string (e.g., "1.0", "^1.2.3")
     pub version: String,
+    /// Features to enable
+    pub features: Vec<String>,
 }
 
 /// Parsed and validated manifest
@@ -184,13 +184,13 @@ impl Manifest {
             source: e,
         })?;
 
-        Self::from_str(&contents, path.parent())
+        Self::parse(&contents, path.parent())
     }
 
     /// Parse Cargo.toml content with a base directory for resolving paths
-    pub fn from_str(contents: &str, base_dir: Option<&Utf8Path>) -> Result<Self, ManifestError> {
-        let cargo: full::CargoManifest =
-            full::CargoManifest::from_str(contents).map_err(ManifestError::ParseError)?;
+    pub fn parse(contents: &str, base_dir: Option<&Utf8Path>) -> Result<Self, ManifestError> {
+        let cargo = facet_cargo_toml::CargoToml::parse(contents)
+            .map_err(|e| ManifestError::ParseError(e.to_string()))?;
 
         // Extract package
         let package = cargo
@@ -199,21 +199,21 @@ impl Manifest {
             .ok_or(ManifestError::MissingSection("package"))?;
 
         // Validate unsupported features
-        if let Some(ref dev_deps) = cargo.dev_dependencies {
-            if !dev_deps.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[dev-dependencies]",
-                    details: "dev-dependencies are not supported yet".into(),
-                });
-            }
+        if let Some(ref dev_deps) = cargo.dev_dependencies
+            && !dev_deps.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[dev-dependencies]",
+                details: "dev-dependencies are not supported yet".into(),
+            });
         }
-        if let Some(ref build_deps) = cargo.build_dependencies {
-            if !build_deps.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[build-dependencies]",
-                    details: "build-dependencies are not supported yet".into(),
-                });
-            }
+        if let Some(ref build_deps) = cargo.build_dependencies
+            && !build_deps.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[build-dependencies]",
+                details: "build-dependencies are not supported yet".into(),
+            });
         }
         if cargo.workspace.is_some() {
             return Err(ManifestError::Unsupported {
@@ -221,66 +221,66 @@ impl Manifest {
                 details: "workspaces are not supported yet".into(),
             });
         }
-        if let Some(ref features) = cargo.features {
-            if !features.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[features]",
-                    details: "features are not supported yet".into(),
-                });
-            }
+        if let Some(ref features) = cargo.features
+            && !features.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[features]",
+                details: "features are not supported yet".into(),
+            });
         }
 
         // Check for proc-macro crates
-        if let Some(ref lib) = cargo.lib {
-            if lib.proc_macro == Some(true) {
-                return Err(ManifestError::Unsupported {
-                    feature: "proc-macro crates",
-                    details: "[lib] proc-macro = true is not supported yet".into(),
-                });
-            }
+        if let Some(ref lib) = cargo.lib
+            && lib.proc_macro == Some(true)
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "proc-macro crates",
+                details: "[lib] proc-macro = true is not supported yet".into(),
+            });
         }
 
         // Check for test/bench/example targets
-        if let Some(ref tests) = cargo.test {
-            if !tests.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[[test]] targets",
-                    details: "test targets are not supported yet".into(),
-                });
-            }
+        if let Some(ref tests) = cargo.test
+            && !tests.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[[test]] targets",
+                details: "test targets are not supported yet".into(),
+            });
         }
-        if let Some(ref benches) = cargo.bench {
-            if !benches.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[[bench]] targets",
-                    details: "bench targets are not supported yet".into(),
-                });
-            }
+        if let Some(ref benches) = cargo.bench
+            && !benches.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[[bench]] targets",
+                details: "bench targets are not supported yet".into(),
+            });
         }
-        if let Some(ref examples) = cargo.example {
-            if !examples.is_empty() {
-                return Err(ManifestError::Unsupported {
-                    feature: "[[example]] targets",
-                    details: "example targets are not supported yet".into(),
-                });
-            }
+        if let Some(ref examples) = cargo.example
+            && !examples.is_empty()
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "[[example]] targets",
+                details: "example targets are not supported yet".into(),
+            });
         }
 
         // Check for multiple binary targets
-        if let Some(ref bins) = cargo.bin {
-            if bins.len() > 1 {
-                return Err(ManifestError::Unsupported {
-                    feature: "multiple [[bin]] targets",
-                    details: format!("found {} binary targets, only 1 is supported", bins.len()),
-                });
-            }
+        if let Some(ref bins) = cargo.bin
+            && bins.len() > 1
+        {
+            return Err(ManifestError::Unsupported {
+                feature: "multiple [[bin]] targets",
+                details: format!("found {} binary targets, only 1 is supported", bins.len()),
+            });
         }
 
         // Check for build script
         if let Some(ref build) = package.build {
             let has_build = match build {
-                full::StringOrBool::String(_) => true,
-                full::StringOrBool::Bool(b) => *b,
+                facet_cargo_toml::StringOrBool::String(_) => true,
+                facet_cargo_toml::StringOrBool::Bool(b) => *b,
             };
             if has_build {
                 return Err(ManifestError::Unsupported {
@@ -296,12 +296,14 @@ impl Manifest {
             .ok_or(ManifestError::MissingField("name"))?;
 
         let edition = match &package.edition {
-            Some(full::EditionOrWorkspace::Edition(e)) => Edition::from(*e),
+            Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => Edition::from(*e),
             _ => Edition::default(),
         };
 
         // Parse dependencies
-        let (path_deps, version_deps) = parse_dependencies(&cargo, contents)?;
+        let parsed_deps = parse_dependencies(&cargo, contents)?;
+        let path_deps = parsed_deps.path_deps;
+        let version_deps = parsed_deps.version_deps;
 
         // Determine library target
         let lib = determine_lib_target(&name, cargo.lib.as_ref(), base_dir);
@@ -325,13 +327,22 @@ impl Manifest {
     }
 }
 
+/// Parsed dependencies from Cargo.toml
+struct ParsedDependencies {
+    path_deps: Vec<PathDependency>,
+    version_deps: Vec<VersionDependency>,
+}
+
 /// Parse [dependencies] table, extracting path and version dependencies
 fn parse_dependencies(
-    cargo: &full::CargoManifest,
+    cargo: &facet_cargo_toml::CargoToml,
     source: &str,
-) -> Result<(Vec<PathDependency>, Vec<VersionDependency>), ManifestError> {
+) -> Result<ParsedDependencies, ManifestError> {
     let Some(ref deps) = cargo.dependencies else {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(ParsedDependencies {
+            path_deps: Vec::new(),
+            version_deps: Vec::new(),
+        });
     };
 
     // Helper to create a NamedSource for error reporting
@@ -342,14 +353,15 @@ fn parse_dependencies(
 
     for (name, dep) in deps {
         match dep {
-            full::Dependency::Version(version) => {
+            facet_cargo_toml::Dependency::Version(version) => {
                 // Simple version string: `foo = "1.0"`
                 version_deps.push(VersionDependency {
                     name: name.clone(),
                     version: version.clone(),
+                    features: Vec::new(),
                 });
             }
-            full::Dependency::Workspace(_) => {
+            facet_cargo_toml::Dependency::Workspace(_) => {
                 return Err(ManifestError::InvalidDependency {
                     name: name.clone(),
                     reason: "workspace dependencies are not supported".into(),
@@ -357,7 +369,7 @@ fn parse_dependencies(
                     span: None,
                 });
             }
-            full::Dependency::Detailed(detail) => {
+            facet_cargo_toml::Dependency::Detailed(detail) => {
                 // Check for unsupported fields first - all with span information
                 if let Some(ref git) = detail.git {
                     let span = git.span();
@@ -386,25 +398,17 @@ fn parse_dependencies(
                         span: Some(SourceSpan::new(span.offset.into(), span.len)),
                     });
                 }
-                if let Some(ref features) = detail.features {
-                    let span = features.span();
+
+                if let Some(ref optional) = detail.optional
+                    && *optional.value()
+                {
+                    let span = optional.span();
                     return Err(ManifestError::InvalidDependency {
                         name: name.clone(),
-                        reason: "features are not supported".into(),
+                        reason: "optional dependencies are not supported".into(),
                         src: Some(make_source()),
                         span: Some(SourceSpan::new(span.offset.into(), span.len)),
                     });
-                }
-                if let Some(ref optional) = detail.optional {
-                    if *optional.value() {
-                        let span = optional.span();
-                        return Err(ManifestError::InvalidDependency {
-                            name: name.clone(),
-                            reason: "optional dependencies are not supported".into(),
-                            src: Some(make_source()),
-                            span: Some(SourceSpan::new(span.offset.into(), span.len)),
-                        });
-                    }
                 }
                 if let Some(ref default_features) = detail.default_features {
                     let span = default_features.span();
@@ -425,6 +429,13 @@ fn parse_dependencies(
                     });
                 }
 
+                // Extract features if present
+                let features = detail
+                    .features
+                    .as_ref()
+                    .map(|f| f.value().clone())
+                    .unwrap_or_default();
+
                 // Determine dependency type: path or version
                 // Note: path + version is valid (version used for crates.io, path for local dev)
                 // When both are present, we prefer path for local builds (like Cargo does)
@@ -434,6 +445,7 @@ fn parse_dependencies(
                         path_deps.push(PathDependency {
                             name: name.clone(),
                             path: Utf8PathBuf::from(path),
+                            features,
                         });
                     }
                     (None, Some(version)) => {
@@ -441,6 +453,7 @@ fn parse_dependencies(
                         version_deps.push(VersionDependency {
                             name: name.clone(),
                             version: version.clone(),
+                            features,
                         });
                     }
                     (None, None) => {
@@ -456,13 +469,16 @@ fn parse_dependencies(
         }
     }
 
-    Ok((path_deps, version_deps))
+    Ok(ParsedDependencies {
+        path_deps,
+        version_deps,
+    })
 }
 
 /// Determine the library target from parsed manifest data
 fn determine_lib_target(
     package_name: &str,
-    lib: Option<&full::LibTarget>,
+    lib: Option<&facet_cargo_toml::LibTarget>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<LibTarget> {
     if let Some(lib) = lib {
@@ -504,7 +520,7 @@ fn determine_lib_target(
 /// Determine the binary target from parsed manifest data
 fn determine_bin_target(
     package_name: &str,
-    bins: Option<&Vec<full::BinTarget>>,
+    bins: Option<&Vec<facet_cargo_toml::BinTarget>>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<BinTarget> {
     if let Some(bins) = bins {
@@ -557,7 +573,7 @@ edition = "2021"
 "#;
         // This will fail because no src/main.rs exists
         // In real usage, base_dir points to actual directory
-        let result = Manifest::from_str(toml, None);
+        let result = Manifest::parse(toml, None);
         // Without base_dir, it can't check file existence, so it defaults to no targets
         assert!(result.is_err());
     }
@@ -574,7 +590,7 @@ edition = "2021"
 name = "mylib"
 edition = "2021"
 "#;
-        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
         assert_eq!(manifest.name, "mylib");
         assert!(manifest.lib.is_some());
         assert!(manifest.bin.is_none());
@@ -593,7 +609,7 @@ edition = "2021"
 name = "mybin"
 edition = "2021"
 "#;
-        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
         assert_eq!(manifest.name, "mybin");
         assert!(manifest.lib.is_none());
         assert!(manifest.bin.is_some());
@@ -615,7 +631,7 @@ edition = "2021"
 [dependencies]
 util = { path = "../util" }
 "#;
-        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
         assert_eq!(manifest.deps.len(), 1);
         assert_eq!(manifest.deps[0].name, "util");
         assert_eq!(manifest.deps[0].path, Utf8PathBuf::from("../util"));
@@ -637,7 +653,7 @@ edition = "2021"
 util = { path = "../util" }
 common = { path = "../common" }
 "#;
-        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
         assert_eq!(manifest.deps.len(), 2);
         // Note: order may vary since we're iterating a map
         let names: Vec<_> = manifest.deps.iter().map(|d| d.name.as_str()).collect();
@@ -659,7 +675,7 @@ name = "app"
 [dependencies]
 serde = "1.0"
 "#;
-        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
         assert_eq!(manifest.version_deps.len(), 1);
         assert_eq!(manifest.version_deps[0].name, "serde");
         assert_eq!(manifest.version_deps[0].version, "1.0");
@@ -680,7 +696,7 @@ name = "app"
 [dependencies]
 serde = { version = "1.0.197" }
 "#;
-        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
         assert_eq!(manifest.version_deps.len(), 1);
         assert_eq!(manifest.version_deps[0].name, "serde");
         assert_eq!(manifest.version_deps[0].version, "1.0.197");
@@ -701,7 +717,7 @@ name = "app"
 serde = "1.0"
 mylib = { path = "../mylib" }
 "#;
-        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
         assert_eq!(manifest.deps.len(), 1);
         assert_eq!(manifest.deps[0].name, "mylib");
         assert_eq!(manifest.version_deps.len(), 1);
@@ -722,7 +738,7 @@ name = "app"
 [dependencies]
 foo = { git = "https://github.com/example/foo" }
 "#;
-        let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
+        let err = Manifest::parse(toml, Some(&base)).unwrap_err();
         assert!(
             matches!(err, ManifestError::InvalidDependency { name, reason, .. }
             if name == "foo" && reason.contains("git"))
@@ -730,7 +746,7 @@ foo = { git = "https://github.com/example/foo" }
     }
 
     #[test]
-    fn reject_features_in_dependency() {
+    fn parse_features_in_dependency() {
         let dir = tempfile::tempdir().unwrap();
         let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
         std::fs::create_dir_all(base.join("src")).unwrap();
@@ -741,13 +757,12 @@ foo = { git = "https://github.com/example/foo" }
 name = "app"
 
 [dependencies]
-util = { path = "../util", features = ["foo"] }
+util = { path = "../util", features = ["foo", "bar"] }
 "#;
-        let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
-        assert!(
-            matches!(err, ManifestError::InvalidDependency { name, reason, .. }
-            if name == "util" && reason.contains("features"))
-        );
+        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
+        assert_eq!(manifest.deps.len(), 1);
+        assert_eq!(manifest.deps[0].name, "util");
+        assert_eq!(manifest.deps[0].features, vec!["foo", "bar"]);
     }
 
     #[test]
@@ -764,7 +779,7 @@ name = "app"
 [dependencies]
 util = { path = "../util", optional = true }
 "#;
-        let err = Manifest::from_str(toml, Some(&base)).unwrap_err();
+        let err = Manifest::parse(toml, Some(&base)).unwrap_err();
         assert!(
             matches!(err, ManifestError::InvalidDependency { name, reason, .. }
             if name == "util" && reason.contains("optional"))
@@ -778,7 +793,7 @@ util = { path = "../util", optional = true }
 name = "hello"
 build = "build.rs"
 "#;
-        let err = Manifest::from_str(toml, None).unwrap_err();
+        let err = Manifest::parse(toml, None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -797,7 +812,7 @@ name = "hello"
 [lib]
 proc-macro = true
 "#;
-        let err = Manifest::from_str(toml, None).unwrap_err();
+        let err = Manifest::parse(toml, None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -816,7 +831,7 @@ name = "hello"
 [[test]]
 name = "integration"
 "#;
-        let err = Manifest::from_str(toml, None).unwrap_err();
+        let err = Manifest::parse(toml, None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -835,7 +850,7 @@ name = "hello"
 [[bench]]
 name = "mybench"
 "#;
-        let err = Manifest::from_str(toml, None).unwrap_err();
+        let err = Manifest::parse(toml, None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -854,7 +869,7 @@ name = "hello"
 [[example]]
 name = "myexample"
 "#;
-        let err = Manifest::from_str(toml, None).unwrap_err();
+        let err = Manifest::parse(toml, None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -878,7 +893,7 @@ path = "src/one.rs"
 name = "two"
 path = "src/two.rs"
 "#;
-        let err = Manifest::from_str(toml, None).unwrap_err();
+        let err = Manifest::parse(toml, None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -898,7 +913,7 @@ name = "hello"
 default = []
 foo = []
 "#;
-        let err = Manifest::from_str(toml, None).unwrap_err();
+        let err = Manifest::parse(toml, None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -906,22 +921,5 @@ foo = []
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn crate_name_conversion() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
-        std::fs::create_dir_all(base.join("src")).unwrap();
-        std::fs::write(base.join("src/lib.rs"), "").unwrap();
-
-        let toml = r#"
-[package]
-name = "my-lib-name"
-edition = "2021"
-"#;
-        let manifest = Manifest::from_str(toml, Some(&base)).unwrap();
-        assert_eq!(manifest.name, "my-lib-name");
-        assert_eq!(manifest.crate_name(), "my_lib_name");
     }
 }

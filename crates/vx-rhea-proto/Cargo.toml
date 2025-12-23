@@ -1,0 +1,11 @@
+[package]
+name = "vx-rhea-proto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+facet = { workspace = true }
+rapace = { workspace = true }
+facet-postcard = { workspace = true, features = ["camino"] }
+
+vx-oort-proto = { workspace = true }

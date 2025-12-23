@@ -5,16 +5,10 @@ edition.workspace = true
 
 [dependencies]
 facet = { workspace = true }
-facet-toml = { workspace = true }
-facet-value = { workspace = true }
+facet-cargo-toml = { workspace = true }
 thiserror = { workspace = true }
 camino = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
 
 [dev-dependencies]
-tempfile = { workspace = true }
-datatest-stable = "0.2"
-
-[[test]]
-name = "bearcove_manifests"
-harness = false
+tempfile.workspace = true

@@ -8,13 +8,15 @@ repository.workspace = true
 [dependencies]
 blake3 = { workspace = true }
 camino = { workspace = true }
+tracing = { workspace = true }
 facet = { workspace = true }
+facet-cargo-toml = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
 ra-ap-rustc_lexer = "0.144.0"
-vx-cas-proto = { path = "../vx-cas-proto" }
-vx-manifest = { path = "../vx-manifest" }
+vx-oort-proto = { workspace = true }
+vx-manifest = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

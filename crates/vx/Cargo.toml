@@ -10,13 +10,18 @@ eyre = { workspace = true }
 owo-colors = { workspace = true }
 camino = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
+rapace = { workspace = true }
+ur-taking-me-with-you = { workspace = true }
 
-vx-daemon = { workspace = true }
-vx-daemon-proto = { workspace = true }
+vx-aether-proto = { workspace = true }
+vx-io = { workspace = true }
 vx-report = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
+miette-arborium = { version = "2.4.5", features = ["lang-toml", "lang-rust"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+test-log = { version = "0.2", features = ["trace"] }

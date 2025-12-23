@@ -23,10 +23,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::Diagnostic;
 use thiserror::Error;
-use vx_cas_proto::Blake3Hash;
-use vx_manifest::full::CargoManifest;
-use vx_manifest::lockfile::{Lockfile, LockfileError, ReachablePackages};
+use vx_manifest::lockfile::{CargoLock, CargoLockExt, LockfileError, ReachablePackages};
 use vx_manifest::{Edition, Manifest, ManifestError};
+use vx_oort_proto::Blake3Hash;
 
 /// Errors during crate graph construction
 #[derive(Debug, Error, Diagnostic)]
@@ -38,6 +37,10 @@ pub enum CrateGraphError {
     #[error("failed to parse lockfile: {0}")]
     #[diagnostic(code(vx_rs::lockfile_error))]
     LockfileError(#[from] LockfileError),
+
+    #[error("failed to read lockfile: {0}")]
+    #[diagnostic(code(vx_rs::lockfile_read_error))]
+    LockfileReadError(#[from] facet_cargo_toml::Error),
 
     #[error("failed to canonicalize path {path}: {source}")]
     #[diagnostic(code(vx_rs::canonicalization_error))]
@@ -251,6 +254,23 @@ pub struct CrateNode {
     pub crate_type: CrateType,
     /// Dependencies, sorted by extern_name
     pub deps: Vec<DepEdge>,
+    /// Path to build.rs relative to workspace root (if this crate has one)
+    pub build_script_rel: Option<Utf8PathBuf>,
+    /// Build script outputs (cfg flags, env vars, etc.) - populated after running build script
+    pub build_script_output: Option<BuildScriptOutput>,
+}
+
+/// Output from running a build script
+#[derive(Debug, Clone, Default)]
+pub struct BuildScriptOutput {
+    /// `cargo:rustc-cfg=...` flags to pass to rustc
+    pub cfgs: Vec<String>,
+    /// `cargo:rustc-env=NAME=VALUE` environment variables
+    pub envs: Vec<(String, String)>,
+    /// `cargo:rustc-link-lib=...` libraries to link
+    pub link_libs: Vec<String>,
+    /// `cargo:rustc-link-search=...` library search paths
+    pub link_search: Vec<String>,
 }
 
 /// Information about a registry crate needed for materialization
@@ -384,7 +404,9 @@ impl CrateGraph {
                 crate_root_rel,
                 edition: manifest.edition,
                 crate_type,
-                deps: Vec::new(), // Filled in next phase
+                deps: Vec::new(),       // Filled in next phase
+                build_script_rel: None, // Path crates don't support build scripts yet
+                build_script_output: None,
             };
 
             dir_to_id.insert(crate_dir.clone(), id);
@@ -534,21 +556,24 @@ impl CrateGraph {
 
         // Phase 2: Parse lockfile if we have version deps
         let (reachable_packages, registry_crates) = if has_version_deps {
-            let lockfile_path = invocation_dir.join("Cargo.lock");
-            if !lockfile_path.exists() {
-                // Find first version dep for error message
-                let first_version_dep = manifests
-                    .values()
-                    .flat_map(|m| m.version_deps.iter())
-                    .next()
-                    .map(|d| d.name.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
-                return Err(CrateGraphError::MissingLockfile {
-                    dep_name: first_version_dep,
-                });
-            }
+            // Find Cargo.lock by walking up (workspace lockfile lives at workspace root)
+            let lockfile_path = match find_lockfile(&invocation_dir) {
+                Some(path) => path,
+                None => {
+                    // Find first version dep for error message
+                    let first_version_dep = manifests
+                        .values()
+                        .flat_map(|m| m.version_deps.iter())
+                        .next()
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    return Err(CrateGraphError::MissingLockfile {
+                        dep_name: first_version_dep,
+                    });
+                }
+            };
 
-            let lockfile = Lockfile::from_path(&lockfile_path)?;
+            let lockfile = CargoLock::from_path(&lockfile_path)?;
             let root_name = manifests[&invocation_dir].name.as_str();
             let reachable = lockfile.compute_reachable(root_name)?;
 
@@ -605,17 +630,84 @@ impl CrateGraph {
                 edition: manifest.edition,
                 crate_type,
                 deps: Vec::new(),
+                build_script_rel: None, // Path crates don't support build scripts yet
+                build_script_output: None,
             };
 
             dir_to_id.insert(crate_dir.clone(), id);
             nodes.insert(id, node);
         }
 
-        // Phase 5: Resolve path dependency edges (registry deps resolved in finalize)
+        // Phase 5: Create stub nodes for registry crates (from lockfile)
+        // These are minimal nodes just for topo order computation.
+        // Rhea will determine edition/lib_path when materializing.
+        let mut registry_id_map: HashMap<(String, String), CrateId> = HashMap::new();
+        if let Some(ref reachable) = reachable_packages {
+            for info in &registry_crates {
+                let id = CrateId::for_registry(&info.name, &info.version, &info.checksum);
+                let crate_name = info.name.replace('-', "_");
+
+                let source = CrateSource::Registry {
+                    name: info.name.clone(),
+                    version: info.version.clone(),
+                    checksum: info.checksum.clone(),
+                };
+
+                // Stub node - edition/crate_root are placeholders, rhea determines them
+                let node = CrateNode {
+                    id,
+                    package_name: info.name.clone(),
+                    crate_name,
+                    source,
+                    workspace_rel: Utf8PathBuf::from(format!(
+                        ".vx/registry/{}/{}",
+                        info.name, info.version
+                    )),
+                    crate_root_rel: Utf8PathBuf::from("src/lib.rs"), // Placeholder
+                    edition: Edition::E2021,                         // Placeholder
+                    crate_type: CrateType::Lib,
+                    deps: Vec::new(), // Filled in below
+                    build_script_rel: None,
+                    build_script_output: None,
+                };
+
+                registry_id_map.insert((info.name.clone(), info.version.clone()), id);
+                nodes.insert(id, node);
+            }
+
+            // Phase 5b: Resolve registry-to-registry deps from lockfile
+            for info in &registry_crates {
+                let id = registry_id_map[&(info.name.clone(), info.version.clone())];
+                let pkg = reachable
+                    .get_package(&info.name, &info.version)
+                    .expect("registry crate must be in reachable");
+
+                let mut deps: Vec<DepEdge> = Vec::new();
+                for dep_spec in &pkg.dependencies {
+                    let dep_name = dep_spec.split_whitespace().next().unwrap_or(dep_spec);
+                    if let Some(dep_pkg) = reachable.find_dependency(dep_spec) {
+                        if dep_pkg.is_registry() {
+                            let dep_key = (dep_pkg.name.clone(), dep_pkg.version.clone());
+                            if let Some(&dep_id) = registry_id_map.get(&dep_key) {
+                                deps.push(DepEdge {
+                                    extern_name: dep_name.replace('-', "_"),
+                                    crate_id: dep_id,
+                                });
+                            }
+                        }
+                    }
+                }
+                deps.sort_by(|a, b| a.extern_name.cmp(&b.extern_name));
+                nodes.get_mut(&id).unwrap().deps = deps;
+            }
+        }
+
+        // Phase 6: Resolve path dependency edges
         for (crate_dir, manifest) in &manifests {
             let crate_id = dir_to_id[crate_dir];
             let mut deps: Vec<DepEdge> = Vec::new();
 
+            // Path deps (local crates)
             for dep in &manifest.deps {
                 let dep_dir = crate_dir.join(&dep.path).canonicalize_utf8().map_err(|e| {
                     CrateGraphError::CanonicalizationError {
@@ -645,18 +737,40 @@ impl CrateGraph {
                 });
             }
 
+            // Version deps (registry crates) - resolve via lockfile
+            if let Some(ref reachable) = reachable_packages {
+                if let Some(path_pkg) = reachable.find_path_package(&manifest.name) {
+                    for version_dep in &manifest.version_deps {
+                        // Find this dep in the lockfile's dependency list for this package
+                        for dep_spec in &path_pkg.dependencies {
+                            let dep_name = dep_spec.split_whitespace().next().unwrap_or(dep_spec);
+                            if dep_name == version_dep.name {
+                                if let Some(dep_pkg) = reachable.find_dependency(dep_spec) {
+                                    if dep_pkg.is_registry() {
+                                        let dep_key =
+                                            (dep_pkg.name.clone(), dep_pkg.version.clone());
+                                        if let Some(&dep_id) = registry_id_map.get(&dep_key) {
+                                            deps.push(DepEdge {
+                                                extern_name: version_dep.name.replace('-', "_"),
+                                                crate_id: dep_id,
+                                            });
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
             deps.sort_by(|a, b| a.extern_name.cmp(&b.extern_name));
             nodes.get_mut(&crate_id).unwrap().deps = deps;
         }
 
-        // Phase 6: Topological sort (partial - only path crates)
+        // Phase 7: Topological sort (now includes registry crates)
         let root_crate = dir_to_id[&invocation_dir];
-        let topo_order = if registry_crates.is_empty() {
-            topological_sort(&nodes, root_crate)?
-        } else {
-            // Will be recomputed in finalize_with_registry
-            Vec::new()
-        };
+        let topo_order = topological_sort(&nodes, root_crate)?;
 
         Ok(CrateGraph {
             workspace_root,
@@ -698,11 +812,11 @@ impl CrateGraph {
 
             // Parse the manifest using the full parser (accepts all Cargo.toml features)
             let manifest_path = self.workspace_root.join(workspace_rel).join("Cargo.toml");
-            let manifest = CargoManifest::from_path(&manifest_path).map_err(|e| {
+            let manifest = facet_cargo_toml::CargoToml::from_path(&manifest_path).map_err(|e| {
                 CrateGraphError::ManifestError(ManifestError::ParseError(e.to_string()))
             })?;
 
-            let package = manifest.package.as_ref().ok_or_else(|| {
+            let package = manifest.package.as_ref().ok_or({
                 CrateGraphError::ManifestError(ManifestError::MissingField("package"))
             })?;
 
@@ -716,13 +830,8 @@ impl CrateGraph {
                 });
             }
 
-            // Check for build.rs - we don't support build scripts yet
-            if crate_dir.join("build.rs").exists() {
-                return Err(CrateGraphError::RegistryBuildScript {
-                    name: info.name.clone(),
-                    version: info.version.clone(),
-                });
-            }
+            // Track if this crate has a build script (will be run later)
+            let has_build_script = crate_dir.join("build.rs").exists();
 
             // Determine lib path
             let lib_path = if let Some(ref lib) = manifest.lib {
@@ -737,17 +846,18 @@ impl CrateGraph {
             let crate_root_rel = normalize_path(&lib_path, &self.workspace_root)?;
 
             // Extract package name
-            let package_name = package.name.clone().ok_or_else(|| {
-                CrateGraphError::ManifestError(ManifestError::MissingField("name"))
-            })?;
+            let package_name = package
+                .name
+                .clone()
+                .ok_or({ CrateGraphError::ManifestError(ManifestError::MissingField("name")) })?;
 
-            // Extract edition, converting from full::Edition to vx_manifest::Edition
+            // Extract edition, converting from facet_cargo_toml::Edition to vx_manifest::Edition
             let edition = match &package.edition {
-                Some(vx_manifest::full::EditionOrWorkspace::Edition(e)) => match e {
-                    vx_manifest::full::Edition::E2015 => Edition::E2015,
-                    vx_manifest::full::Edition::E2018 => Edition::E2018,
-                    vx_manifest::full::Edition::E2021 => Edition::E2021,
-                    vx_manifest::full::Edition::E2024 => Edition::E2024,
+                Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => match e {
+                    facet_cargo_toml::Edition::E2015 => Edition::E2015,
+                    facet_cargo_toml::Edition::E2018 => Edition::E2018,
+                    facet_cargo_toml::Edition::E2021 => Edition::E2021,
+                    facet_cargo_toml::Edition::E2024 => Edition::E2024,
                 },
                 _ => Edition::E2021, // Default
             };
@@ -760,6 +870,17 @@ impl CrateGraph {
             let id = CrateId::for_registry(&info.name, &info.version, &info.checksum);
 
             let crate_name = package_name.replace('-', "_");
+
+            // Compute build script path if present
+            let build_script_rel = if has_build_script {
+                Some(normalize_path(
+                    &crate_dir.join("build.rs"),
+                    &self.workspace_root,
+                )?)
+            } else {
+                None
+            };
+
             let node = CrateNode {
                 id,
                 package_name: package_name.clone(),
@@ -770,6 +891,8 @@ impl CrateGraph {
                 edition,
                 crate_type: CrateType::Lib,
                 deps: Vec::new(), // Filled in next phase
+                build_script_rel,
+                build_script_output: None, // Filled in by build script runner
             };
 
             registry_id_map.insert(key, id);
@@ -841,16 +964,16 @@ impl CrateGraph {
                                     dep_spec.split_whitespace().next().unwrap_or(dep_spec);
                                 if dep_name == version_dep.name {
                                     // Found the matching dep - resolve it via the lockfile
-                                    if let Some(dep_pkg) = reachable.find_dependency(dep_spec) {
-                                        if dep_pkg.is_registry() {
-                                            let dep_key =
-                                                (dep_pkg.name.clone(), dep_pkg.version.clone());
-                                            if let Some(&dep_id) = registry_id_map.get(&dep_key) {
-                                                node.deps.push(DepEdge {
-                                                    extern_name: version_dep.name.replace('-', "_"),
-                                                    crate_id: dep_id,
-                                                });
-                                            }
+                                    if let Some(dep_pkg) = reachable.find_dependency(dep_spec)
+                                        && dep_pkg.is_registry()
+                                    {
+                                        let dep_key =
+                                            (dep_pkg.name.clone(), dep_pkg.version.clone());
+                                        if let Some(&dep_id) = registry_id_map.get(&dep_key) {
+                                            node.deps.push(DepEdge {
+                                                extern_name: version_dep.name.replace('-', "_"),
+                                                crate_id: dep_id,
+                                            });
                                         }
                                     }
                                     break; // Found the dep, no need to continue
@@ -867,6 +990,26 @@ impl CrateGraph {
         self.topo_order = topological_sort(&self.nodes, self.root_crate)?;
 
         Ok(())
+    }
+}
+
+/// Find `Cargo.lock` by walking up from the starting directory.
+///
+/// In a workspace, `Cargo.lock` lives at the workspace root, not in each member crate.
+/// This function walks up from `start_dir` until it finds a `Cargo.lock` file.
+fn find_lockfile(start_dir: &Utf8Path) -> Option<Utf8PathBuf> {
+    let mut current = start_dir.to_owned();
+    loop {
+        let lockfile_path = current.join("Cargo.lock");
+        if lockfile_path.exists() {
+            return Some(lockfile_path);
+        }
+        match current.parent() {
+            Some(parent) if !parent.as_str().is_empty() => {
+                current = parent.to_owned();
+            }
+            _ => return None,
+        }
     }
 }
 
@@ -1048,13 +1191,13 @@ fn topological_sort(
 
         // For each node that depends on this one, decrement their remaining count
         for &other_id in &reachable {
-            if let Some(node) = nodes.get(&other_id) {
-                if node.deps.iter().any(|d| d.crate_id == id) {
-                    let count = remaining_deps.get_mut(&other_id).unwrap();
-                    *count -= 1;
-                    if *count == 0 {
-                        ready.push_back(other_id);
-                    }
+            if let Some(node) = nodes.get(&other_id)
+                && node.deps.iter().any(|d| d.crate_id == id)
+            {
+                let count = remaining_deps.get_mut(&other_id).unwrap();
+                *count -= 1;
+                if *count == 0 {
+                    ready.push_back(other_id);
                 }
             }
         }

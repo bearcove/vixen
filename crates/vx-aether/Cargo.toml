@@ -1,0 +1,32 @@
+[package]
+name = "vx-aether"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tracing-subscriber = { workspace = true }
+facet = { workspace = true }
+picante = { workspace = true }
+rapace = { workspace = true }
+tokio = { workspace = true }
+blake3 = { workspace = true }
+camino = { workspace = true }
+eyre = { workspace = true }
+thiserror = { workspace = true }
+futures-util = { workspace = true }
+jiff = { workspace = true }
+tracing = { workspace = true }
+ur-taking-me-with-you = { workspace = true }
+miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
+miette-arborium = { version = "2.4.5", features = ["lang-toml", "lang-rust"] }
+indicatif = "0.17"
+
+vx-oort-proto = { workspace = true }
+vx-cc = { path = "../vx-cc" }
+vx-rhea-proto = { workspace = true }
+vx-aether-proto = { workspace = true }
+vx-io = { workspace = true }
+vx-manifest = { workspace = true }
+vx-report = { workspace = true }
+vx-rs = { path = "../vx-rs" }
+vx-toolchain = { path = "../vx-toolchain" }

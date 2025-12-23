@@ -37,41 +37,7 @@ impl RunId {
     /// - Encode timestamp in the first 48 bits
     /// - Have 80 bits of randomness to avoid collisions
     pub fn new() -> Self {
-        // ULID format: TTTTTTTTTTRRRRRRRRRRRRRRR (10 timestamp chars + 16 random chars)
-        // We use a simpler approach: timestamp_ms + random suffix
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-
-        // Crockford's base32 alphabet (excludes I, L, O, U to avoid confusion)
-        const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-        // Encode timestamp in 10 characters (48 bits)
-        let mut chars = [0u8; 26];
-        let mut t = timestamp as u64;
-        for i in (0..10).rev() {
-            chars[i] = ALPHABET[(t & 0x1F) as usize];
-            t >>= 5;
-        }
-
-        // Fill remaining 16 characters with random data
-        // Use nanoseconds and process ID for entropy (no unstable APIs)
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let random: u128 = nanos ^ (std::process::id() as u128).rotate_left(32);
-
-        let mut r = random;
-        for i in 10..26 {
-            chars[i] = ALPHABET[(r & 0x1F) as usize];
-            r >>= 5;
-        }
-
-        Self(String::from_utf8_lossy(&chars).to_string())
+        Self(ulid::Ulid::new().to_string())
     }
 
     /// Parse a RunId from a string.
@@ -179,7 +145,8 @@ impl BuildReport {
 
     /// Total build duration in milliseconds.
     pub fn duration_ms(&self) -> u64 {
-        self.ended_at_unix_ms.saturating_sub(self.started_at_unix_ms)
+        self.ended_at_unix_ms
+            .saturating_sub(self.started_at_unix_ms)
     }
 
     /// Count of cache hits.
@@ -504,7 +471,12 @@ impl ReportStore {
 
         // Update "latest" symlink
         let latest_path = self.runs_dir.join("latest");
-        let _ = std::fs::remove_file(&latest_path);
+        if let Err(e) = std::fs::remove_file(&latest_path) {
+            // NotFound is expected if this is the first run
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("Warning: failed to remove old 'latest' file: {e}");
+            }
+        }
         std::fs::write(&latest_path, &report.run_id.0)?;
 
         Ok(())
@@ -553,15 +525,12 @@ impl ReportStore {
         for entry in std::fs::read_dir(&self.runs_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if let Some(ext) = path.extension() {
-                if ext == "json" {
-                    if let Some(stem) = path.file_stem() {
-                        if let Some(run_id) = RunId::from_str(&stem.to_string_lossy()) {
+            if let Some(ext) = path.extension()
+                && ext == "json"
+                    && let Some(stem) = path.file_stem()
+                        && let Some(run_id) = RunId::from_str(&stem.to_string_lossy()) {
                             runs.push(run_id);
                         }
-                    }
-                }
-            }
         }
 
         // Sort lexicographically (ULIDs are time-ordered, so this gives chronological order)
@@ -640,11 +609,17 @@ impl RunDiff {
         };
 
         // Build maps for quick lookup
-        let before_nodes: std::collections::HashMap<&str, &NodeReport> =
-            before.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
+        let before_nodes: std::collections::HashMap<&str, &NodeReport> = before
+            .nodes
+            .iter()
+            .map(|n| (n.node_id.as_str(), n))
+            .collect();
 
-        let after_nodes: std::collections::HashMap<&str, &NodeReport> =
-            after.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
+        let after_nodes: std::collections::HashMap<&str, &NodeReport> = after
+            .nodes
+            .iter()
+            .map(|n| (n.node_id.as_str(), n))
+            .collect();
 
         // Find nodes that flipped
         for (node_id, after_node) in &after_nodes {
@@ -668,36 +643,31 @@ impl RunDiff {
         // Check toolchain changes
         if let (Some(before_rust), Some(after_rust)) =
             (&before.toolchains.rust, &after.toolchains.rust)
-        {
-            if before_rust.id != after_rust.id {
+            && before_rust.id != after_rust.id {
                 diff.toolchain_changes.push(ToolchainChange {
                     name: "rust".to_string(),
                     old: before_rust.version.clone(),
                     new: after_rust.version.clone(),
                 });
             }
-        }
 
         if let (Some(before_zig), Some(after_zig)) = (&before.toolchains.zig, &after.toolchains.zig)
-        {
-            if before_zig.id != after_zig.id {
+            && before_zig.id != after_zig.id {
                 diff.toolchain_changes.push(ToolchainChange {
                     name: "zig".to_string(),
                     old: before_zig.version.clone(),
                     new: after_zig.version.clone(),
                 });
             }
-        }
 
         diff
     }
 
-    fn diff_inputs(
-        before: &[InputRecord],
-        after: &[InputRecord],
-    ) -> Vec<(String, String, String)> {
-        let before_map: std::collections::HashMap<&str, &str> =
-            before.iter().map(|i| (i.label.as_str(), i.value.as_str())).collect();
+    fn diff_inputs(before: &[InputRecord], after: &[InputRecord]) -> Vec<(String, String, String)> {
+        let before_map: std::collections::HashMap<&str, &str> = before
+            .iter()
+            .map(|i| (i.label.as_str(), i.value.as_str()))
+            .collect();
 
         let mut changes = Vec::new();
         for input in after {
@@ -711,7 +681,11 @@ impl RunDiff {
                 }
             } else {
                 // New input
-                changes.push((input.label.clone(), "(none)".to_string(), input.value.clone()));
+                changes.push((
+                    input.label.clone(),
+                    "(none)".to_string(),
+                    input.value.clone(),
+                ));
             }
         }
 
@@ -723,10 +697,7 @@ impl NodeRebuildExplanation {
     /// Compute the rebuild explanation for a node by comparing it to the previous run.
     ///
     /// Returns None if the node was a cache hit.
-    pub fn compute(
-        current_node: &NodeReport,
-        previous_node: Option<&NodeReport>,
-    ) -> Option<Self> {
+    pub fn compute(current_node: &NodeReport, previous_node: Option<&NodeReport>) -> Option<Self> {
         // Only compute for cache misses
         let reported_reason = match &current_node.cache {
             CacheOutcome::Hit { .. } => return None,
@@ -770,11 +741,15 @@ impl NodeRebuildExplanation {
     fn compute_input_changes(before: &[InputRecord], after: &[InputRecord]) -> Vec<InputChange> {
         use std::collections::HashMap;
 
-        let before_map: HashMap<&str, &str> =
-            before.iter().map(|i| (i.label.as_str(), i.value.as_str())).collect();
+        let before_map: HashMap<&str, &str> = before
+            .iter()
+            .map(|i| (i.label.as_str(), i.value.as_str()))
+            .collect();
 
-        let after_map: HashMap<&str, &str> =
-            after.iter().map(|i| (i.label.as_str(), i.value.as_str())).collect();
+        let after_map: HashMap<&str, &str> = after
+            .iter()
+            .map(|i| (i.label.as_str(), i.value.as_str()))
+            .collect();
 
         let mut changes = Vec::new();
 
@@ -814,15 +789,22 @@ impl NodeRebuildExplanation {
         changes
     }
 
-    fn compute_dep_changes(before: &[DependencyRecord], after: &[DependencyRecord]) -> Vec<DepChange> {
+    fn compute_dep_changes(
+        before: &[DependencyRecord],
+        after: &[DependencyRecord],
+    ) -> Vec<DepChange> {
         use std::collections::HashMap;
 
         // Key by (extern_name, crate_id)
-        let before_map: HashMap<(&str, &str), &DependencyRecord> =
-            before.iter().map(|d| ((d.extern_name.as_str(), d.crate_id.as_str()), d)).collect();
+        let before_map: HashMap<(&str, &str), &DependencyRecord> = before
+            .iter()
+            .map(|d| ((d.extern_name.as_str(), d.crate_id.as_str()), d))
+            .collect();
 
-        let after_map: HashMap<(&str, &str), &DependencyRecord> =
-            after.iter().map(|d| ((d.extern_name.as_str(), d.crate_id.as_str()), d)).collect();
+        let after_map: HashMap<(&str, &str), &DependencyRecord> = after
+            .iter()
+            .map(|d| ((d.extern_name.as_str(), d.crate_id.as_str()), d))
+            .collect();
 
         let mut changes = Vec::new();
 
@@ -886,7 +868,9 @@ impl NodeRebuildExplanation {
 
         // Sort by (extern_name, crate_id) for stable output
         changes.sort_by(|a, b| {
-            a.extern_name.cmp(&b.extern_name).then(a.crate_id.cmp(&b.crate_id))
+            a.extern_name
+                .cmp(&b.extern_name)
+                .then(a.crate_id.cmp(&b.crate_id))
         });
         changes
     }
@@ -951,12 +935,18 @@ impl FanoutAnalysis {
 
     /// Get the list of nodes that depend on the given crate_id and rebuilt.
     pub fn get_dependents(&self, crate_id: &str) -> &[String] {
-        self.fanout_map.get(crate_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.fanout_map
+            .get(crate_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Check if a crate_id has any dependents that rebuilt.
     pub fn has_fanout(&self, crate_id: &str) -> bool {
-        self.fanout_map.get(crate_id).map(|v| !v.is_empty()).unwrap_or(false)
+        self.fanout_map
+            .get(crate_id)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
     }
 }
 

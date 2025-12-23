@@ -1,0 +1,10 @@
+[package]
+name = "vx-aether-proto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+facet = { workspace = true }
+rapace = { workspace = true }
+camino = { workspace = true }
+vx-oort-proto = { workspace = true }

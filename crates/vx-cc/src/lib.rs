@@ -7,7 +7,7 @@ pub mod depfile;
 
 use camino::Utf8PathBuf;
 use facet::Facet;
-use vx_cas_proto::Blake3Hash;
+use vx_oort_proto::Blake3Hash;
 
 /// Uniquely identifies a translation unit in the build
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]

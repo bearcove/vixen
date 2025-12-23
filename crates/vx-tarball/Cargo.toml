@@ -1,0 +1,17 @@
+[package]
+name = "vx-tarball"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+camino = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+vx-oort-proto = { workspace = true }
+
+async-compression = { version = "0.4.36", features = ["tokio", "gzip", "xz"] }
+pin-project-lite = "0.2"
+tokio-tar = "0.3"
+tokio-util = { version = "0.7", features = ["compat", "io"] }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -10,31 +10,34 @@ repository = "https://github.com/bearcove/vx"
 
 [workspace.dependencies]
 # internal crates
-vx-cas-proto = { path = "crates/vx-cas-proto" }
+vx-cache = { path = "crates/vx-cache" }
+vx-oort-proto = { path = "crates/vx-oort-proto" }
 vx-cc = { path = "crates/vx-cc" }
-vx-exec-proto = { path = "crates/vx-exec-proto" }
+vx-rhea-proto = { path = "crates/vx-rhea-proto" }
 vx-manifest = { path = "crates/vx-manifest" }
-vx-daemon = { path = "crates/vx-daemon" }
-vx-daemon-proto = { path = "crates/vx-daemon-proto" }
-vx-casd = { path = "crates/vx-casd" }
-vx-execd = { path = "crates/vx-execd" }
+vx-aether-proto = { path = "crates/vx-aether-proto" }
 vx-report = { path = "crates/vx-report" }
+vx-io = { path = "crates/vx-io" }
+vx-tarball = { path = "crates/vx-tarball" }
 vx-toolchain = { path = "crates/vx-toolchain" }
-vx-toolchain-proto = { path = "crates/vx-toolchain-proto" }
-vx-registry-proto = { path = "crates/vx-registry-proto" }
 
 # facet ecosystem
-facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jiff02", "camino"] }
 facet-args = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-json = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-toml = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-value = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jiff02", "camino"] }
+facet-cargo-toml = { git = "https://github.com/bearcove/facet-cargo-toml", branch = "main" }
 
 # incremental computation
 picante = { path = "../picante/crates/picante", features = ["macros"] }
 
 # RPC
 rapace = { path = "../rapace/crates/rapace" }
+
+# process management
+ur-taking-me-with-you = { path = "../rapace/crates/ur-taking-me-with-you" }
 
 # hashing
 blake3 = "1"
@@ -56,9 +59,6 @@ jiff = "0.2"
 
 # paths
 camino = "1"
-
-# serialization
-serde = "1"
 serde_json = "1"
 
 # testing

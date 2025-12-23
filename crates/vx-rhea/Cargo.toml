@@ -1,0 +1,31 @@
+[package]
+name = "vx-rhea"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tracing-subscriber = { workspace = true }
+facet = { workspace = true }
+thiserror = { workspace = true }
+facet-json = { workspace = true }
+facet-cargo-toml = { workspace = true }
+rapace = { workspace = true }
+tokio = { workspace = true }
+camino = { workspace = true }
+eyre = { workspace = true }
+jiff = { workspace = true }
+tracing = { workspace = true }
+ur-taking-me-with-you = { workspace = true }
+blake3 = { workspace = true }
+futures-util = { workspace = true }
+
+vx-cache = { workspace = true }
+vx-oort-proto = { workspace = true }
+vx-cc = { workspace = true }
+vx-rhea-proto = { workspace = true }
+vx-io = { workspace = true }
+vx-tarball = { workspace = true }
+
+
+# For copy-on-write/reflink file copying
+clonetree = "0.0.2"

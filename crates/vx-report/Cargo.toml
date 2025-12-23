@@ -7,4 +7,5 @@ edition.workspace = true
 facet = { workspace = true }
 facet-json = { workspace = true }
 camino = { workspace = true }
-vx-cas-proto = { workspace = true }
+ulid = "1.2"
+vx-oort-proto = { workspace = true }
