@@ -2,9 +2,10 @@ use jiff::Timestamp;
 use vx_cas_proto::Cas;
 use vx_cas_proto::{
     Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, EnsureToolchainResult,
-    ManifestHash, MaterializationPlan, MaterializeStep, NodeManifest, PublishResult,
-    RegistryCrateManifest, RegistrySpec, RegistrySpecKey, RustToolchainSpec, ToolchainKind,
-    ToolchainManifest, ToolchainSpecKey, ZigToolchainSpec,
+    IngestTreeRequest, IngestTreeResult, ManifestHash, MaterializationPlan, MaterializeStep,
+    NodeManifest, PublishResult, RegistryCrateManifest, RegistrySpec, RegistrySpecKey,
+    RustToolchainSpec, TREE_MANIFEST_SCHEMA_VERSION, ToolchainKind, ToolchainManifest,
+    ToolchainSpecKey, TreeManifest, ZigToolchainSpec,
 };
 
 use crate::registry::download_crate;
@@ -246,6 +247,90 @@ impl Cas for CasService {
             layout_version: MATERIALIZATION_LAYOUT_VERSION,
             steps,
         })
+    }
+
+    #[tracing::instrument(skip(self, request), fields(file_count = request.files.len()))]
+    async fn ingest_tree(&self, request: IngestTreeRequest) -> IngestTreeResult {
+        let mut manifest = TreeManifest {
+            schema_version: TREE_MANIFEST_SCHEMA_VERSION,
+            entries: Vec::with_capacity(request.files.len()),
+            total_size_bytes: 0,
+            unique_blobs: 0,
+        };
+
+        let mut new_blobs = 0u32;
+        let mut total_bytes = 0u64;
+
+        for file in &request.files {
+            let size = file.contents.len() as u64;
+            total_bytes += size;
+
+            // Store the blob
+            let blob_hash = BlobHash::from_bytes(&file.contents);
+            let blob_path = self.blob_path(&blob_hash);
+
+            // Check if blob already exists (for dedup stats)
+            let exists = tokio::fs::try_exists(&blob_path).await.unwrap_or(false);
+            if !exists {
+                if let Err(e) = vx_io::atomic_write(&blob_path, &file.contents).await {
+                    return IngestTreeResult {
+                        success: false,
+                        manifest_hash: None,
+                        file_count: 0,
+                        total_bytes: 0,
+                        new_blobs: 0,
+                        error: Some(format!("failed to write blob for {}: {}", file.path, e)),
+                    };
+                }
+                new_blobs += 1;
+            }
+
+            // Add to manifest
+            manifest.add_file(file.path.clone(), blob_hash, size, file.executable);
+        }
+
+        // Finalize manifest (sorts entries, computes unique blob count)
+        manifest.finalize();
+
+        // Store manifest as blob (JSON serialized)
+        let manifest_json = facet_json::to_string(&manifest);
+        let manifest_hash = ManifestHash::from_bytes(manifest_json.as_bytes());
+        let manifest_path = self.tree_manifest_path(&manifest_hash);
+
+        if let Err(e) = vx_io::atomic_write(&manifest_path, manifest_json.as_bytes()).await {
+            return IngestTreeResult {
+                success: false,
+                manifest_hash: None,
+                file_count: 0,
+                total_bytes: 0,
+                new_blobs: 0,
+                error: Some(format!("failed to write tree manifest: {}", e)),
+            };
+        }
+
+        tracing::info!(
+            manifest_hash = %manifest_hash.short_hex(),
+            file_count = request.files.len(),
+            total_bytes,
+            new_blobs,
+            unique_blobs = manifest.unique_blobs,
+            "ingested tree"
+        );
+
+        IngestTreeResult {
+            success: true,
+            manifest_hash: Some(manifest_hash),
+            file_count: request.files.len() as u32,
+            total_bytes,
+            new_blobs,
+            error: None,
+        }
+    }
+
+    async fn get_tree_manifest(&self, hash: ManifestHash) -> Option<TreeManifest> {
+        let path = self.tree_manifest_path(&hash);
+        let json = tokio::fs::read_to_string(&path).await.ok()?;
+        facet_json::from_str(&json).ok()
     }
 
     async fn stream_blob(&self, blob: Blake3Hash) -> rapace::Streaming<Vec<u8>> {

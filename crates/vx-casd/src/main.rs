@@ -130,6 +130,17 @@ impl CasService {
             .join(format!("{}.json", hex))
     }
 
+    fn tree_manifests_dir(&self) -> Utf8PathBuf {
+        self.root.join("trees/blake3")
+    }
+
+    fn tree_manifest_path(&self, hash: &ManifestHash) -> Utf8PathBuf {
+        let hex = hash.to_hex();
+        self.tree_manifests_dir()
+            .join(&hex[..2])
+            .join(format!("{}.json", hex))
+    }
+
     fn cache_path(&self, key: &CacheKey) -> Utf8PathBuf {
         let hex = key.to_hex();
         self.cache_dir().join(&hex[..2]).join(&hex)

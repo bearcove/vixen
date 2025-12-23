@@ -100,6 +100,45 @@ pub struct PublishResult {
     pub error: Option<String>,
 }
 
+// =============================================================================
+// Tree Ingestion Types
+// =============================================================================
+
+/// A file to ingest into a tree
+#[derive(Debug, Clone, Facet)]
+pub struct TreeFile {
+    /// Relative path within the tree (UTF-8, forward slashes)
+    pub path: String,
+    /// File contents
+    pub contents: Vec<u8>,
+    /// Whether the file is executable
+    pub executable: bool,
+}
+
+/// Request to ingest a tree of files into CAS
+#[derive(Debug, Clone, Facet)]
+pub struct IngestTreeRequest {
+    /// Files to ingest
+    pub files: Vec<TreeFile>,
+}
+
+/// Result of tree ingestion
+#[derive(Debug, Clone, Facet)]
+pub struct IngestTreeResult {
+    /// Whether ingestion succeeded
+    pub success: bool,
+    /// Hash of the TreeManifest (None on failure)
+    pub manifest_hash: Option<ManifestHash>,
+    /// Number of files ingested
+    pub file_count: u32,
+    /// Total bytes ingested
+    pub total_bytes: u64,
+    /// Number of new blobs stored (vs deduplicated)
+    pub new_blobs: u32,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
 /// CAS service trait
 ///
 /// CAS stores immutable content. Clients produce working directories.
@@ -154,6 +193,21 @@ pub trait Cas {
     /// Each chunk involves allocation. Fine for v1 but don't assume this is
     /// free for multi-GB transfers.
     async fn stream_blob(&self, blob: Blake3Hash) -> rapace::Streaming<Vec<u8>>;
+
+    // =========================================================================
+    // Tree ingestion (for uploading source trees)
+    // =========================================================================
+
+    /// Ingest a tree of files into CAS.
+    ///
+    /// Each file is stored as a blob, and a TreeManifest is created
+    /// referencing all the blobs. Returns the hash of the TreeManifest.
+    ///
+    /// This is used by the daemon to upload source files before compilation.
+    async fn ingest_tree(&self, request: IngestTreeRequest) -> IngestTreeResult;
+
+    /// Get a TreeManifest by its hash
+    async fn get_tree_manifest(&self, hash: ManifestHash) -> Option<TreeManifest>;
 
     // =========================================================================
     // Toolchain operations (called by execd/daemon)

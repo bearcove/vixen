@@ -18,7 +18,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 use vx_cas_proto::{
-    Blake3Hash, CasClient, EnsureStatus, RustChannel, RustComponent, RustToolchainSpec,
+    Blake3Hash, CasClient, EnsureStatus, IngestTreeRequest, RustChannel, RustComponent,
+    RustToolchainSpec, TreeFile,
 };
 use vx_daemon_proto::{BuildRequest, BuildResult};
 use vx_exec_proto::{ExecClient, RustCompileRequest, RustDep};
@@ -161,6 +162,54 @@ impl DaemonService {
         }
 
         Ok(info)
+    }
+
+    /// Ingest source files into CAS and return the tree manifest hash.
+    async fn ingest_source_tree(
+        &self,
+        paths: &[Utf8PathBuf],
+        workspace_root: &camino::Utf8Path,
+    ) -> Result<Blake3Hash, String> {
+        let mut files = Vec::with_capacity(paths.len());
+
+        for rel_path in paths {
+            let abs_path = workspace_root.join(rel_path);
+            let contents = std::fs::read(&abs_path)
+                .map_err(|e| format!("failed to read {}: {}", abs_path, e))?;
+
+            files.push(TreeFile {
+                path: rel_path.to_string(),
+                contents,
+                executable: false, // Source files are not executable
+            });
+        }
+
+        let request = IngestTreeRequest { files };
+        let result = self
+            .cas
+            .ingest_tree(request)
+            .await
+            .map_err(|e| format!("RPC error: {:?}", e))?;
+
+        if !result.success {
+            return Err(result
+                .error
+                .unwrap_or_else(|| "tree ingestion failed".to_string()));
+        }
+
+        let manifest_hash = result
+            .manifest_hash
+            .ok_or_else(|| "no manifest hash returned".to_string())?;
+
+        debug!(
+            manifest_hash = %manifest_hash.short_hex(),
+            file_count = result.file_count,
+            total_bytes = result.total_bytes,
+            new_blobs = result.new_blobs,
+            "ingested source tree"
+        );
+
+        Ok(manifest_hash)
     }
 
     /// Build a project.
@@ -310,10 +359,10 @@ impl DaemonService {
                     "cache miss, compiling"
                 );
 
-                // TODO: Ingest source tree to CAS and get manifest hash
-                // For now, we need a way to upload source files to CAS
-                // This is a placeholder - the source_manifest should come from CAS
-                let source_manifest = closure_hash; // FIXME: This should be a tree manifest
+                // Ingest source tree to CAS
+                let source_manifest = self
+                    .ingest_source_tree(&closure_paths, &graph.workspace_root)
+                    .await?;
 
                 let compile_request = RustCompileRequest {
                     toolchain_manifest: rust_toolchain.manifest_hash,
