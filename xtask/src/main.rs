@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,30 +23,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn install_all() -> Result<(), Box<dyn std::error::Error>> {
     let binaries = vec![
-        ("vx", "./crates/vx"),
-        ("vx-oort", "./crates/vx-oort"),
-        ("vx-rhea", "./crates/vx-rhea"),
-        ("vx-aether", "./crates/vx-aether"),
+        "vx",
+        "vx-oort",
+        "vx-rhea",
+        "vx-aether",
     ];
 
-    println!("Installing all vixen binaries...\n");
+    println!("Building all vixen binaries in release mode...\n");
 
-    for (name, path) in &binaries {
-        println!("Installing {}...", name);
-        let status = Command::new("cargo")
-            .arg("install")
-            .arg("--path")
-            .arg(path)
-            .arg("--force") // Overwrite existing installations
-            .status()?;
+    // Build all binaries in one go
+    let status = Command::new("cargo")
+        .arg("build")
+        .arg("--release")
+        .arg("-p")
+        .arg("vx")
+        .arg("-p")
+        .arg("vx-oort")
+        .arg("-p")
+        .arg("vx-rhea")
+        .arg("-p")
+        .arg("vx-aether")
+        .status()?;
 
-        if !status.success() {
-            eprintln!("Failed to install {}", name);
-            std::process::exit(1);
-        }
-        println!("✓ {} installed\n", name);
+    if !status.success() {
+        eprintln!("Failed to build binaries");
+        std::process::exit(1);
     }
 
-    println!("All binaries installed successfully!");
+    println!("✓ Build completed\n");
+
+    // Determine cargo bin directory
+    let cargo_bin = dirs::home_dir()
+        .ok_or("Could not determine home directory")?
+        .join(".cargo")
+        .join("bin");
+
+    // Create .cargo/bin if it doesn't exist
+    if !cargo_bin.exists() {
+        fs::create_dir_all(&cargo_bin)?;
+    }
+
+    let release_dir = PathBuf::from("target/release");
+
+    println!("Installing binaries to {}...\n", cargo_bin.display());
+
+    for binary_name in &binaries {
+        let src = release_dir.join(binary_name);
+
+        if !src.exists() {
+            eprintln!("Warning: {} not found in target/release", binary_name);
+            continue;
+        }
+
+        let dst = cargo_bin.join(binary_name);
+
+        fs::copy(&src, &dst)?;
+        println!("✓ {} installed", binary_name);
+    }
+
+    println!("\nAll binaries installed successfully!");
     Ok(())
 }
