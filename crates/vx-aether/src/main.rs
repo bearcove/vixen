@@ -319,13 +319,16 @@ async fn main() -> Result<()> {
 
     // Initialize aether service
     tracing::info!("Initializing aether service");
-    let aether = AetherHandle::new(AetherService::new(
-        cas_client,
-        exec_client,
-        args.vx_home,
-        exec_host_triple,
-        spawn_tracker,
-    ));
+    let aether = AetherHandle::new(
+        AetherService::new(
+            cas_client,
+            exec_client,
+            args.vx_home,
+            exec_host_triple,
+            spawn_tracker,
+        )
+        .await,
+    );
 
     // Start TCP server
     let listener = TcpListener::bind(&args.bind).await?;
