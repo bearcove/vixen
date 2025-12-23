@@ -1,11 +1,11 @@
 use jiff::Timestamp;
 use vx_cas_proto::Cas;
 use vx_cas_proto::{
-    Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, EnsureToolchainResult,
-    IngestTreeRequest, IngestTreeResult, ManifestHash, MaterializationPlan, MaterializeStep,
-    NodeManifest, PublishResult, RegistryCrateManifest, RegistrySpec, RegistrySpecKey,
-    RustToolchainSpec, TREE_MANIFEST_SCHEMA_VERSION, ToolchainKind, ToolchainManifest,
-    ToolchainSpecKey, TreeManifest, ZigToolchainSpec,
+    Blake3Hash, BlobHash, CAS_PROTOCOL_VERSION, CacheKey, EnsureRegistryCrateResult, EnsureStatus,
+    EnsureToolchainResult, IngestTreeRequest, IngestTreeResult, ManifestHash, MaterializationPlan,
+    MaterializeStep, NodeManifest, PublishResult, RegistryCrateManifest, RegistrySpec,
+    RegistrySpecKey, RustToolchainSpec, ServiceVersion, TREE_MANIFEST_SCHEMA_VERSION,
+    ToolchainKind, ToolchainManifest, ToolchainSpecKey, TreeManifest, ZigToolchainSpec,
 };
 
 use crate::registry::download_crate;
@@ -17,6 +17,14 @@ const REGISTRY_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MATERIALIZATION_LAYOUT_VERSION: u32 = 1;
 
 impl Cas for CasService {
+    async fn version(&self) -> ServiceVersion {
+        ServiceVersion {
+            service: "vx-casd".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: CAS_PROTOCOL_VERSION,
+        }
+    }
+
     async fn lookup(&self, cache_key: CacheKey) -> Option<ManifestHash> {
         let path = self.cache_path(&cache_key);
         let content = tokio::fs::read_to_string(&path).await.ok()?;
@@ -120,7 +128,7 @@ impl Cas for CasService {
         self.registry_manager
             .ensure(
                 spec_key,
-                async move || this.lookup_registry_spec_local(&spec_key),
+                async move || this.lookup_registry_spec_local(&spec_key).await,
                 async move || {
                     // Download tarball
                     let tarball_bytes =
@@ -151,7 +159,7 @@ impl Cas for CasService {
                     let manifest_hash = this2.put_registry_manifest(&manifest).await;
 
                     // Publish spec → manifest_hash mapping
-                    let _ = this2.publish_registry_spec_mapping(&spec_key, &manifest_hash);
+                    let _ = this2.publish_registry_spec_mapping(&spec_key, &manifest_hash).await;
 
                     tracing::info!(
                         name = %spec.name,
@@ -176,11 +184,11 @@ impl Cas for CasService {
         &self,
         manifest_hash: Blake3Hash,
     ) -> Option<RegistryCrateManifest> {
-        self.get_registry_crate_manifest(&manifest_hash)
+        self.get_registry_crate_manifest(&manifest_hash).await
     }
 
     async fn lookup_registry_spec(&self, spec_key: RegistrySpecKey) -> Option<Blake3Hash> {
-        self.lookup_registry_spec_local(&spec_key)
+        self.lookup_registry_spec_local(&spec_key).await
     }
 
     async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {

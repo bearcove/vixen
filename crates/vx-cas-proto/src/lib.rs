@@ -14,6 +14,10 @@ use jiff::civil::DateTime;
 /// Bump this when the cache key canonicalization changes.
 pub const CACHE_KEY_SCHEMA_VERSION: u32 = 1;
 
+/// CAS protocol version.
+/// Bump this when making breaking changes to the CAS RPC interface.
+pub const CAS_PROTOCOL_VERSION: u32 = 1;
+
 /// A blake3 hash, used for blobs, manifests, and cache keys.
 /// Internally stored as raw bytes; hex formatting is for display only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Facet)]
@@ -100,6 +104,17 @@ pub struct PublishResult {
     pub error: Option<String>,
 }
 
+/// Version information for a service
+#[derive(Debug, Clone, Facet)]
+pub struct ServiceVersion {
+    /// Service name (e.g., "vx-casd")
+    pub service: String,
+    /// Crate version (from CARGO_PKG_VERSION)
+    pub version: String,
+    /// Protocol/schema version (bump on breaking changes)
+    pub protocol_version: u32,
+}
+
 // =============================================================================
 // Tree Ingestion Types
 // =============================================================================
@@ -145,6 +160,13 @@ pub struct IngestTreeResult {
 #[rapace::service]
 #[allow(async_fn_in_trait)]
 pub trait Cas {
+    // =========================================================================
+    // Service metadata
+    // =========================================================================
+
+    /// Get service version information (for health checks and compatibility)
+    async fn version(&self) -> ServiceVersion;
+
     // =========================================================================
     // Cache key operations
     // =========================================================================

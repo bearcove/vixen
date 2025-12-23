@@ -202,39 +202,46 @@ impl CasService {
     }
 
     /// Publish registry spec → manifest_hash mapping atomically (first-writer-wins).
-    pub(crate) fn publish_registry_spec_mapping(
+    /// Publish registry spec → manifest_hash mapping atomically (first-writer-wins).
+    pub(crate) async fn publish_registry_spec_mapping(
         &self,
         spec_key: &RegistrySpecKey,
         manifest_hash: &Blake3Hash,
     ) -> std::io::Result<bool> {
-        use std::fs::{File, OpenOptions};
-        use std::io::Write;
-
         let path = self.registry_spec_path(spec_key);
-        let parent = path.parent().expect("spec path has parent");
-        std::fs::create_dir_all(parent)?;
+        let parent = path.parent().expect("spec path has parent").to_path_buf();
+        let manifest_hex = manifest_hash.to_hex();
+        
+        tokio::task::spawn_blocking(move || {
+            use std::fs::{File, OpenOptions};
+            use std::io::Write;
+            
+            std::fs::create_dir_all(&parent)?;
 
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                file.write_all(manifest_hash.to_hex().as_bytes())?;
-                file.sync_all()?;
-                if let Ok(dir) = File::open(parent) {
-                    let _ = dir.sync_all();
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    file.write_all(manifest_hex.as_bytes())?;
+                    file.sync_all()?;
+                    if let Ok(dir) = File::open(&parent) {
+                        let _ = dir.sync_all();
+                    }
+                    Ok(true)
                 }
-                Ok(true)
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(e) => Err(e),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(e),
-        }
+        })
+        .await
+        .expect("spawn_blocking join failed")
     }
 
     /// Lookup manifest_hash by registry spec_key (internal helper).
-    pub(crate) fn lookup_registry_spec_local(
+    pub(crate) async fn lookup_registry_spec_local(
         &self,
         spec_key: &RegistrySpecKey,
     ) -> Option<Blake3Hash> {
         let path = self.registry_spec_path(spec_key);
-        let content = std::fs::read_to_string(&path).ok()?;
+        let content = tokio::fs::read_to_string(&path).await.ok()?;
         Blake3Hash::from_hex(content.trim())
     }
 
@@ -256,12 +263,12 @@ impl CasService {
     }
 
     /// Get a RegistryCrateManifest by hash.
-    pub fn get_registry_crate_manifest(
+    pub async fn get_registry_crate_manifest(
         &self,
         manifest_hash: &Blake3Hash,
     ) -> Option<RegistryCrateManifest> {
         let path = self.manifest_path(manifest_hash);
-        let json = std::fs::read_to_string(&path).ok()?;
+        let json = tokio::fs::read_to_string(&path).await.ok()?;
         facet_json::from_str(&json).ok()
     }
 }

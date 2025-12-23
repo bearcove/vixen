@@ -3345,6 +3345,7 @@ dependencies = [
  "camino",
  "facet",
  "rapace",
+ "vx-cas-proto",
 ]
 
 [[package]]

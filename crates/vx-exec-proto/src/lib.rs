@@ -19,7 +19,11 @@
 //! - Materialize final outputs locally (if needed)
 
 use facet::Facet;
-use vx_cas_proto::ManifestHash;
+use vx_cas_proto::{ManifestHash, ServiceVersion};
+
+/// Exec protocol version.
+/// Bump this when making breaking changes to the Exec RPC interface.
+pub const EXEC_PROTOCOL_VERSION: u32 = 1;
 
 // =============================================================================
 // Rust Compilation
@@ -163,6 +167,9 @@ pub struct CcCompileResult {
 /// No filesystem paths are shared between daemon and execd.
 #[rapace::service]
 pub trait Exec {
+    /// Get service version information (for health checks and compatibility)
+    async fn version(&self) -> ServiceVersion;
+
     /// Compile a Rust crate (lib or bin)
     ///
     /// Execd will:

@@ -21,8 +21,8 @@ use std::process::Child;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use vx_cas_proto::CasClient;
-use vx_daemon_proto::{BuildRequest, BuildResult, Daemon, DaemonServer};
+use vx_cas_proto::{CasClient, ServiceVersion};
+use vx_daemon_proto::{BuildRequest, BuildResult, Daemon, DaemonServer, DAEMON_PROTOCOL_VERSION};
 use vx_exec_proto::ExecClient;
 
 pub use db::Database;
@@ -64,9 +64,18 @@ impl Daemon for DaemonHandle {
     }
 
     async fn shutdown(&self) {
-        tracing::info!("Shutdown requested");
-        // Exit the process - the spawn tracker will clean up child processes
+        tracing::info!("Shutdown requested, killing spawned services");
+        self.0.kill_spawned_services().await;
+        tracing::info!("Spawned services killed, exiting daemon");
         std::process::exit(0);
+    }
+
+    async fn version(&self) -> ServiceVersion {
+        ServiceVersion {
+            service: "vx-daemon".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: DAEMON_PROTOCOL_VERSION,
+        }
     }
 }
 
@@ -92,13 +101,17 @@ impl Args {
             format!("{}/.vx", home)
         });
 
-        let cas_endpoint =
-            std::env::var("VX_DAEMON_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let cas_endpoint = std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
 
         let exec_endpoint =
-            std::env::var("VX_DAEMON_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
+            std::env::var("VX_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
 
         let bind = std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+
+        // V1: Enforce loopback-only
+        validate_loopback(&bind)?;
+        validate_loopback(&cas_endpoint)?;
+        validate_loopback(&exec_endpoint)?;
 
         Ok(Args {
             vx_home: Utf8PathBuf::from(vx_home),
@@ -107,6 +120,23 @@ impl Args {
             bind,
         })
     }
+}
+
+/// Validate that the endpoint is loopback-only (127.0.0.1:*)
+fn validate_loopback(endpoint: &str) -> Result<()> {
+    let addr = endpoint
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| eyre::eyre!("invalid endpoint '{}': {}", endpoint, e))?;
+
+    if !addr.ip().is_loopback() {
+        eyre::bail!(
+            "vx-daemon V1 only supports loopback endpoints (127.0.0.1:*), got: {}\n\
+            Remote execution is not yet supported.",
+            endpoint
+        );
+    }
+
+    Ok(())
 }
 
 /// Tracks spawned child services
@@ -154,8 +184,8 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
         let child = spawn_service(
             "vx-casd",
             &[
-                ("VX_CAS_ROOT", args.vx_home.as_str()),
-                ("VX_CAS_BIND", &args.cas_endpoint),
+                ("VX_HOME", args.vx_home.as_str()),
+                ("VX_CAS", &args.cas_endpoint),
             ],
         )?;
 

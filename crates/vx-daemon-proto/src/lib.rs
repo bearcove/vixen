@@ -11,6 +11,10 @@
 use camino::Utf8PathBuf;
 use facet::Facet;
 
+/// Daemon protocol version.
+/// Bump this when making breaking changes to the Daemon RPC interface.
+pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+
 /// Request to build a project
 #[derive(Debug, Clone, Facet)]
 pub struct BuildRequest {
@@ -40,6 +44,9 @@ pub struct BuildResult {
 /// The daemon service trait
 #[rapace::service]
 pub trait Daemon {
+    /// Get service version information (for health checks and compatibility)
+    async fn version(&self) -> vx_cas_proto::ServiceVersion;
+
     /// Build a project
     async fn build(&self, request: BuildRequest) -> BuildResult;
 

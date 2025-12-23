@@ -164,6 +164,11 @@ impl DaemonService {
         Ok(info)
     }
 
+    /// Kill all spawned child services (casd, execd)
+    pub async fn kill_spawned_services(&self) {
+        self.spawn_tracker.lock().await.kill_all();
+    }
+
     /// Ingest source files into CAS and return the tree manifest hash.
     async fn ingest_source_tree(
         &self,
@@ -174,7 +179,7 @@ impl DaemonService {
 
         for rel_path in paths {
             let abs_path = workspace_root.join(rel_path);
-            let contents = std::fs::read(&abs_path)
+            let contents = tokio::fs::read(&abs_path).await
                 .map_err(|e| format!("failed to read {}: {}", abs_path, e))?;
 
             files.push(TreeFile {
@@ -415,7 +420,7 @@ impl DaemonService {
                     .join(&target_triple)
                     .join(profile);
 
-                std::fs::create_dir_all(&output_dir)
+                tokio::fs::create_dir_all(&output_dir).await
                     .map_err(|e| format!("failed to create output dir: {}", e))?;
 
                 let output_path = output_dir.join(&crate_node.crate_name);

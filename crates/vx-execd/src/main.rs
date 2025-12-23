@@ -55,6 +55,10 @@ impl Args {
 
         let bind = std::env::var("VX_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
 
+        // V1: Enforce loopback-only
+        validate_loopback(&bind)?;
+        validate_loopback(&cas_endpoint)?;
+
         Ok(Args {
             toolchains_dir,
             registry_cache_dir,
@@ -62,6 +66,23 @@ impl Args {
             bind,
         })
     }
+}
+
+/// Validate that the endpoint is loopback-only (127.0.0.1:*)
+fn validate_loopback(endpoint: &str) -> Result<()> {
+    let addr = endpoint
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| eyre::eyre!("invalid endpoint '{}': {}", endpoint, e))?;
+
+    if !addr.ip().is_loopback() {
+        eyre::bail!(
+            "vx-execd V1 only supports loopback endpoints (127.0.0.1:*), got: {}\n\
+            Remote execution is not yet supported.",
+            endpoint
+        );
+    }
+
+    Ok(())
 }
 
 /// Connect to CAS and return a client handle

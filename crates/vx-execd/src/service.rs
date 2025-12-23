@@ -3,14 +3,24 @@ use jiff::Zoned;
 use std::process::Command;
 use std::time::Instant;
 use tracing::{debug, info};
+use vx_cas_proto::ServiceVersion;
 use vx_cas_proto::{NodeId, NodeManifest, OutputEntry};
 use vx_exec_proto::{
-    CcCompileRequest, CcCompileResult, Exec, RustCompileRequest, RustCompileResult,
+    CcCompileRequest, CcCompileResult, EXEC_PROTOCOL_VERSION, Exec, RustCompileRequest,
+    RustCompileResult,
 };
 
 use crate::ExecService;
 
 impl Exec for ExecService {
+    async fn version(&self) -> ServiceVersion {
+        ServiceVersion {
+            service: "vx-execd".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: EXEC_PROTOCOL_VERSION,
+        }
+    }
+
     async fn compile_rust(&self, request: RustCompileRequest) -> RustCompileResult {
         let start = Instant::now();
 
@@ -72,18 +82,19 @@ impl Exec for ExecService {
         // 3. Materialize dependencies (rlibs) into scratch_dir/.vx/deps/<extern_name>.rlib
         let deps_dir = scratch_dir.join(".vx/deps");
         if !request.deps.is_empty()
-            && let Err(e) = tokio::fs::create_dir_all(&deps_dir).await {
-                let _ = tokio::fs::remove_dir_all(&scratch_dir).await;
-                return RustCompileResult {
-                    success: false,
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    output_manifest: None,
-                    error: Some(format!("failed to create deps directory: {}", e)),
-                };
-            }
+            && let Err(e) = tokio::fs::create_dir_all(&deps_dir).await
+        {
+            let _ = tokio::fs::remove_dir_all(&scratch_dir).await;
+            return RustCompileResult {
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                output_manifest: None,
+                error: Some(format!("failed to create deps directory: {}", e)),
+            };
+        }
 
         let mut extern_args: Vec<(String, Utf8PathBuf)> = Vec::new();
         for dep in &request.deps {

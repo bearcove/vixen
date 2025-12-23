@@ -32,18 +32,39 @@ struct Args {
 
 impl Args {
     fn from_env() -> Result<Self> {
-        let root = std::env::var("VX_CAS_ROOT").unwrap_or_else(|_| {
+        let vx_home = std::env::var("VX_HOME").unwrap_or_else(|_| {
             let home = std::env::var("HOME").expect("HOME not set");
-            format!("{}/.vx/cas", home)
+            format!("{}/.vx", home)
         });
+        let root = format!("{}/cas", vx_home);
 
-        let bind = std::env::var("VX_CAS_BIND").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let bind = std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+
+        // V1: Enforce loopback-only
+        validate_loopback(&bind)?;
 
         Ok(Args {
             root: Utf8PathBuf::from(root),
             bind,
         })
     }
+}
+
+/// Validate that the endpoint is loopback-only (127.0.0.1:*)
+fn validate_loopback(endpoint: &str) -> Result<()> {
+    let addr = endpoint
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| eyre::eyre!("invalid endpoint '{}': {}", endpoint, e))?;
+
+    if !addr.ip().is_loopback() {
+        eyre::bail!(
+            "vx-casd V1 only supports loopback binding (127.0.0.1:*), got: {}\n\
+            Remote execution is not yet supported.",
+            endpoint
+        );
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
