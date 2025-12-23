@@ -24,7 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use vx_aether_proto::{AETHER_PROTOCOL_VERSION, Aether, AetherServer, BuildRequest, BuildResult};
 use vx_cas_proto::{CasClient, ServiceVersion};
-use vx_exec_proto::ExecClient;
+use vx_exec_proto::RheaClient;
 
 pub use db::Database;
 pub use inputs::*;
@@ -298,7 +298,7 @@ async fn main() -> Result<()> {
     let exec_stream = TcpStream::connect(&args.exec_endpoint).await?;
     let exec_transport = rapace::Transport::stream(exec_stream);
     let exec_session = Arc::new(rapace::RpcSession::new(exec_transport));
-    let exec_client = Arc::new(ExecClient::new(exec_session.clone()));
+    let exec_client = Arc::new(RheaClient::new(exec_session.clone()));
 
     // Spawn session runners
     let cas_session_runner = cas_session.clone();

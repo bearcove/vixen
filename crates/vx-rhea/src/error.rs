@@ -8,7 +8,7 @@ use vx_cas_proto::Blake3Hash;
 /// Errors that can occur during exec operations.
 #[derive(Debug, Clone, Error, Facet)]
 #[repr(u8)]
-pub enum ExecdError {
+pub enum RheaError {
     // === Toolchain Errors ===
     #[error("toolchain manifest {0} not found in CAS")]
     ToolchainManifestNotFound(Blake3Hash),
@@ -64,7 +64,10 @@ pub enum ExecdError {
     NoRlibOutput(String),
 
     #[error("rlib blob {hash} not found for {extern_name}")]
-    RlibBlobNotFound { hash: Blake3Hash, extern_name: String },
+    RlibBlobNotFound {
+        hash: Blake3Hash,
+        extern_name: String,
+    },
 
     #[error("failed to execute rustc: {0}")]
     RustcExecution(String),
@@ -77,4 +80,4 @@ pub enum ExecdError {
 }
 
 /// Result type for exec operations.
-pub type Result<T> = std::result::Result<T, ExecdError>;
+pub type Result<T> = std::result::Result<T, RheaError>;

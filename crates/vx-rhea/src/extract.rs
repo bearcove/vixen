@@ -3,8 +3,8 @@ use futures_util::StreamExt;
 use tracing::debug;
 use vx_cas_proto::{Blake3Hash, TreeManifest};
 
-use crate::error::{ExecdError, Result};
 use crate::ExecService;
+use crate::error::{Result, RheaError};
 
 impl ExecService {
     /// Materialize a tree from CAS to a destination directory
@@ -20,24 +20,23 @@ impl ExecService {
             .cas
             .get_blob(tree_manifest_hash)
             .await
-            .map_err(|e| ExecdError::CasRpc(e.to_string()))?
-            .ok_or(ExecdError::ToolchainBlobNotFound {
+            .map_err(|e| RheaError::CasRpc(e.to_string()))?
+            .ok_or(RheaError::ToolchainBlobNotFound {
                 hash: tree_manifest_hash,
                 path: "tree manifest".to_string(),
             })?;
 
         // Parse tree manifest
-        let tree: TreeManifest = facet_json::from_str(
-            std::str::from_utf8(&tree_json).map_err(|e| {
-                ExecdError::ToolchainMaterialization(format!(
+        let tree: TreeManifest =
+            facet_json::from_str(std::str::from_utf8(&tree_json).map_err(|e| {
+                RheaError::ToolchainMaterialization(format!(
                     "tree manifest is not valid UTF-8: {}",
                     e
                 ))
-            })?,
-        )
-        .map_err(|e| {
-            ExecdError::ToolchainMaterialization(format!("failed to parse tree manifest: {}", e))
-        })?;
+            })?)
+            .map_err(|e| {
+                RheaError::ToolchainMaterialization(format!("failed to parse tree manifest: {}", e))
+            })?;
 
         debug!(
             tree = %tree_manifest_hash,
@@ -64,7 +63,9 @@ impl ExecService {
             Ok(data)
         })
         .await
-        .map_err(|e| ExecdError::ToolchainMaterialization(format!("failed to materialize tree: {}", e)))?;
+        .map_err(|e| {
+            RheaError::ToolchainMaterialization(format!("failed to materialize tree: {}", e))
+        })?;
 
         debug!(tree = %tree_manifest_hash, dest = %dest, "tree materialized");
         Ok(())

@@ -1,9 +1,9 @@
-//! Exec service protocol definitions
+//! Rhea service protocol definitions
 //!
-//! The Exec service is a remote-capable worker that compiles code.
+//! The rhea service is a remote-capable worker that compiles code.
 //! All inputs and outputs go through CAS - no filesystem paths are shared.
 //!
-//! Execd responsibilities:
+//! Rhea responsibilities:
 //! - Materialize toolchains from CAS (cached locally)
 //! - Materialize source trees from CAS
 //! - Materialize dependency artifacts from CAS
@@ -21,9 +21,9 @@
 use facet::Facet;
 use vx_cas_proto::{ManifestHash, ServiceVersion};
 
-/// Exec protocol version.
-/// Bump this when making breaking changes to the Exec RPC interface.
-pub const EXEC_PROTOCOL_VERSION: u32 = 1;
+/// Rhea protocol version.
+/// Bump this when making breaking changes to the Rhea RPC interface.
+pub const RHEA_PROTOCOL_VERSION: u32 = 1;
 
 // =============================================================================
 // Rust Compilation
@@ -37,7 +37,7 @@ pub struct RustDep {
     /// Manifest hash of the dependency's rlib in CAS
     pub manifest_hash: ManifestHash,
     /// For registry dependencies: manifest hash of the registry crate tarball
-    /// If present, execd must materialize and compile the source before using the rlib
+    /// If present, rhea must materialize and compile the source before using the rlib
     pub registry_crate_manifest: Option<ManifestHash>,
 }
 
@@ -47,7 +47,7 @@ pub struct RustDep {
 /// All artifacts are identified by CAS manifest hashes.
 #[derive(Debug, Clone, Facet)]
 pub struct RustCompileRequest {
-    /// Toolchain manifest hash (execd materializes locally)
+    /// Toolchain manifest hash (rhea materializes locally)
     pub toolchain_manifest: ManifestHash,
 
     /// Source tree manifest hash (all source files)
@@ -71,7 +71,7 @@ pub struct RustCompileRequest {
     /// Profile: "debug" or "release"
     pub profile: String,
 
-    /// Dependencies (execd materializes rlibs from CAS)
+    /// Dependencies (rhea materializes rlibs from CAS)
     pub deps: Vec<RustDep>,
 }
 
@@ -161,21 +161,21 @@ pub struct CcCompileResult {
 }
 
 // =============================================================================
-// Exec Service Trait
+// Rhea Service Trait
 // =============================================================================
 
-/// Exec service trait
+/// Rhea service trait
 ///
 /// A remote-capable compilation service. All inputs/outputs go through CAS.
-/// No filesystem paths are shared between daemon and execd.
+/// No filesystem paths are shared between aether and rhea.
 #[rapace::service]
-pub trait Exec {
+pub trait Rhea {
     /// Get service version information (for health checks and compatibility)
     async fn version(&self) -> ServiceVersion;
 
     /// Compile a Rust crate (lib or bin)
     ///
-    /// Execd will:
+    /// Rhea will:
     /// 1. Materialize the toolchain from CAS (cached locally)
     /// 2. Materialize the source tree from CAS
     /// 3. Materialize dependency rlibs from CAS

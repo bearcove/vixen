@@ -6,18 +6,18 @@ use tracing::{debug, info, warn};
 use vx_cas_proto::ServiceVersion;
 use vx_cas_proto::{NodeId, NodeManifest, OutputEntry};
 use vx_exec_proto::{
-    CcCompileRequest, CcCompileResult, EXEC_PROTOCOL_VERSION, Exec, RustCompileRequest,
+    CcCompileRequest, CcCompileResult, Rhea, RHEA_PROTOCOL_VERSION, RustCompileRequest,
     RustCompileResult,
 };
 
-use crate::ExecService;
+use crate::{ExecService, RheaResult};
 
-impl Exec for ExecService {
+impl Rhea for ExecService {
     async fn version(&self) -> ServiceVersion {
         ServiceVersion {
             service: "vx-execd".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: EXEC_PROTOCOL_VERSION,
+            protocol_version: RHEA_PROTOCOL_VERSION,
         }
     }
 
@@ -68,7 +68,9 @@ impl Exec for ExecService {
             .await
         {
             if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                warn!("failed to remove scratch directory after source tree materialization failure: {e}");
+                warn!(
+                    "failed to remove scratch directory after source tree materialization failure: {e}"
+                );
             }
             return RustCompileResult {
                 success: false,
@@ -87,7 +89,9 @@ impl Exec for ExecService {
             && let Err(e) = tokio::fs::create_dir_all(&deps_dir).await
         {
             if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                warn!("failed to remove scratch directory after deps directory creation failure: {e}");
+                warn!(
+                    "failed to remove scratch directory after deps directory creation failure: {e}"
+                );
             }
             return RustCompileResult {
                 success: false,
@@ -110,7 +114,9 @@ impl Exec for ExecService {
                     .await
                 {
                     if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                        warn!("failed to remove scratch directory after registry crate materialization failure: {cleanup_err}");
+                        warn!(
+                            "failed to remove scratch directory after registry crate materialization failure: {cleanup_err}"
+                        );
                     }
                     return RustCompileResult {
                         success: false,
@@ -134,7 +140,9 @@ impl Exec for ExecService {
                 Ok(Some(m)) => m,
                 Ok(None) => {
                     if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                        warn!("failed to remove scratch directory after dependency manifest not found: {e}");
+                        warn!(
+                            "failed to remove scratch directory after dependency manifest not found: {e}"
+                        );
                     }
                     return RustCompileResult {
                         success: false,
@@ -151,7 +159,9 @@ impl Exec for ExecService {
                 }
                 Err(e) => {
                     if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                        warn!("failed to remove scratch directory after dependency manifest fetch failure: {cleanup_err}");
+                        warn!(
+                            "failed to remove scratch directory after dependency manifest fetch failure: {cleanup_err}"
+                        );
                     }
                     return RustCompileResult {
                         success: false,
@@ -176,7 +186,9 @@ impl Exec for ExecService {
                 Ok(e) => e,
                 Err(e) => {
                     if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                        warn!("failed to remove scratch directory after rlib entry not found: {cleanup_err}");
+                        warn!(
+                            "failed to remove scratch directory after rlib entry not found: {cleanup_err}"
+                        );
                     }
                     return RustCompileResult {
                         success: false,
@@ -212,7 +224,9 @@ impl Exec for ExecService {
                 }
                 Err(e) => {
                     if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                        warn!("failed to remove scratch directory after rlib blob fetch failure: {cleanup_err}");
+                        warn!(
+                            "failed to remove scratch directory after rlib blob fetch failure: {cleanup_err}"
+                        );
                     }
                     return RustCompileResult {
                         success: false,
@@ -228,7 +242,9 @@ impl Exec for ExecService {
 
             if let Err(e) = tokio::fs::write(&rlib_path, &rlib_data).await {
                 if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                    warn!("failed to remove scratch directory after rlib write failure: {cleanup_err}");
+                    warn!(
+                        "failed to remove scratch directory after rlib write failure: {cleanup_err}"
+                    );
                 }
                 return RustCompileResult {
                     success: false,
@@ -259,7 +275,9 @@ impl Exec for ExecService {
 
         if let Err(e) = tokio::fs::create_dir_all(&output_dir).await {
             if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                warn!("failed to remove scratch directory after output directory creation failure: {cleanup_err}");
+                warn!(
+                    "failed to remove scratch directory after output directory creation failure: {cleanup_err}"
+                );
             }
             return RustCompileResult {
                 success: false,
@@ -317,7 +335,9 @@ impl Exec for ExecService {
             Ok(o) => o,
             Err(e) => {
                 if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                    warn!("failed to remove scratch directory after rustc execution failure: {cleanup_err}");
+                    warn!(
+                        "failed to remove scratch directory after rustc execution failure: {cleanup_err}"
+                    );
                 }
                 return RustCompileResult {
                     success: false,
@@ -356,7 +376,9 @@ impl Exec for ExecService {
             Ok(d) => d,
             Err(e) => {
                 if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                    warn!("failed to remove scratch directory after output read failure: {cleanup_err}");
+                    warn!(
+                        "failed to remove scratch directory after output read failure: {cleanup_err}"
+                    );
                 }
                 return RustCompileResult {
                     success: false,
@@ -374,7 +396,9 @@ impl Exec for ExecService {
             Ok(h) => h,
             Err(e) => {
                 if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                    warn!("failed to remove scratch directory after CAS blob storage failure: {cleanup_err}");
+                    warn!(
+                        "failed to remove scratch directory after CAS blob storage failure: {cleanup_err}"
+                    );
                 }
                 return RustCompileResult {
                     success: false,
@@ -419,7 +443,9 @@ impl Exec for ExecService {
             Ok(h) => h,
             Err(e) => {
                 if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
-                    warn!("failed to remove scratch directory after CAS manifest storage failure: {cleanup_err}");
+                    warn!(
+                        "failed to remove scratch directory after CAS manifest storage failure: {cleanup_err}"
+                    );
                 }
                 return RustCompileResult {
                     success: false,
@@ -476,10 +502,10 @@ impl Exec for ExecService {
 
 impl ExecService {
     /// Create a scratch directory for compilation
-    async fn create_scratch_dir(&self) -> crate::ExecdResult<Utf8PathBuf> {
+    async fn create_scratch_dir(&self) -> RheaResult<Utf8PathBuf> {
         let scratch_base = self.toolchains_dir.parent().unwrap_or(&self.toolchains_dir);
         vx_io::create_scratch_dir(scratch_base)
             .await
-            .map_err(|e| crate::ExecdError::ScratchDir(e.to_string()))
+            .map_err(|e| crate::RheaError::ScratchDir(e.to_string()))
     }
 }

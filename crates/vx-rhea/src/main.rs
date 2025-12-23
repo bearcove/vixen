@@ -17,7 +17,7 @@ pub(crate) mod registry;
 pub(crate) mod service;
 pub(crate) mod toolchain;
 
-use error::{ExecdError, Result as ExecdResult};
+use error::{Result as RheaResult, RheaError};
 
 use camino::Utf8PathBuf;
 use eyre::Result;
@@ -25,15 +25,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use vx_cas_proto::{Blake3Hash, CasClient};
-use vx_exec_proto::ExecServer;
+use vx_exec_proto::RheaServer;
 
 use crate::registry::RegistryMaterializer;
 
 /// Type alias for inflight materialization tracking
 type InflightMaterializations = Arc<
-    tokio::sync::Mutex<
-        HashMap<Blake3Hash, Arc<tokio::sync::OnceCell<ExecdResult<Utf8PathBuf>>>>,
-    >,
+    tokio::sync::Mutex<HashMap<Blake3Hash, Arc<tokio::sync::OnceCell<RheaResult<Utf8PathBuf>>>>>,
 >;
 
 #[derive(Debug)]
@@ -143,7 +141,7 @@ async fn main() -> Result<()> {
             let transport = rapace::Transport::stream(socket);
 
             // Serve the Exec service
-            let server = ExecServer::new(exec);
+            let server = RheaServer::new(exec);
             if let Err(e) = server.serve(transport).await {
                 tracing::warn!("Connection error from {}: {}", peer_addr, e);
             }
@@ -203,7 +201,7 @@ impl ExecService {
     pub(crate) async fn ensure_materialized(
         &self,
         manifest_hash: Blake3Hash,
-    ) -> ExecdResult<Utf8PathBuf> {
+    ) -> RheaResult<Utf8PathBuf> {
         // Check if already materializing
         let cell = {
             let mut map = self.materializing.lock().await;
@@ -219,10 +217,7 @@ impl ExecService {
     }
 
     /// Materialize a toolchain from CAS to local directory
-    async fn materialize_toolchain(
-        &self,
-        manifest_hash: Blake3Hash,
-    ) -> ExecdResult<Utf8PathBuf> {
+    async fn materialize_toolchain(&self, manifest_hash: Blake3Hash) -> RheaResult<Utf8PathBuf> {
         self.materialize_toolchain_impl(manifest_hash).await
     }
 }

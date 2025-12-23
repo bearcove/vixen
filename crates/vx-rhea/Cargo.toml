@@ -1,11 +1,7 @@
 [package]
-name = "vx-execd"
+name = "vx-rhea"
 version.workspace = true
 edition.workspace = true
-
-[[bin]]
-name = "vx-execd"
-path = "src/main.rs"
 
 [dependencies]
 tracing-subscriber = { workspace = true }
@@ -25,7 +21,7 @@ futures-util = { workspace = true }
 vx-cache = { workspace = true }
 vx-cas-proto = { workspace = true }
 vx-cc = { workspace = true }
-vx-exec-proto = { workspace = true }
+vx-rhea-proto = { workspace = true }
 vx-io = { workspace = true }
 vx-tarball = { workspace = true }
 

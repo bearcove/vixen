@@ -23,7 +23,7 @@ use vx_cas_proto::{
     Blake3Hash, CasClient, EnsureStatus, IngestTreeRequest, RegistrySpec, RustChannel,
     RustComponent, RustToolchainSpec, TreeFile,
 };
-use vx_exec_proto::{ExecClient, RustCompileRequest, RustDep};
+use vx_exec_proto::{RheaClient, RustCompileRequest, RustDep};
 use vx_rs::crate_graph::CrateSource;
 use vx_rs::{CrateGraph, CrateId, CrateType};
 
@@ -55,7 +55,7 @@ pub struct AetherService {
     cas: Arc<CasClient>,
 
     /// Exec client for compilation
-    exec: Arc<ExecClient>,
+    exec: Arc<RheaClient>,
 
     /// The host triple of the execd machine (used for toolchain selection + cache keys).
     exec_host_triple: String,
@@ -77,7 +77,7 @@ impl AetherService {
     /// Create a new daemon service
     pub fn new(
         cas: Arc<CasClient>,
-        exec: Arc<ExecClient>,
+        exec: Arc<RheaClient>,
         vx_home: Utf8PathBuf,
         exec_host_triple: String,
         spawn_tracker: Arc<Mutex<SpawnTracker>>,

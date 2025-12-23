@@ -13,8 +13,8 @@ use vx_cas_proto::{Blake3Hash, CasClient};
 use vx_cas_proto::{RegistryCrateManifest, RegistryMaterializationResult};
 use vx_tarball::Compression;
 
-use crate::error::{ExecdError, Result};
 use crate::InflightMaterializations;
+use crate::error::{Result, RheaError};
 
 /// Registry materialization manager.
 ///
@@ -53,8 +53,8 @@ impl RegistryMaterializer {
             .cas
             .get_registry_manifest(manifest_hash)
             .await
-            .map_err(|e| ExecdError::CasRpc(e.to_string()))?
-            .ok_or(ExecdError::RegistryCrateManifestNotFound(manifest_hash))?;
+            .map_err(|e| RheaError::CasRpc(e.to_string()))?
+            .ok_or(RheaError::RegistryCrateManifestNotFound(manifest_hash))?;
 
         let spec = &manifest.spec;
 
@@ -78,7 +78,7 @@ impl RegistryMaterializer {
                         );
                         // Remove old copy
                         std::fs::remove_dir_all(&workspace_local).map_err(|e| {
-                            ExecdError::CreateDir {
+                            RheaError::CreateDir {
                                 path: workspace_local.clone(),
                                 message: format!("failed to remove stale workspace copy: {}", e),
                             }
@@ -91,9 +91,12 @@ impl RegistryMaterializer {
                 Err(_) => {
                     // No checksum file, need to re-copy
                     std::fs::remove_dir_all(&workspace_local).map_err(|e| {
-                        ExecdError::CreateDir {
+                        RheaError::CreateDir {
                             path: workspace_local.clone(),
-                            message: format!("failed to remove workspace copy without checksum: {}", e),
+                            message: format!(
+                                "failed to remove workspace copy without checksum: {}",
+                                e
+                            ),
                         }
                     })?;
                     true
@@ -106,7 +109,7 @@ impl RegistryMaterializer {
         if needs_copy {
             // Create parent directory
             if let Some(parent) = workspace_local.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| ExecdError::CreateDir {
+                std::fs::create_dir_all(parent).map_err(|e| RheaError::CreateDir {
                     path: parent.to_owned(),
                     message: e.to_string(),
                 })?;
@@ -115,7 +118,7 @@ impl RegistryMaterializer {
             // Use clonetree for efficient copy (reflink if supported)
             let options = clonetree::Options::default();
             clonetree::clone_tree(&global_path, &workspace_local, &options).map_err(|e| {
-                ExecdError::RegistryCrateExtraction(format!(
+                RheaError::RegistryCrateExtraction(format!(
                     "failed to clone {} to {}: {}",
                     global_path, workspace_local, e
                 ))
@@ -123,7 +126,7 @@ impl RegistryMaterializer {
 
             // Write .checksum file
             let checksum_file = workspace_local.join(".checksum");
-            std::fs::write(&checksum_file, &spec.checksum).map_err(|e| ExecdError::WriteFile {
+            std::fs::write(&checksum_file, &spec.checksum).map_err(|e| RheaError::WriteFile {
                 path: checksum_file,
                 message: e.to_string(),
             })?;
@@ -151,10 +154,7 @@ impl RegistryMaterializer {
 
     /// Ensure a crate is extracted to the global cache.
     /// Uses deduplication to prevent concurrent extractions.
-    async fn ensure_global_cache(
-        &self,
-        manifest: &RegistryCrateManifest,
-    ) -> Result<Utf8PathBuf> {
+    async fn ensure_global_cache(&self, manifest: &RegistryCrateManifest) -> Result<Utf8PathBuf> {
         let spec = &manifest.spec;
 
         // Global cache path: ~/.vx/registry/<name>/<version>/<checksum>/
@@ -198,7 +198,7 @@ impl RegistryMaterializer {
 
                 // Create parent directory
                 if let Some(parent) = lock_path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| ExecdError::CreateDir {
+                    std::fs::create_dir_all(parent).map_err(|e| RheaError::CreateDir {
                         path: parent.to_owned(),
                         message: e.to_string(),
                     })?;
@@ -222,12 +222,12 @@ impl RegistryMaterializer {
                 // Create temp directory for extraction
                 let temp_path = cache_path.with_extension("tmp");
                 if temp_path.exists() {
-                    std::fs::remove_dir_all(&temp_path).map_err(|e| ExecdError::CreateDir {
+                    std::fs::remove_dir_all(&temp_path).map_err(|e| RheaError::CreateDir {
                         path: temp_path.clone(),
                         message: format!("failed to remove stale temp dir: {}", e),
                     })?;
                 }
-                std::fs::create_dir_all(&temp_path).map_err(|e| ExecdError::CreateDir {
+                std::fs::create_dir_all(&temp_path).map_err(|e| RheaError::CreateDir {
                     path: temp_path.clone(),
                     message: e.to_string(),
                 })?;
@@ -237,20 +237,20 @@ impl RegistryMaterializer {
 
                 // Atomic rename to final location
                 if cache_path.exists() {
-                    std::fs::remove_dir_all(&cache_path).map_err(|e| ExecdError::CreateDir {
+                    std::fs::remove_dir_all(&cache_path).map_err(|e| RheaError::CreateDir {
                         path: cache_path.clone(),
                         message: format!("failed to remove stale cache dir: {}", e),
                     })?;
                 }
                 std::fs::rename(&temp_path, &cache_path).map_err(|e| {
-                    ExecdError::RegistryCrateExtraction(format!(
+                    RheaError::RegistryCrateExtraction(format!(
                         "failed to rename to cache dir: {}",
                         e
                     ))
                 })?;
 
                 // Write materialized marker
-                std::fs::write(&materialized_marker, "").map_err(|e| ExecdError::WriteFile {
+                std::fs::write(&materialized_marker, "").map_err(|e| RheaError::WriteFile {
                     path: materialized_marker,
                     message: e.to_string(),
                 })?;
@@ -277,11 +277,11 @@ async fn extract_crate_tarball(
     let mut stream = cas
         .stream_blob(blob_hash)
         .await
-        .map_err(|e| ExecdError::CasRpc(e.to_string()))?;
+        .map_err(|e| RheaError::CasRpc(e.to_string()))?;
     let mut compressed_data = Vec::new();
 
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| ExecdError::CasRpc(e.to_string()))?;
+        let chunk = chunk_result.map_err(|e| RheaError::CasRpc(e.to_string()))?;
         compressed_data.extend_from_slice(&chunk);
     }
 
@@ -289,7 +289,7 @@ async fn extract_crate_tarball(
     let cursor = std::io::Cursor::new(compressed_data);
     vx_tarball::extract(cursor, dest, Compression::Gzip, 1)
         .await
-        .map_err(|e| ExecdError::RegistryCrateExtraction(e.to_string()))
+        .map_err(|e| RheaError::RegistryCrateExtraction(e.to_string()))
 }
 
 /// Simple file-based lock guard
@@ -338,20 +338,20 @@ fn acquire_lock(path: &Utf8Path) -> Result<LockGuard> {
                     }
                     continue;
                 }
-                return Err(ExecdError::LockAcquisition {
+                return Err(RheaError::LockAcquisition {
                     path: path.to_owned(),
                     reason: "file exists".to_string(),
                 });
             }
             Err(e) => {
-                return Err(ExecdError::LockAcquisition {
+                return Err(RheaError::LockAcquisition {
                     path: path.to_owned(),
                     reason: e.to_string(),
                 });
             }
         }
     }
-    Err(ExecdError::LockAcquisition {
+    Err(RheaError::LockAcquisition {
         path: path.to_owned(),
         reason: "failed after retries".to_string(),
     })

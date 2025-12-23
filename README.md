@@ -1,4 +1,4 @@
-# vertex
+# vixen
 
 A Rust build engine with correct caching. The CLI is `vx`.
 
