@@ -17,10 +17,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
-use vx_aether_proto::{BuildRequest, BuildResult};
+use vx_aether_proto::{Aether, AETHER_PROTOCOL_VERSION, BuildRequest, BuildResult};
 use vx_oort_proto::{
     Blake3Hash, EnsureStatus, IngestTreeRequest, OortClient, RegistrySpec, RustChannel,
-    RustComponent, RustToolchainSpec, TreeFile,
+    RustComponent, RustToolchainSpec, ServiceVersion, TreeFile,
 };
 use vx_rhea_proto::{RheaClient, RustCompileRequest, RustDep};
 use vx_rs::crate_graph::CrateSource;
@@ -141,7 +141,7 @@ impl AetherService {
             .cas
             .ensure_rust_toolchain(spec)
             .await
-            .map_err(|e| AetherError::CasRpc(e.to_string()))?;
+            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
 
         if result.status == EnsureStatus::Failed {
             return Err(AetherError::ToolchainAcquisition(
@@ -156,7 +156,7 @@ impl AetherService {
             .cas
             .get_toolchain_manifest(manifest_hash)
             .await
-            .map_err(|e| AetherError::CasRpc(e.to_string()))?
+            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
             .ok_or(AetherError::ToolchainManifestNotFound(manifest_hash))?;
 
         // On cache hit, toolchain_id comes from manifest; on download, it's in the result
@@ -217,7 +217,7 @@ impl AetherService {
             .cas
             .ingest_tree(request)
             .await
-            .map_err(|e| AetherError::CasRpc(e.to_string()))?;
+            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
 
         if !result.success {
             return Err(AetherError::TreeIngestion(
@@ -259,7 +259,7 @@ impl AetherService {
         let result = cas
             .ensure_registry_crate(spec)
             .await
-            .map_err(|e| AetherError::CasRpc(e.to_string()))?;
+            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
 
         match result.status {
             EnsureStatus::Hit | EnsureStatus::Downloaded => {
@@ -504,7 +504,7 @@ impl AetherService {
                 .cas
                 .lookup(cache_key)
                 .await
-                .map_err(|e| AetherError::CasRpc(e.to_string()))?
+                .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
             {
                 info!(
                     crate_name = %crate_node.crate_name,
@@ -571,7 +571,7 @@ impl AetherService {
                     .exec
                     .compile_rust(compile_request)
                     .await
-                    .map_err(|e| AetherError::ExecRpc(e.to_string()))?;
+                    .map_err(|e| AetherError::ExecRpc(std::sync::Arc::new(e)))?;
 
                 if !result.success {
                     // Complete action even on failure
@@ -593,7 +593,7 @@ impl AetherService {
                 self.cas
                     .publish(cache_key, output_manifest)
                     .await
-                    .map_err(|e| AetherError::CasRpc(e.to_string()))?;
+                    .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
 
                 any_rebuilt = true;
 
@@ -628,7 +628,7 @@ impl AetherService {
                     .cas
                     .get_manifest(output_manifest)
                     .await
-                    .map_err(|e| AetherError::CasRpc(e.to_string()))?
+                    .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
                     .ok_or(AetherError::OutputManifestNotFound(output_manifest))?;
 
                 for output in &manifest.outputs {
@@ -637,7 +637,7 @@ impl AetherService {
                             .cas
                             .get_blob(output.blob)
                             .await
-                            .map_err(|e| AetherError::CasRpc(e.to_string()))?
+                            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
                             .ok_or(AetherError::BlobNotFound(output.blob))?;
 
                         vx_io::sync::atomic_write_executable(&output_path, &blob_data, true)
@@ -689,5 +689,39 @@ impl AetherService {
             output_path: final_output_path,
             error: None,
         })
+    }
+}
+
+// Implement the Aether trait directly on AetherService
+// The #[rapace::service] macro will generate a blanket impl for Arc<AetherService>
+impl Aether for AetherService {
+    async fn build(&self, request: BuildRequest) -> BuildResult {
+        match self.do_build(request).await {
+            Ok(result) => result,
+            Err(e) => BuildResult {
+                success: false,
+                message: "Build failed".to_string(),
+                cached: false,
+                duration_ms: 0,
+                output_path: None,
+                // Convert structured error to string at RPC boundary
+                error: Some(e.to_string()),
+            },
+        }
+    }
+
+    async fn shutdown(&self) {
+        tracing::info!("Shutdown requested, killing spawned services");
+        self.kill_spawned_services().await;
+        tracing::info!("Spawned services killed, exiting aether");
+        std::process::exit(0);
+    }
+
+    async fn version(&self) -> ServiceVersion {
+        ServiceVersion {
+            service: "vx-aether".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: AETHER_PROTOCOL_VERSION,
+        }
     }
 }

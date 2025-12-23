@@ -18,7 +18,7 @@ impl RheaService {
             .cas
             .get_toolchain_manifest(manifest_hash)
             .await
-            .map_err(|e| RheaError::CasRpc(e.to_string()))?
+            .map_err(|e| RheaError::CasRpc(std::sync::Arc::new(e)))?
             .ok_or(RheaError::ToolchainManifestNotFound(manifest_hash))?;
 
         // Fetch materialization plan
@@ -26,7 +26,7 @@ impl RheaService {
             .cas
             .get_materialization_plan(manifest_hash)
             .await
-            .map_err(|e| RheaError::CasRpc(e.to_string()))?
+            .map_err(|e| RheaError::CasRpc(std::sync::Arc::new(e)))?
             .ok_or(RheaError::ToolchainManifestNotFound(manifest_hash))?;
 
         // Target directory: toolchains/<manifest_hash_hex>

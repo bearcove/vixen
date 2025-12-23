@@ -23,8 +23,8 @@ use std::process::Child;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use vx_aether_proto::{AETHER_PROTOCOL_VERSION, Aether, AetherServer, BuildRequest, BuildResult};
-use vx_oort_proto::{OortClient, ServiceVersion};
+use vx_aether_proto::AetherServer;
+use vx_oort_proto::OortClient;
 use vx_rhea_proto::RheaClient;
 
 pub use db::Database;
@@ -33,55 +33,9 @@ pub use queries::*;
 pub use service::AetherService;
 pub use tui::{ActionType, TuiHandle};
 
-/// Newtype wrapper around Arc<AetherService> to satisfy orphan rules.
-/// This allows us to implement the Aether trait from vx-aether-proto.
-#[derive(Clone)]
-pub struct AetherHandle(Arc<AetherService>);
-
-impl AetherHandle {
-    pub fn new(service: AetherService) -> Self {
-        Self(Arc::new(service))
-    }
-}
-
-impl std::ops::Deref for AetherHandle {
-    type Target = AetherService;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Aether for AetherHandle {
-    async fn build(&self, request: BuildRequest) -> BuildResult {
-        match self.0.do_build(request).await {
-            Ok(result) => result,
-            Err(e) => BuildResult {
-                success: false,
-                message: "Build failed".to_string(),
-                cached: false,
-                duration_ms: 0,
-                output_path: None,
-                // Convert structured error to string at RPC boundary
-                error: Some(e.to_string()),
-            },
-        }
-    }
-
-    async fn shutdown(&self) {
-        tracing::info!("Shutdown requested, killing spawned services");
-        self.0.kill_spawned_services().await;
-        tracing::info!("Spawned services killed, exiting aether");
-        std::process::exit(0);
-    }
-
-    async fn version(&self) -> ServiceVersion {
-        ServiceVersion {
-            service: "vx-aether".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: AETHER_PROTOCOL_VERSION,
-        }
-    }
-}
+// No longer needed! The #[rapace::service] macro on the Aether trait
+// generates a blanket impl for Arc<T>, solving the orphan rule issue.
+// We can now use Arc<AetherService> directly.
 
 #[derive(Debug)]
 struct Args {
@@ -319,7 +273,7 @@ async fn main() -> Result<()> {
 
     // Initialize aether service
     tracing::info!("Initializing aether service");
-    let aether = AetherHandle::new(
+    let aether = Arc::new(
         AetherService::new(
             cas_client,
             exec_client,

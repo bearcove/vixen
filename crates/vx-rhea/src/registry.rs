@@ -53,7 +53,7 @@ impl RegistryMaterializer {
             .cas
             .get_registry_manifest(manifest_hash)
             .await
-            .map_err(|e| RheaError::CasRpc(e.to_string()))?
+            .map_err(|e| RheaError::CasRpc(std::sync::Arc::new(e)))?
             .ok_or(RheaError::RegistryCrateManifestNotFound(manifest_hash))?;
 
         let spec = &manifest.spec;
@@ -277,11 +277,11 @@ async fn extract_crate_tarball(
     let mut stream = cas
         .stream_blob(blob_hash)
         .await
-        .map_err(|e| RheaError::CasRpc(e.to_string()))?;
+        .map_err(|e| RheaError::CasRpc(std::sync::Arc::new(e)))?;
     let mut compressed_data = Vec::new();
 
     while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| RheaError::CasRpc(e.to_string()))?;
+        let chunk = chunk_result.map_err(|e| RheaError::CasRpc(std::sync::Arc::new(e)))?;
         compressed_data.extend_from_slice(&chunk);
     }
 

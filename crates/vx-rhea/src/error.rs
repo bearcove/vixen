@@ -36,9 +36,8 @@ pub enum RheaError {
     LockAcquisition { path: Utf8PathBuf, reason: String },
 
     // === CAS/RPC Errors ===
-    // Note: RpcError doesn't implement Facet (wraps io::Error), so we stringify
     #[error("CAS RPC error: {0}")]
-    CasRpc(String),
+    CasRpc(std::sync::Arc<rapace::RpcError>),
 
     // === IO Errors ===
     #[error("failed to create directory {path}: {message}")]
