@@ -11,6 +11,7 @@ use crate::db::Database;
 use crate::error::{AetherError, Result};
 use crate::inputs::*;
 use crate::queries::*;
+use crate::tui::{ActionType, TuiHandle};
 use camino::Utf8PathBuf;
 // TODO: Re-enable picante cache persistence - waiting for https://github.com/bearcove/picante/issues/32
 // use picante::persist::{CacheLoadOptions, OnCorruptCache, load_cache_with_options, save_cache};
@@ -71,6 +72,9 @@ pub struct AetherService {
 
     /// Spawn tracker for child services
     spawn_tracker: Arc<Mutex<SpawnTracker>>,
+
+    /// TUI for progress tracking
+    tui: TuiHandle,
 }
 
 impl AetherService {
@@ -98,6 +102,7 @@ impl AetherService {
                 zig: None,
             })),
             spawn_tracker,
+            tui: TuiHandle::new(),
         }
     }
 
@@ -326,6 +331,10 @@ impl AetherService {
         let graph = CrateGraph::build_with_lockfile(project_path)
             .map_err(|e| AetherError::CrateGraph(format!("{:?}", miette::Report::new(e))))?;
 
+        // Set total number of actions for the TUI
+        // Total = all crates in the graph
+        self.tui.set_total(graph.nodes.len()).await;
+
         // Acquire registry crates in parallel (can happen while toolchain downloads)
         // This spawns all crate downloads concurrently
         let registry_fut = self.acquire_registry_crates(&graph);
@@ -375,6 +384,12 @@ impl AetherService {
 
         // Process crates in topological order
         for crate_node in graph.iter_topo() {
+            // Start tracking this crate compilation
+            let action_id = self
+                .tui
+                .start_action(ActionType::CompileRust(crate_node.crate_name.clone()))
+                .await;
+
             debug!(
                 crate_name = %crate_node.crate_name,
                 crate_type = ?crate_node.crate_type,
@@ -478,6 +493,8 @@ impl AetherService {
                     manifest = %cached.short_hex(),
                     "cache hit"
                 );
+                // Complete action immediately on cache hit
+                self.tui.complete_action(action_id).await;
                 cached
             } else {
                 // Cache miss - need to compile
@@ -539,6 +556,8 @@ impl AetherService {
                     .map_err(|e| AetherError::ExecRpc(e.to_string()))?;
 
                 if !result.success {
+                    // Complete action even on failure
+                    self.tui.complete_action(action_id).await;
                     return Err(AetherError::Compilation {
                         crate_name: crate_node.crate_name.clone(),
                         message: result.error.unwrap_or(result.stderr),
@@ -559,6 +578,10 @@ impl AetherService {
                     .map_err(|e| AetherError::CasRpc(e.to_string()))?;
 
                 any_rebuilt = true;
+
+                // Complete action after successful compilation
+                self.tui.complete_action(action_id).await;
+
                 output_manifest
             };
 

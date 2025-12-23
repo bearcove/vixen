@@ -15,6 +15,7 @@ mod error;
 mod inputs;
 mod queries;
 mod service;
+mod tui;
 
 use camino::Utf8PathBuf;
 use eyre::Result;
@@ -30,6 +31,7 @@ pub use db::Database;
 pub use inputs::*;
 pub use queries::*;
 pub use service::AetherService;
+pub use tui::{ActionType, TuiHandle};
 
 /// Newtype wrapper around Arc<AetherService> to satisfy orphan rules.
 /// This allows us to implement the Aether trait from vx-aether-proto.
