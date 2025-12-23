@@ -15,7 +15,7 @@ vx-cas-proto = { path = "crates/vx-cas-proto" }
 vx-cc = { path = "crates/vx-cc" }
 vx-exec-proto = { path = "crates/vx-exec-proto" }
 vx-manifest = { path = "crates/vx-manifest" }
-vx-daemon-proto = { path = "crates/vx-daemon-proto" }
+vx-aether-proto = { path = "crates/vx-aether-proto" }
 vx-report = { path = "crates/vx-report" }
 vx-io = { path = "crates/vx-io" }
 vx-tarball = { path = "crates/vx-tarball" }

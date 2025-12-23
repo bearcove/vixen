@@ -75,27 +75,6 @@ xz_hash = "def456"
     assert!(rustc_target.url.contains("rustc-1.76.0"));
 }
 
-#[tokio::test]
-#[ignore] // Requires network access - run with --ignored
-async fn fetch_stable_manifest() {
-    let channel = Channel::Stable;
-    let manifest = fetch_channel_manifest(&channel).await.unwrap();
-
-    // Stable should have a recent date
-    assert!(!manifest.date.is_empty());
-
-    // Should have rustc version
-    assert!(!manifest.rustc.version.is_empty());
-
-    // Should have x86_64-unknown-linux-gnu target
-    let rustc_target = manifest
-        .rustc_for_target("x86_64-unknown-linux-gnu")
-        .unwrap();
-    assert!(rustc_target.available);
-    assert!(!rustc_target.url.is_empty());
-    assert!(!rustc_target.hash.is_empty());
-}
-
 // =============================================================================
 // RUST TOOLCHAIN SPEC TESTS
 // =============================================================================

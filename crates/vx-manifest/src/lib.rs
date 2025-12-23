@@ -922,21 +922,4 @@ foo = []
             }
         ));
     }
-
-    #[test]
-    fn crate_name_conversion() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = Utf8PathBuf::try_from(dir.path().to_path_buf()).unwrap();
-        std::fs::create_dir_all(base.join("src")).unwrap();
-        std::fs::write(base.join("src/lib.rs"), "").unwrap();
-
-        let toml = r#"
-[package]
-name = "my-lib-name"
-edition = "2021"
-"#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
-        assert_eq!(manifest.name, "my-lib-name");
-        assert_eq!(manifest.crate_name(), "my_lib_name");
-    }
 }

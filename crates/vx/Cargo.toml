@@ -16,7 +16,7 @@ serde_json = { workspace = true }
 rapace = { workspace = true }
 ur-taking-me-with-you = { workspace = true }
 
-vx-daemon-proto = { workspace = true }
+vx-aether-proto = { workspace = true }
 vx-io = { workspace = true }
 vx-report = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }

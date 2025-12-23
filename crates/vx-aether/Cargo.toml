@@ -1,11 +1,7 @@
 [package]
-name = "vx-daemon"
+name = "vx-aether"
 version.workspace = true
 edition.workspace = true
-
-[[bin]]
-name = "vx-daemon"
-path = "src/main.rs"
 
 [dependencies]
 tracing-subscriber = { workspace = true }
@@ -27,7 +23,7 @@ miette-arborium = { version = "2.4.5", features = ["lang-toml", "lang-rust"] }
 vx-cas-proto = { workspace = true }
 vx-cc = { path = "../vx-cc" }
 vx-exec-proto = { workspace = true }
-vx-daemon-proto = { workspace = true }
+vx-aether-proto = { workspace = true }
 vx-io = { workspace = true }
 vx-manifest = { workspace = true }
 vx-report = { workspace = true }

@@ -10,7 +10,7 @@ use owo_colors::OwoColorize;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-use vx_daemon_proto::{BuildRequest, DaemonClient};
+use vx_aether_proto::{AetherClient, BuildRequest};
 use vx_report::{CacheOutcome, ReportStore, RunDiff};
 
 /// vx - Build execution engine with deterministic caching
@@ -80,10 +80,10 @@ enum CliCommand {
         release: bool,
     },
 
-    /// Stop the daemon process
+    /// Stop the aether process
     Kill,
 
-    /// Stop the daemon and remove .vx/ directory
+    /// Stop the aether and remove .vx/ directory
     Clean,
 
     /// Explain the last build
@@ -94,7 +94,7 @@ fn init_tracing() {
     // Default to info for vx crates, warn for everything else
     // Can be overridden with RUST_LOG env var
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("warn,vx=info,vx_daemon=info,vx_casd=info,vx_toolchain=info,vx_execd=info")
+        EnvFilter::new("warn,vx=info,vx_aether=info,vx_casd=info,vx_toolchain=info,vx_execd=info")
     });
 
     tracing_subscriber::fmt()
@@ -141,9 +141,9 @@ fn short_hex(hash: &str, verbose: bool) -> String {
     }
 }
 
-/// Connect to the daemon, spawning it if necessary
-async fn get_or_spawn_daemon() -> Result<DaemonClient> {
-    let endpoint_raw = std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+/// Connect to the aether, spawning it if necessary
+async fn get_or_spawn_aether() -> Result<AetherClient> {
+    let endpoint_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
     let endpoint = vx_io::net::normalize_tcp_endpoint(&endpoint_raw)?;
 
     let backoff_ms = [10, 50, 100, 500, 1000];
@@ -154,19 +154,19 @@ async fn get_or_spawn_daemon() -> Result<DaemonClient> {
         Err(_) => {
             if !vx_io::net::is_loopback_endpoint(&endpoint) {
                 eyre::bail!(
-                    "failed to connect to vx-daemon at {} (from VX_DAEMON={}).\n\
+                    "failed to connect to vx-aether at {} (from VX_DAEMON={}).\n\
                     Auto-spawn is only supported for loopback endpoints.\n\
-                    Start vx-daemon on the remote host, or point VX_DAEMON to a local endpoint.",
+                    Start vx-aether on the remote host, or point VX_DAEMON to a local endpoint.",
                     endpoint,
                     endpoint_raw
                 );
             }
 
             // Spawn daemon (local-only)
-            tracing::info!("Daemon not running, spawning vx-daemon on {}", endpoint);
+            tracing::info!("Daemon not running, spawning vx-aether on {}", endpoint);
 
-            ur_taking_me_with_you::spawn_dying_with_parent(std::process::Command::new("vx-daemon"))
-                .map_err(|e| eyre::eyre!("failed to spawn vx-daemon: {}", e))?;
+            ur_taking_me_with_you::spawn_dying_with_parent(std::process::Command::new("vx-aether"))
+                .map_err(|e| eyre::eyre!("failed to spawn vx-aether: {}", e))?;
 
             // Retry with backoff
             for (attempt, delay) in backoff_ms.iter().enumerate() {
@@ -183,7 +183,7 @@ async fn get_or_spawn_daemon() -> Result<DaemonClient> {
     }
 }
 
-async fn try_connect_daemon(endpoint: &str) -> Result<DaemonClient> {
+async fn try_connect_daemon(endpoint: &str) -> Result<AetherClient> {
     use std::sync::Arc;
 
     let stream = tokio::net::TcpStream::connect(endpoint).await?;
@@ -191,7 +191,7 @@ async fn try_connect_daemon(endpoint: &str) -> Result<DaemonClient> {
 
     // Create RPC session and client
     let session = Arc::new(rapace::RpcSession::new(transport));
-    let client = DaemonClient::new(session.clone());
+    let client = AetherClient::new(session.clone());
 
     // CRITICAL: spawn session.run() in background (rapace requires explicit receive loop)
     tokio::spawn(async move {
@@ -207,7 +207,7 @@ async fn cmd_build(release: bool) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
 
     // Connect to daemon (spawning if necessary)
-    let daemon = get_or_spawn_daemon().await?;
+    let daemon = get_or_spawn_aether().await?;
 
     let request = BuildRequest {
         project_path: cwd.clone(),

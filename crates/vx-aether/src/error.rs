@@ -1,14 +1,14 @@
-//! Error types for vx-daemon.
+//! Error types for vx-aether.
 
 use camino::Utf8PathBuf;
 use facet::Facet;
 use thiserror::Error;
 use vx_cas_proto::Blake3Hash;
 
-/// Errors that can occur during daemon operations.
+/// Errors that can occur during aether operations.
 #[derive(Debug, Error, Facet)]
 #[repr(u8)]
-pub enum DaemonError {
+pub enum AetherError {
     // === RPC Errors ===
     // Note: RpcError doesn't implement Facet (wraps io::Error), so we stringify
     #[error("CAS RPC error: {0}")]
@@ -80,7 +80,10 @@ pub enum DaemonError {
 
     // === Dependency Errors ===
     #[error("dependency {dep_name} not yet compiled for {crate_name}")]
-    DependencyNotCompiled { dep_name: String, crate_name: String },
+    DependencyNotCompiled {
+        dep_name: String,
+        crate_name: String,
+    },
 
     #[error("dependency node not found: {dep_name}")]
     DependencyNodeNotFound { dep_name: String },
@@ -93,5 +96,5 @@ pub enum DaemonError {
     CacheKey(String),
 }
 
-/// Result type for daemon operations.
-pub type Result<T> = std::result::Result<T, DaemonError>;
+/// Result type for aether operations.
+pub type Result<T> = std::result::Result<T, AetherError>;

@@ -1,19 +1,19 @@
-//! vx-daemon protocol definitions
+//! vx-aether protocol definitions
 //!
-//! The daemon is the brain of vx. It:
+//! The aether is the brain of vx. It:
 //! - Owns the picante incremental computation runtime
 //! - Parses manifests and tracks source files
 //! - Computes cache keys
 //! - Orchestrates builds via CAS and Exec services
 //!
-//! The CLI is a thin client that just asks the daemon to do things.
+//! The CLI is a thin client that just asks the ather to do things.
 
 use camino::Utf8PathBuf;
 use facet::Facet;
 
-/// Daemon protocol version.
-/// Bump this when making breaking changes to the Daemon RPC interface.
-pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+/// Aether protocol version.
+/// Bump this when making breaking changes to the Aether RPC interface.
+pub const AETHER_PROTOCOL_VERSION: u32 = 1;
 
 /// Request to build a project
 #[derive(Debug, Clone, Facet)]
@@ -43,7 +43,7 @@ pub struct BuildResult {
 
 /// The daemon service trait
 #[rapace::service]
-pub trait Daemon {
+pub trait Aether {
     /// Get service version information (for health checks and compatibility)
     async fn version(&self) -> vx_cas_proto::ServiceVersion;
 

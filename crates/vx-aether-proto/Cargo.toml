@@ -1,5 +1,5 @@
 [package]
-name = "vx-daemon-proto"
+name = "vx-aether-proto"
 version.workspace = true
 edition.workspace = true
 

@@ -1,4 +1,4 @@
-//! vx-daemon - Build orchestration daemon
+//! vx-aether - Build orchestration daemon
 //!
 //! The daemon orchestrates builds but never touches the filesystem directly.
 //! All file I/O and compilation is delegated to vx-execd.
@@ -22,34 +22,34 @@ use std::process::Child;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use vx_aether_proto::{AETHER_PROTOCOL_VERSION, Aether, AetherServer, BuildRequest, BuildResult};
 use vx_cas_proto::{CasClient, ServiceVersion};
-use vx_daemon_proto::{BuildRequest, BuildResult, Daemon, DaemonServer, DAEMON_PROTOCOL_VERSION};
 use vx_exec_proto::ExecClient;
 
 pub use db::Database;
 pub use inputs::*;
 pub use queries::*;
-pub use service::DaemonService;
+pub use service::AetherService;
 
-/// Newtype wrapper around Arc<DaemonService> to satisfy orphan rules.
-/// This allows us to implement the Daemon trait from vx-daemon-proto.
+/// Newtype wrapper around Arc<AetherService> to satisfy orphan rules.
+/// This allows us to implement the Aether trait from vx-aether-proto.
 #[derive(Clone)]
-pub struct DaemonHandle(Arc<DaemonService>);
+pub struct AetherHandle(Arc<AetherService>);
 
-impl DaemonHandle {
-    pub fn new(service: DaemonService) -> Self {
+impl AetherHandle {
+    pub fn new(service: AetherService) -> Self {
         Self(Arc::new(service))
     }
 }
 
-impl std::ops::Deref for DaemonHandle {
-    type Target = DaemonService;
+impl std::ops::Deref for AetherHandle {
+    type Target = AetherService;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl Daemon for DaemonHandle {
+impl Aether for AetherHandle {
     async fn build(&self, request: BuildRequest) -> BuildResult {
         match self.0.do_build(request).await {
             Ok(result) => result,
@@ -68,15 +68,15 @@ impl Daemon for DaemonHandle {
     async fn shutdown(&self) {
         tracing::info!("Shutdown requested, killing spawned services");
         self.0.kill_spawned_services().await;
-        tracing::info!("Spawned services killed, exiting daemon");
+        tracing::info!("Spawned services killed, exiting aether");
         std::process::exit(0);
     }
 
     async fn version(&self) -> ServiceVersion {
         ServiceVersion {
-            service: "vx-daemon".to_string(),
+            service: "vx-aether".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: DAEMON_PROTOCOL_VERSION,
+            protocol_version: AETHER_PROTOCOL_VERSION,
         }
     }
 }
@@ -111,8 +111,7 @@ impl Args {
             std::env::var("VX_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
         let exec_endpoint = vx_io::net::normalize_tcp_endpoint(&exec_endpoint_raw)?;
 
-        let bind_raw =
-            std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+        let bind_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
         let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
 
         Ok(Args {
@@ -251,7 +250,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_daemon=info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=info")),
         )
         .init();
 
@@ -261,7 +260,7 @@ async fn main() -> Result<()> {
     }
 
     let args = Args::from_env()?;
-    tracing::info!("Starting vx-daemon");
+    tracing::info!("Starting vx-aether");
     tracing::info!("  VX_HOME: {}", args.vx_home);
     tracing::info!("  CAS:     {}", args.cas_endpoint);
     tracing::info!("  Exec:    {}", args.exec_endpoint);
@@ -277,7 +276,7 @@ async fn main() -> Result<()> {
             if !vx_io::net::is_loopback_endpoint(&args.exec_endpoint) {
                 eyre::bail!(
                     "VX_EXEC points to a non-loopback endpoint ({}) but VX_EXEC_HOST_TRIPLE is not set.\n\
-                    vx-daemon must know the execd host triple to request the correct Rust toolchain from CAS.\n\
+                    vx-aether must know the execd host triple to request the correct Rust toolchain from CAS.\n\
                     Set VX_EXEC_HOST_TRIPLE (e.g. x86_64-unknown-linux-gnu) and retry.",
                     args.exec_endpoint
                 );
@@ -316,9 +315,9 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Initialize daemon service
-    tracing::info!("Initializing daemon service");
-    let daemon = DaemonHandle::new(DaemonService::new(
+    // Initialize aether service
+    tracing::info!("Initializing aether service");
+    let aether = AetherHandle::new(AetherService::new(
         cas_client,
         exec_client,
         args.vx_home,
@@ -328,17 +327,17 @@ async fn main() -> Result<()> {
 
     // Start TCP server
     let listener = TcpListener::bind(&args.bind).await?;
-    tracing::info!("Daemon listening on {}", args.bind);
+    tracing::info!("Aether listening on {}", args.bind);
 
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let daemon = daemon.clone();
+        let aether = aether.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
 
             let transport = rapace::Transport::stream(socket);
-            let server = DaemonServer::new(daemon);
+            let server = AetherServer::new(aether);
 
             if let Err(e) = server.serve(transport).await {
                 tracing::warn!("Connection error from {}: {}", peer_addr, e);

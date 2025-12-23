@@ -2564,9 +2564,49 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ur-taking-me-with-you",
- "vx-daemon-proto",
+ "vx-aether-proto",
  "vx-io",
  "vx-report",
+]
+
+[[package]]
+name = "vx-aether"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "camino",
+ "eyre",
+ "facet",
+ "futures-util",
+ "jiff",
+ "miette",
+ "miette-arborium",
+ "picante",
+ "rapace",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ur-taking-me-with-you",
+ "vx-aether-proto",
+ "vx-cas-proto",
+ "vx-cc",
+ "vx-exec-proto",
+ "vx-io",
+ "vx-manifest",
+ "vx-report",
+ "vx-rs",
+ "vx-toolchain",
+]
+
+[[package]]
+name = "vx-aether-proto"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "facet",
+ "rapace",
+ "vx-cas-proto",
 ]
 
 [[package]]
@@ -2637,46 +2677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vx-daemon"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "camino",
- "eyre",
- "facet",
- "futures-util",
- "jiff",
- "miette",
- "miette-arborium",
- "picante",
- "rapace",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "ur-taking-me-with-you",
- "vx-cas-proto",
- "vx-cc",
- "vx-daemon-proto",
- "vx-exec-proto",
- "vx-io",
- "vx-manifest",
- "vx-report",
- "vx-rs",
- "vx-toolchain",
-]
-
-[[package]]
-name = "vx-daemon-proto"
-version = "0.1.0"
-dependencies = [
- "camino",
- "facet",
- "rapace",
- "vx-cas-proto",
-]
-
-[[package]]
 name = "vx-exec-proto"
 version = "0.1.0"
 dependencies = [
@@ -2730,6 +2730,7 @@ dependencies = [
  "facet",
  "facet-cargo-toml",
  "miette",
+ "tempfile",
  "thiserror",
 ]
 
