@@ -38,6 +38,17 @@ pub enum ActionResult {
     },
 }
 
+/// Statistics from build execution
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionStats {
+    /// Number of cache hits
+    pub cache_hits: usize,
+    /// Number of crates rebuilt
+    pub rebuilt: usize,
+    /// Path to final bin output (if any)
+    pub bin_output: Option<camino::Utf8PathBuf>,
+}
+
 /// Executor for action graph
 pub struct Executor {
     /// The action graph (wrapped in RwLock to allow dynamic expansion in future)
@@ -76,6 +87,18 @@ pub struct Executor {
 
     /// Registry crate manifests (for registry dependencies)
     registry_manifests: Arc<HashMap<(String, String), Blake3Hash>>,
+
+    /// Execution statistics
+    stats: Arc<RwLock<ExecutionStats>>,
+
+    /// Workspace root for bin materialization
+    workspace_root: camino::Utf8PathBuf,
+
+    /// Target triple for bin materialization
+    target_triple: String,
+
+    /// Profile for bin materialization
+    profile: String,
 }
 
 impl Executor {
@@ -87,6 +110,9 @@ impl Executor {
         exec: Arc<RheaClient>,
         db: Arc<Mutex<crate::db::Database>>,
         registry_manifests: HashMap<(String, String), Blake3Hash>,
+        workspace_root: camino::Utf8PathBuf,
+        target_triple: String,
+        profile: String,
         max_concurrency: usize,
     ) -> Self {
         let graph_ref = Arc::new(RwLock::new(graph));
@@ -128,7 +154,16 @@ impl Executor {
             exec,
             db,
             registry_manifests: Arc::new(registry_manifests),
+            stats: Arc::new(RwLock::new(ExecutionStats::default())),
+            workspace_root,
+            target_triple,
+            profile,
         }
+    }
+
+    /// Get execution statistics
+    pub async fn get_stats(&self) -> ExecutionStats {
+        self.stats.read().await.clone()
     }
 
     /// Main execution loop
@@ -195,6 +230,10 @@ impl Executor {
         let db = self.db.clone();
         let tui = self.tui.clone();
         let registry_manifests = self.registry_manifests.clone();
+        let stats = self.stats.clone();
+        let workspace_root = self.workspace_root.clone();
+        let target_triple = self.target_triple.clone();
+        let profile = self.profile.clone();
 
         tokio::spawn(async move {
             // Mark as running
@@ -211,7 +250,19 @@ impl Executor {
             let action_id = tui.start_action(action_type).await;
 
             // Execute action
-            let result = execute_action(action, &cas, &exec, &db, &registry_manifests, &results).await;
+            let result = execute_action(
+                action,
+                &cas,
+                &exec,
+                &db,
+                &registry_manifests,
+                &results,
+                &stats,
+                &workspace_root,
+                &target_triple,
+                &profile,
+            )
+            .await;
 
             // Complete TUI tracking
             tui.complete_action(action_id).await;
@@ -282,6 +333,10 @@ async fn execute_action(
     db: &Arc<Mutex<crate::db::Database>>,
     registry_manifests: &Arc<HashMap<(String, String), Blake3Hash>>,
     results: &Arc<RwLock<HashMap<NodeIndex, ActionResult>>>,
+    stats: &Arc<RwLock<ExecutionStats>>,
+    workspace_root: &camino::Utf8PathBuf,
+    target_triple: &str,
+    profile: &str,
 ) -> Result<ActionResult, AetherError> {
     use camino::Utf8PathBuf;
     use vx_rhea_proto::{RustCompileRequest, RustDep};
@@ -417,7 +472,7 @@ async fn execute_action(
             drop(db_guard);
 
             // Check cache
-            let output_manifest = if let Some(cached) = cas
+            let (output_manifest, was_cached) = if let Some(cached) = cas
                 .lookup(cache_key)
                 .await
                 .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
@@ -427,7 +482,9 @@ async fn execute_action(
                     manifest = %cached.short_hex(),
                     "cache hit"
                 );
-                cached
+                // Track cache hit
+                stats.write().await.cache_hits += 1;
+                (cached, true)
             } else {
                 // Cache miss - need to compile
                 info!(
@@ -538,8 +595,55 @@ async fn execute_action(
                     .await
                     .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
 
-                output_manifest
+                // Track rebuild
+                stats.write().await.rebuilt += 1;
+
+                (output_manifest, false)
             };
+
+            // Materialize bin outputs
+            if crate_type == vx_rs::crate_graph::CrateType::Bin && !was_cached {
+                let output_dir = workspace_root
+                    .join(".vx/build")
+                    .join(target_triple)
+                    .join(profile);
+
+                tokio::fs::create_dir_all(&output_dir).await.map_err(|e| {
+                    AetherError::CreateDir {
+                        path: output_dir.clone(),
+                        message: e.to_string(),
+                    }
+                })?;
+
+                let output_path = output_dir.join(&crate_name);
+
+                // Fetch manifest and materialize
+                let manifest = cas
+                    .get_manifest(output_manifest)
+                    .await
+                    .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
+                    .ok_or(AetherError::OutputManifestNotFound(output_manifest))?;
+
+                for output in &manifest.outputs {
+                    if output.logical == "bin" {
+                        let blob_data = cas
+                            .get_blob(output.blob)
+                            .await
+                            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
+                            .ok_or(AetherError::BlobNotFound(output.blob))?;
+
+                        vx_io::sync::atomic_write_executable(&output_path, &blob_data, true)
+                            .map_err(|e| AetherError::WriteOutput {
+                                path: output_path.clone(),
+                                message: e.to_string(),
+                            })?;
+
+                        // Update stats with bin output path
+                        stats.write().await.bin_output = Some(output_path.clone());
+                        break;
+                    }
+                }
+            }
 
             Ok(ActionResult::CrateCompiled {
                 crate_id,
