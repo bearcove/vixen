@@ -433,6 +433,24 @@ impl AetherService {
         )
         .map_err(|e| AetherError::Picante(e.to_string()))?;
 
+        // TODO(Phase 1): Replace sequential loop with action graph executor
+        // Uncomment this block to enable action graph execution:
+        /*
+        use crate::action_graph::ActionGraph;
+        use crate::executor::Executor;
+
+        let action_graph = ActionGraph::from_crate_graph(&graph, toolchain, config, &*db)?;
+        let mut executor = Executor::new(
+            action_graph,
+            self.tui.clone(),
+            self.cas.clone(),
+            self.exec.clone(),
+            self.db.clone(),
+            num_cpus::get() * 2,
+        );
+        executor.execute().await?;
+        */
+
         // Track compiled outputs for dependencies
         // Maps CrateId -> manifest_hash of the compiled output
         let mut compiled_outputs: HashMap<CrateId, Blake3Hash> = HashMap::new();

@@ -20,6 +20,7 @@ ur-taking-me-with-you = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
 miette-arborium = { version = "2.4.5", features = ["lang-toml", "lang-rust"] }
 indicatif = "0.17"
+petgraph = "0.6"
 
 vx-oort-proto = { workspace = true }
 vx-cc = { path = "../vx-cc" }
