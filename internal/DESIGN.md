@@ -93,7 +93,7 @@ Rapace handles transport — SHM for local, network for remote.
 - Daemon knows Exec endpoint (`$VX_EXEC` / default SHM socket)
 - Execd knows CAS endpoint (`$VX_CAS` / default SHM socket)
 
-**v0 deployment:** All four run as separate processes on localhost using SHM transport.
+**v0 deployment:** Services may run as separate processes on localhost, but daemon/execd/casd do **not** need to share a filesystem. Daemon can talk to remote execd/casd over TCP.
 
 **Process lifecycle:**
 - `vx build` auto-spawns daemon if not running; daemon auto-spawns casd and execd
@@ -119,13 +119,12 @@ The "service boundaries" principle needs staged enforcement:
 This avoids awkward "read file over RPC" shims while maintaining the core invariant: **CAS is the only durable artifact store**.
 
 **Staged capability for execd:**
-- v0: execd reads sources directly from the local workspace (simplest)
-- Later: execd can fetch source blobs from CAS, enabling remote execution
+- v0: execd fetches source blobs from CAS (enables remote exec without shared FS)
 
 **v0 execd contract:**
-- Execd runs on the same host as the workspace path provided by daemon
-- Workspace path is passed to execd; execd treats it as read-only
-- This assumption is explicitly scoped to v0; remote execution will use CAS-fetched sources
+- Execd does **not** receive workspace paths and does **not** need access to the daemon’s filesystem.
+- All compilation inputs (toolchains, sources, deps) are identified by CAS manifests/hashes.
+- For non-local execd, daemon must know execd’s host triple to request the correct Rust toolchain from CAS (set `VX_EXEC_HOST_TRIPLE`).
 
 ---
 

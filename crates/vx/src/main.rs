@@ -161,7 +161,9 @@ fn short_hex(hash: &str, verbose: bool) -> String {
 
 /// Connect to the daemon, spawning it if necessary
 async fn get_or_spawn_daemon() -> Result<DaemonClient> {
-    let endpoint = std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    let endpoint_raw =
+        std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    let endpoint = vx_io::net::normalize_tcp_endpoint(&endpoint_raw)?;
 
     let backoff_ms = [10, 50, 100, 500, 1000];
 
@@ -169,7 +171,17 @@ async fn get_or_spawn_daemon() -> Result<DaemonClient> {
     match try_connect_daemon(&endpoint).await {
         Ok(client) => Ok(client),
         Err(_) => {
-            // Spawn daemon
+            if !vx_io::net::is_loopback_endpoint(&endpoint) {
+                eyre::bail!(
+                    "failed to connect to vx-daemon at {} (from VX_DAEMON={}).\n\
+                    Auto-spawn is only supported for loopback endpoints.\n\
+                    Start vx-daemon on the remote host, or point VX_DAEMON to a local endpoint.",
+                    endpoint,
+                    endpoint_raw
+                );
+            }
+
+            // Spawn daemon (local-only)
             tracing::info!("Daemon not running, spawning vx-daemon on {}", endpoint);
 
             std::process::Command::new("vx-daemon")
@@ -250,13 +262,15 @@ async fn cmd_build(release: bool) -> Result<()> {
 }
 
 async fn cmd_kill() -> Result<()> {
-    let endpoint = std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    let endpoint_raw =
+        std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    let endpoint = vx_io::net::normalize_tcp_endpoint(&endpoint_raw)?;
 
     // Try to connect to daemon
     match try_connect_daemon(&endpoint).await {
         Ok(daemon) => {
             println!("{} daemon at {}", "Stopping".green().bold(), endpoint);
-            daemon.shutdown().await;
+            let _ = daemon.shutdown().await;
             // Give it a moment to shut down
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             println!("{} daemon stopped", "✓".green().bold());

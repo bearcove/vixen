@@ -18,8 +18,6 @@ use crate::InflightMaterializations;
 /// Registry materialization manager.
 ///
 /// Handles global cache extraction and workspace-local copying.
-/// TODO: Wire this up - needs RustDep to include registry_crate_manifest field
-#[allow(dead_code)]
 pub struct RegistryMaterializer {
     cas: Arc<CasClient>,
 
@@ -30,7 +28,6 @@ pub struct RegistryMaterializer {
     materializing: InflightMaterializations,
 }
 
-#[allow(dead_code)]
 impl RegistryMaterializer {
     pub fn new(cas: Arc<CasClient>, global_cache_dir: Utf8PathBuf) -> Self {
         Self {

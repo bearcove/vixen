@@ -18,12 +18,13 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 use vx_cas_proto::{
-    Blake3Hash, CasClient, EnsureStatus, IngestTreeRequest, RustChannel, RustComponent,
-    RustToolchainSpec, TreeFile,
+    Blake3Hash, CasClient, EnsureStatus, IngestTreeRequest, RegistrySpec, RustChannel,
+    RustComponent, RustToolchainSpec, TreeFile,
 };
 use vx_daemon_proto::{BuildRequest, BuildResult};
 use vx_exec_proto::{ExecClient, RustCompileRequest, RustDep};
 use vx_rs::{CrateGraph, CrateGraphError, CrateId, CrateType, ModuleError};
+use vx_rs::crate_graph::CrateSource;
 
 /// Toolchain information (manifest-only, no materialization)
 pub struct ToolchainInfo {
@@ -55,6 +56,9 @@ pub struct DaemonService {
     /// Exec client for compilation
     exec: Arc<ExecClient>,
 
+    /// The host triple of the execd machine (used for toolchain selection + cache keys).
+    exec_host_triple: String,
+
     /// The picante incremental database
     db: Arc<Mutex<Database>>,
 
@@ -74,6 +78,7 @@ impl DaemonService {
         cas: Arc<CasClient>,
         exec: Arc<ExecClient>,
         vx_home: Utf8PathBuf,
+        exec_host_triple: String,
         spawn_tracker: Arc<Mutex<SpawnTracker>>,
     ) -> Self {
         let db = Database::new();
@@ -84,6 +89,7 @@ impl DaemonService {
         Self {
             cas,
             exec,
+            exec_host_triple,
             db: Arc::new(Mutex::new(db)),
             picante_cache: cache_path,
             toolchains: Arc::new(Mutex::new(AcquiredToolchains {
@@ -112,14 +118,10 @@ impl DaemonService {
             }
         }
 
-        // Detect host triple
-        let host = vx_toolchain::detect_host_triple()
-            .map_err(|e| format!("failed to detect host: {}", e))?;
-
         let spec = RustToolchainSpec {
             channel,
-            host: host.clone(),
-            target: host,
+            host: self.exec_host_triple.clone(),
+            target: self.exec_host_triple.clone(),
             components: vec![RustComponent::Rustc, RustComponent::RustStd],
         };
 
@@ -223,6 +225,84 @@ impl DaemonService {
         Ok(manifest_hash)
     }
 
+    /// Acquire a single registry crate
+    async fn acquire_single_registry_crate(
+        cas: Arc<CasClient>,
+        name: String,
+        version: String,
+        checksum: String,
+    ) -> Result<(String, Blake3Hash), String> {
+        let spec = RegistrySpec {
+            registry_url: "https://crates.io".to_string(),
+            name: name.clone(),
+            version: version.clone(),
+            checksum,
+        };
+
+        debug!(name = %name, version = %version, "ensuring registry crate");
+
+        let result = cas
+            .ensure_registry_crate(spec)
+            .await
+            .map_err(|e| format!("RPC error for {}@{}: {:?}", name, version, e))?;
+
+        match result.status {
+            EnsureStatus::Hit | EnsureStatus::Downloaded => {
+                let manifest_hash = result
+                    .manifest_hash
+                    .ok_or_else(|| format!("{}@{}: missing manifest_hash", name, version))?;
+
+                debug!(
+                    name = %name,
+                    version = %version,
+                    manifest_hash = %manifest_hash.short_hex(),
+                    "acquired registry crate"
+                );
+
+                Ok((format!("{}@{}", name, version), manifest_hash))
+            }
+            EnsureStatus::Failed => Err(result
+                .error
+                .unwrap_or_else(|| format!("{}@{}: acquisition failed", name, version))),
+        }
+    }
+
+    /// Acquire registry crates in parallel and return mapping of "name@version" -> manifest_hash
+    async fn acquire_registry_crates(
+        &self,
+        graph: &CrateGraph,
+    ) -> Result<HashMap<String, Blake3Hash>, String> {
+        if !graph.has_registry_deps() {
+            return Ok(HashMap::new());
+        }
+
+        info!(
+            registry_crate_count = graph.iter_registry_crates().count(),
+            "acquiring registry crates"
+        );
+
+        let futures: Vec<_> = graph
+            .iter_registry_crates()
+            .map(|registry_crate| {
+                Self::acquire_single_registry_crate(
+                    self.cas.clone(),
+                    registry_crate.name.clone(),
+                    registry_crate.version.clone(),
+                    registry_crate.checksum.clone(),
+                )
+            })
+            .collect();
+
+        let results = futures_util::future::try_join_all(futures).await?;
+
+        info!(
+            acquired_count = results.len(),
+            "all registry crates acquired"
+        );
+
+        Ok(results.into_iter().collect())
+    }
+
     /// Build a project.
     pub async fn do_build(&self, request: BuildRequest) -> Result<BuildResult, String> {
         let project_path = &request.project_path;
@@ -231,20 +311,22 @@ impl DaemonService {
         // Acquire hermetic Rust toolchain
         let rust_toolchain = self.ensure_rust_toolchain(RustChannel::Stable).await?;
 
-        // Detect target triple
-        let target_triple = vx_toolchain::detect_host_triple()
-            .map_err(|e| format!("failed to detect host triple: {}", e))?;
+        let target_triple = self.exec_host_triple.clone();
 
-        // Build the crate graph
-        let graph =
-            CrateGraph::build(project_path).map_err(|e: CrateGraphError| format_diagnostic(&e))?;
+        // Build the crate graph with lockfile support
+        let graph = CrateGraph::build_with_lockfile(project_path)
+            .map_err(|e: CrateGraphError| format_diagnostic(&e))?;
 
         info!(
             workspace_root = %graph.workspace_root,
-            crate_count = graph.nodes.len(),
+            path_crate_count = graph.nodes.len(),
+            registry_crate_count = graph.iter_registry_crates().count(),
             toolchain_id = %rust_toolchain.toolchain_id.short_hex(),
             "resolved crate graph"
         );
+
+        // Acquire registry crates in parallel
+        let registry_manifests = self.acquire_registry_crates(&graph).await?;
 
         let profile = if request.release { "release" } else { "debug" };
 
@@ -318,9 +400,25 @@ impl DaemonService {
                             dep.extern_name, crate_node.crate_name
                         )
                     })?;
+
+                    // Look up dependency node to check if it's a registry crate
+                    let dep_node = graph
+                        .nodes
+                        .get(&dep.crate_id)
+                        .ok_or_else(|| format!("dependency {} node not found", dep.extern_name))?;
+
+                    let registry_crate_manifest = match &dep_node.source {
+                        CrateSource::Registry { name, version, .. } => {
+                            let key = format!("{}@{}", name, version);
+                            registry_manifests.get(&key).copied()
+                        }
+                        CrateSource::Path { .. } => None,
+                    };
+
                     Ok(RustDep {
                         extern_name: dep.extern_name.clone(),
                         manifest_hash: *manifest_hash,
+                        registry_crate_manifest,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;

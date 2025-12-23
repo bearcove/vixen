@@ -3286,6 +3286,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vx-daemon-proto",
+ "vx-io",
  "vx-report",
 ]
 
@@ -3356,6 +3357,7 @@ dependencies = [
  "camino",
  "eyre",
  "facet",
+ "futures-util",
  "jiff",
  "miette",
  "miette-arborium",
@@ -3423,6 +3425,7 @@ name = "vx-io"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "eyre",
  "tempfile",
  "tokio",
 ]

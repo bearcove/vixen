@@ -164,20 +164,49 @@ impl CasService {
             &rust_std_target.hash,
         );
 
-        // Download rustc tarball (verified)
-        let rustc_tarball =
-            match vx_toolchain::download_component(&rustc_target.url, &rustc_target.hash).await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    return EnsureToolchainResult {
-                        spec_key: Some(spec_key),
-                        toolchain_id: None,
-                        manifest_hash: None,
-                        status: ToolchainEnsureStatus::Failed,
-                        error: Some(format!("failed to download rustc: {}", e)),
-                    };
-                }
-            };
+        // Download both components in parallel (with semaphore limiting)
+        let rustc_url = rustc_target.url.clone();
+        let rustc_hash = rustc_target.hash.clone();
+        let rust_std_url = rust_std_target.url.clone();
+        let rust_std_hash = rust_std_target.hash.clone();
+        let sem = self.download_semaphore.clone();
+
+        let (rustc_result, rust_std_result) = tokio::join!(
+            async {
+                let _permit = sem.acquire().await.unwrap();
+                vx_toolchain::download_component(&rustc_url, &rustc_hash).await
+            },
+            async {
+                let _permit = sem.acquire().await.unwrap();
+                vx_toolchain::download_component(&rust_std_url, &rust_std_hash).await
+            }
+        );
+
+        let rustc_tarball = match rustc_result {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return EnsureToolchainResult {
+                    spec_key: Some(spec_key),
+                    toolchain_id: None,
+                    manifest_hash: None,
+                    status: ToolchainEnsureStatus::Failed,
+                    error: Some(format!("failed to download rustc: {}", e)),
+                };
+            }
+        };
+
+        let rust_std_tarball = match rust_std_result {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return EnsureToolchainResult {
+                    spec_key: Some(spec_key),
+                    toolchain_id: None,
+                    manifest_hash: None,
+                    status: ToolchainEnsureStatus::Failed,
+                    error: Some(format!("failed to download rust-std: {}", e)),
+                };
+            }
+        };
 
         // Extract rustc to tree
         let this = self.clone();
@@ -216,24 +245,7 @@ impl CasService {
             "stored rustc tree"
         );
 
-        // Download rust-std tarball (verified)
-        let rust_std_tarball =
-            match vx_toolchain::download_component(&rust_std_target.url, &rust_std_target.hash)
-                .await
-            {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    return EnsureToolchainResult {
-                        spec_key: Some(spec_key),
-                        toolchain_id: None,
-                        manifest_hash: None,
-                        status: ToolchainEnsureStatus::Failed,
-                        error: Some(format!("failed to download rust-std: {}", e)),
-                    };
-                }
-            };
-
-        // Extract rust-std to tree
+        // Extract rust-std to tree (already downloaded in parallel above)
         let this = self.clone();
         let rust_std_tree = match vx_tarball::extract_to_tree(
             std::io::Cursor::new(rust_std_tarball),

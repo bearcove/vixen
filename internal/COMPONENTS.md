@@ -449,7 +449,7 @@ Rapace handles transport — SHM for local, network for remote. No HTTP layer ne
 
 ### Local Development
 
-All four binaries run on localhost, rapace uses SHM transport for speed. Execd and daemon share the same local CAS.
+Services do not need to be co-located: daemon/execd/casd can run on different hosts and do not share a filesystem. Execd and daemon communicate purely via CAS manifests/hashes (no shared paths).
 
 ### Remote Workers
 

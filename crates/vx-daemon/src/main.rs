@@ -101,17 +101,17 @@ impl Args {
             format!("{}/.vx", home)
         });
 
-        let cas_endpoint = std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let cas_endpoint_raw =
+            std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let cas_endpoint = vx_io::net::normalize_tcp_endpoint(&cas_endpoint_raw)?;
 
-        let exec_endpoint =
+        let exec_endpoint_raw =
             std::env::var("VX_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
+        let exec_endpoint = vx_io::net::normalize_tcp_endpoint(&exec_endpoint_raw)?;
 
-        let bind = std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
-
-        // V1: Enforce loopback-only
-        validate_loopback(&bind)?;
-        validate_loopback(&cas_endpoint)?;
-        validate_loopback(&exec_endpoint)?;
+        let bind_raw =
+            std::env::var("VX_DAEMON").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+        let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
 
         Ok(Args {
             vx_home: Utf8PathBuf::from(vx_home),
@@ -120,23 +120,6 @@ impl Args {
             bind,
         })
     }
-}
-
-/// Validate that the endpoint is loopback-only (127.0.0.1:*)
-fn validate_loopback(endpoint: &str) -> Result<()> {
-    let addr = endpoint
-        .parse::<std::net::SocketAddr>()
-        .map_err(|e| eyre::eyre!("invalid endpoint '{}': {}", endpoint, e))?;
-
-    if !addr.ip().is_loopback() {
-        eyre::bail!(
-            "vx-daemon V1 only supports loopback endpoints (127.0.0.1:*), got: {}\n\
-            Remote execution is not yet supported.",
-            endpoint
-        );
-    }
-
-    Ok(())
 }
 
 /// Tracks spawned child services
@@ -179,6 +162,14 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
     // Check CAS
     if try_connect(&args.cas_endpoint).await.is_err() {
+        if !vx_io::net::is_loopback_endpoint(&args.cas_endpoint) {
+            eyre::bail!(
+                "CAS is not reachable at {}. Auto-spawn is only supported for loopback endpoints.\n\
+                Start vx-casd on the remote host, or point VX_CAS to a local endpoint.",
+                args.cas_endpoint
+            );
+        }
+
         tracing::info!("CAS not running, spawning vx-casd on {}", args.cas_endpoint);
 
         let child = spawn_service(
@@ -206,6 +197,14 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
     // Check Exec
     if try_connect(&args.exec_endpoint).await.is_err() {
+        if !vx_io::net::is_loopback_endpoint(&args.exec_endpoint) {
+            eyre::bail!(
+                "Exec is not reachable at {}. Auto-spawn is only supported for loopback endpoints.\n\
+                Start vx-execd on the remote host, or point VX_EXEC to a local endpoint.",
+                args.exec_endpoint
+            );
+        }
+
         tracing::info!(
             "Exec not running, spawning vx-execd on {}",
             args.exec_endpoint
@@ -258,6 +257,23 @@ async fn main() -> Result<()> {
 
     ensure_services(&args, &spawn_tracker).await?;
 
+    let exec_host_triple = match std::env::var("VX_EXEC_HOST_TRIPLE") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => {
+            if !vx_io::net::is_loopback_endpoint(&args.exec_endpoint) {
+                eyre::bail!(
+                    "VX_EXEC points to a non-loopback endpoint ({}) but VX_EXEC_HOST_TRIPLE is not set.\n\
+                    vx-daemon must know the execd host triple to request the correct Rust toolchain from CAS.\n\
+                    Set VX_EXEC_HOST_TRIPLE (e.g. x86_64-unknown-linux-gnu) and retry.",
+                    args.exec_endpoint
+                );
+            }
+
+            vx_toolchain::detect_host_triple()
+                .map_err(|e| eyre::eyre!("failed to detect host triple: {}", e))?
+        }
+    };
+
     // Create rapace clients for CAS and Exec
     tracing::info!("Connecting to CAS at {}", args.cas_endpoint);
     let cas_stream = TcpStream::connect(&args.cas_endpoint).await?;
@@ -292,6 +308,7 @@ async fn main() -> Result<()> {
         cas_client,
         exec_client,
         args.vx_home,
+        exec_host_triple,
         spawn_tracker,
     ));
 

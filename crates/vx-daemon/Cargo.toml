@@ -16,6 +16,7 @@ tokio = { workspace = true }
 blake3 = { workspace = true }
 camino = { workspace = true }
 eyre = { workspace = true }
+futures-util = { workspace = true }
 jiff = { workspace = true }
 tracing = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }

@@ -1,16 +1,17 @@
 # Phase 1B: Tighten V1 Spec + Implementation Cleanup
 
-This document captures agreed follow-up work after Phase 1 “local-only service split” landed. The goal is to make the implementation match the original intent of `internal/SERVICE_P1.md`: simple, local-only IPC with predictable configuration and no async runtime hazards.
+This document captures follow-up work after Phase 1 “service split” landed. The goal is to keep configuration predictable and avoid async runtime hazards, while making it explicit that daemon/execd/casd do **not** need to share a host or filesystem.
 
 ## Decisions (Locked)
 
 1) **Simplify configuration back to the original env vars**
-- Use only these endpoints (simple `host:port` strings):
+- Use only these endpoints (accept `host:port` or `tcp://host:port`):
   - `VX_DAEMON` (default `127.0.0.1:9001`)
   - `VX_CAS` (default `127.0.0.1:9002`)
   - `VX_EXEC` (default `127.0.0.1:9003`)
 - Remove daemon-specific endpoint vars (e.g. `VX_DAEMON_CAS`, `VX_DAEMON_EXEC`).
-- Avoid split “bind vs endpoint” naming. For V1, an endpoint is both the bind addr (server) and connect addr (client), and is always loopback.
+- Avoid split “bind vs endpoint” naming. An endpoint is both the bind addr (server) and connect addr (client).
+- Auto-spawn is **only** supported for loopback endpoints; for remote endpoints you must start services out-of-band.
 
 2) **Daemon shutdown must kill spawned children**
 - `vx kill` calls `daemon.shutdown()`.
@@ -19,9 +20,10 @@ This document captures agreed follow-up work after Phase 1 “local-only service
   - then exit the daemon process
 - No graceful drain / in-flight tracking in V1.
 
-3) **Enforce loopback-only**
-- All services must reject non-loopback binds in V1.
-- Accepted: `127.0.0.1:*` only (not `0.0.0.0`, not other interfaces).
+3) **Make co-location assumptions explicit**
+- Daemon/execd/casd may run on different hosts.
+- Daemon and execd do not share filesystem paths; execd inputs/outputs are CAS-only.
+- If `VX_EXEC` points to a non-loopback endpoint, daemon must know execd’s host triple for toolchain selection (set `VX_EXEC_HOST_TRIPLE`).
 
 4) **Add an explicit RPC “version” call (and use it for health checks)**
 - Add a `version()` RPC to each service trait (CAS, Exec, Daemon) returning a small struct:
@@ -52,9 +54,8 @@ This document captures agreed follow-up work after Phase 1 “local-only service
 - Ensure the object that implements the Daemon RPC has access to the `SpawnTracker` used by main.
 - Call `SpawnTracker::kill_all()` inside `shutdown()` before exiting.
 
-### C) Loopback enforcement
-- On startup (before bind/connect), parse the endpoint and enforce loopback.
-- If a user sets a non-loopback value, print an explicit error explaining V1 limitation.
+### C) Remote-safe auto-spawn behavior
+- Auto-spawn only for loopback endpoints; for non-loopback endpoints, fail fast with a clear error message.
 
 ### D) RPC version() API + health checks
 - Add `version()` RPC to:

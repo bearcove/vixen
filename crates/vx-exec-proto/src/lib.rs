@@ -36,6 +36,9 @@ pub struct RustDep {
     pub extern_name: String,
     /// Manifest hash of the dependency's rlib in CAS
     pub manifest_hash: ManifestHash,
+    /// For registry dependencies: manifest hash of the registry crate tarball
+    /// If present, execd must materialize and compile the source before using the rlib
+    pub registry_crate_manifest: Option<ManifestHash>,
 }
 
 /// Request to compile a Rust crate

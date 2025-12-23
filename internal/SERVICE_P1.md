@@ -1,28 +1,29 @@
-# Phase 1: Local-Only Service Split with Rapace IPC
+# Phase 1: Service Split with Rapace IPC
 
 ## Goal
 
-Split vertex from a monolithic in-process architecture into 4 separate binaries communicating via rapace IPC over TCP localhost. This establishes the foundation for future distributed execution without implementing it yet.
+Split vertex from a monolithic in-process architecture into 4 separate binaries communicating via rapace IPC. This establishes the foundation for distributed execution.
 
-## Explicit Constraints
+## Explicit Constraints (V1)
 
-- **Localhost only**: All services bind to `127.0.0.1` only
-- **No remote execution**: Remote endpoints like `tcp://build-server:9001` are NOT supported in V1
-- **Workspace access**: All services operate on the local filesystem (CAS-materialized inputs deferred to V2)
+- **Endpoints**: Services accept `host:port` or `tcp://host:port` endpoints via env vars.
+- **Security**: Services are unauthenticated; bind non-loopback only behind appropriate network controls.
+- **No shared filesystem requirement**: daemon/execd/casd do not need to share a host or filesystem.
+- **Workspace access**: daemon reads project sources from its local filesystem to ingest them into CAS; execd does not receive workspace paths.
 - **Build scripts**: Keep current `build_script.rs` approach (execd build script support deferred to V2)
 - **Path handling**: Expand a leading `~` in path args in-process (don’t rely on shell expansion)
 
 ## In Scope
 
 ✅ Split into 4 binaries: `vx`, `vx-daemon`, `vx-casd`, `vx-execd`
-✅ TCP IPC on `127.0.0.1` (ports 9001-9003)
+✅ TCP IPC (defaults to `127.0.0.1:9001-9003`)
 ✅ Move `Command::new("rustc")` from daemon → execd (crates/vx-daemon/src/lib.rs:1902, 2113)
 ✅ Simple auto-spawn (if connect fails, spawn child process; daemon tracks spawned `Child` handles for deps)
 ✅ Basic shutdown (daemon kills only the children it spawned via `Child::kill()` and exits)
 
 ## Out of Scope (Deferred to V2+)
 
-❌ Remote endpoints / distributed execution
+❌ Remote daemon reading a workspace it does not have locally (would require workspace sync / CAS-only workspaces)
 ❌ Build script execution in execd
 ❌ Sophisticated file locking / PID files
 ❌ CAS-materialized workspace inputs
@@ -72,7 +73,7 @@ Split vertex from a monolithic in-process architecture into 4 separate binaries 
 
 ### Endpoint Format
 
-Use simple `host:port` strings (no URL parsing complexity):
+Use `host:port` strings (optionally prefixed with `tcp://`):
 
 | Service | Env Var | Default |
 |---------|---------|---------|
@@ -80,7 +81,8 @@ Use simple `host:port` strings (no URL parsing complexity):
 | CAS | `VX_CAS` | `127.0.0.1:9002` |
 | Exec | `VX_EXEC` | `127.0.0.1:9003` |
 
-**Binding behavior**: All services bind to `127.0.0.1` (loopback only, not accessible remotely).
+**Binding behavior**: Services bind to the configured endpoint. Defaults are loopback-only; if you bind non-loopback you must secure the network path (no auth/TLS in V1).
+**Auto-spawn**: Only supported for loopback endpoints; for non-loopback you must start services out-of-band.
 
 ---
 
@@ -91,18 +93,18 @@ Use simple `host:port` strings (no URL parsing complexity):
 Each service spawns its dependencies on-demand:
 
 1. **User runs `vx build`**
-   - Try connect to `127.0.0.1:9001`
+   - Try connect to `$VX_DAEMON` (default `127.0.0.1:9001`)
    - If fails → spawn `vx-daemon` as child process, track `Child` handle
    - Retry connection with backoff [10, 50, 100, 500, 1000]ms
 
 2. **`vx-daemon` starts**
-   - Try connect to `127.0.0.1:9002` (cas)
+   - Try connect to `$VX_CAS` (default `127.0.0.1:9002`) (cas)
    - If fails → spawn `vx-casd`, track `Child`
-   - Try connect to `127.0.0.1:9003` (exec)
+   - Try connect to `$VX_EXEC` (default `127.0.0.1:9003`) (exec)
    - If fails → spawn `vx-execd`, track `Child`
 
 3. **`vx-execd` starts**
-   - Connect to `127.0.0.1:9002` (cas)
+   - Connect to `$VX_CAS` (cas)
    - If fails → error (cas should already be running from step 2)
 
 **Port conflicts / wrong process on port**:
@@ -668,14 +670,14 @@ Existing tests should continue working using `InProcessDaemonService` type alias
 - [ ] Build output identical to in-process mode
 - [ ] Second `vx build` reuses running services (no respawn)
 - [ ] `vx kill` stops daemon and spawned services
-- [ ] Services bind to `127.0.0.1` only (verify with `lsof`)
+- [ ] Services bind to configured endpoints (verify with `lsof`)
 - [ ] Existing unit tests pass with in-process mode
 
 ---
 
 ## Known Limitations (V1)
 
-1. **No remote execution**: Hardcoded localhost, workspace on local disk
+1. **No authentication/encryption**: secure the network path if binding non-loopback
 2. **No graceful shutdown**: Services killed immediately, in-flight work lost
 3. **No crash recovery**: Orphaned services stay running if daemon crashes
 4. **No PID files**: Port binding is the only lock mechanism

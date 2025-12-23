@@ -2,6 +2,8 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+pub mod net;
+
 /// Atomically write contents to a file.
 ///
 /// Creates a temporary file in the same directory, writes contents,

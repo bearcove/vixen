@@ -37,33 +37,14 @@ impl Args {
         });
         let root = format!("{}/cas", vx_home);
 
-        let bind = std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
-
-        // V1: Enforce loopback-only
-        validate_loopback(&bind)?;
+        let bind_raw = std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
 
         Ok(Args {
             root: Utf8PathBuf::from(root),
             bind,
         })
     }
-}
-
-/// Validate that the endpoint is loopback-only (127.0.0.1:*)
-fn validate_loopback(endpoint: &str) -> Result<()> {
-    let addr = endpoint
-        .parse::<std::net::SocketAddr>()
-        .map_err(|e| eyre::eyre!("invalid endpoint '{}': {}", endpoint, e))?;
-
-    if !addr.ip().is_loopback() {
-        eyre::bail!(
-            "vx-casd V1 only supports loopback binding (127.0.0.1:*), got: {}\n\
-            Remote execution is not yet supported.",
-            endpoint
-        );
-    }
-
-    Ok(())
 }
 
 #[tokio::main]
@@ -117,6 +98,7 @@ impl CasService {
                 root,
                 toolchain_manager: ToolchainManager::new(),
                 registry_manager: RegistryManager::new(),
+                download_semaphore: Arc::new(tokio::sync::Semaphore::new(32)),
             }),
         }
     }

@@ -6,7 +6,8 @@ This document is the execution plan to get `vx build` reliably building real Rus
 
 - Network: **yes**
 - Parallel: **yes** (via `cargo nextest`)
-- Services are **local-only** (`127.0.0.1`) and communicate via rapace over TCP.
+- Integration tests currently assume services are **local-only** (`127.0.0.1`) and communicate via rapace over TCP.
+- Production deployments may run daemon/execd/casd on different hosts (no shared filesystem), configured via `VX_DAEMON`, `VX_CAS`, `VX_EXEC` (supports `tcp://host:port` or `host:port`).
 
 ## Current Blockers (Observed)
 

@@ -41,7 +41,7 @@ Where `$VX_HOME` defaults to `~/.vx`.
 
 **Rationale**: 
 - TCP sockets are universally supported and work across all platforms
-- Env vars allow easy override for remote workers (e.g., `tcp://build-server:9001`)
+- Env vars allow easy override for remote workers (e.g., `tcp://build-server:9001`). Services do not share a filesystem; execd inputs/outputs are CAS-only.
 - Defaults mean zero configuration for common case
 - rapace's stream transport works with any `AsyncRead + AsyncWrite` (including `tokio::net::TcpStream`)
 - Future migration to SHM or Unix sockets is straightforward
@@ -203,7 +203,7 @@ pub struct DaemonServer<T: Daemon> { ... }
 #### 2.3 Wire Up Servers in Binaries
 
 **Pattern for all service binaries**:
-1. Parse endpoint (strip `tcp://` prefix to get bind address)
+1. Parse endpoint (accept `tcp://host:port` or `host:port`)
 2. `TcpListener::bind(addr)` to listen
 3. Accept loop: for each connection, spawn a task
 4. In spawned task: `Transport::stream(tcpstream)` → `RpcSession::new()` → `XxxServer::new()` → `server.serve()`

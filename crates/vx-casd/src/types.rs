@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use camino::Utf8PathBuf;
+use tokio::sync::Semaphore;
 
 use crate::{RegistryManager, toolchain::ToolchainManager};
 
@@ -29,4 +30,7 @@ pub(crate) struct CasServiceInner {
 
     /// Registry crate acquisition manager (handles inflight deduplication)
     pub(crate) registry_manager: RegistryManager,
+
+    /// Semaphore to limit concurrent download/extract operations
+    pub(crate) download_semaphore: Arc<Semaphore>,
 }

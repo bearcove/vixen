@@ -58,13 +58,12 @@ impl Args {
         let toolchains_dir = Utf8PathBuf::from(&vx_home).join("toolchains");
         let registry_cache_dir = Utf8PathBuf::from(&vx_home).join("registry");
 
-        let cas_endpoint = std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let cas_endpoint_raw =
+            std::env::var("VX_CAS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let cas_endpoint = vx_io::net::normalize_tcp_endpoint(&cas_endpoint_raw)?;
 
-        let bind = std::env::var("VX_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
-
-        // V1: Enforce loopback-only
-        validate_loopback(&bind)?;
-        validate_loopback(&cas_endpoint)?;
+        let bind_raw = std::env::var("VX_EXEC").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
+        let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
 
         Ok(Args {
             toolchains_dir,
@@ -73,23 +72,6 @@ impl Args {
             bind,
         })
     }
-}
-
-/// Validate that the endpoint is loopback-only (127.0.0.1:*)
-fn validate_loopback(endpoint: &str) -> Result<()> {
-    let addr = endpoint
-        .parse::<std::net::SocketAddr>()
-        .map_err(|e| eyre::eyre!("invalid endpoint '{}': {}", endpoint, e))?;
-
-    if !addr.ip().is_loopback() {
-        eyre::bail!(
-            "vx-execd V1 only supports loopback endpoints (127.0.0.1:*), got: {}\n\
-            Remote execution is not yet supported.",
-            endpoint
-        );
-    }
-
-    Ok(())
 }
 
 /// Connect to CAS and return a client handle
@@ -177,9 +159,7 @@ pub struct ExecServiceInner {
     materializing: InflightMaterializations,
 
     /// Registry crate materializer
-    /// TODO: Wire this up in compile_rust when RustDep includes registry crate manifest hashes
-    #[allow(dead_code)]
-    registry_materializer: RegistryMaterializer,
+    pub(crate) registry_materializer: RegistryMaterializer,
 }
 
 /// Exec service handle - cloneable wrapper around shared inner state

@@ -98,6 +98,29 @@ impl Exec for ExecService {
 
         let mut extern_args: Vec<(String, Utf8PathBuf)> = Vec::new();
         for dep in &request.deps {
+            // If this is a registry dependency, materialize its source first
+            if let Some(registry_manifest_hash) = dep.registry_crate_manifest {
+                if let Err(e) = self
+                    .registry_materializer
+                    .materialize(registry_manifest_hash, &scratch_dir)
+                    .await
+                {
+                    let _ = tokio::fs::remove_dir_all(&scratch_dir).await;
+                    return RustCompileResult {
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        output_manifest: None,
+                        error: Some(format!(
+                            "failed to materialize registry crate for {}: {}",
+                            dep.extern_name, e
+                        )),
+                    };
+                }
+            }
+
             let rlib_path = deps_dir.join(format!("lib{}.rlib", dep.extern_name));
 
             // Fetch the dep's manifest to get the rlib blob hash

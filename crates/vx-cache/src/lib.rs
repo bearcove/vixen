@@ -107,10 +107,12 @@ mod tests {
         let dep_a = RustDep {
             extern_name: "aaa".to_string(),
             manifest_hash: Blake3Hash([10; 32]),
+            registry_crate_manifest: None,
         };
         let dep_b = RustDep {
             extern_name: "bbb".to_string(),
             manifest_hash: Blake3Hash([20; 32]),
+            registry_crate_manifest: None,
         };
 
         let request1 = RustCompileRequest {
