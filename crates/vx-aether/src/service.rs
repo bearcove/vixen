@@ -405,7 +405,7 @@ impl AetherService {
                 "processing crate"
             );
 
-            // Compute source closure
+            // Compute source closure (always needed for path crates)
             let crate_root_abs = graph.workspace_root.join(&crate_node.crate_root_rel);
             let closure_paths = vx_rs::rust_source_closure(&crate_root_abs, &graph.workspace_root)
                 .map_err(|e| AetherError::SourceClosure {
@@ -413,10 +413,19 @@ impl AetherService {
                     message: e.to_string(),
                 })?;
 
+            // Compute closure hash
+            // NOTE: With persistence (#18), InputIngredient::set() will automatically
+            // detect if the hash is unchanged and avoid bumping the revision, which
+            // allows picante to memoize cache key queries for unchanged crates.
+            // Future optimization (#16): with file watching, we could skip this
+            // computation when we know source files haven't been modified.
             let closure_hash = vx_rs::hash_source_closure(&closure_paths, &graph.workspace_root)
                 .map_err(|e| AetherError::SourceHash(e.to_string()))?;
 
-            // Create RustCrate input
+            // Create or reuse RustCrate input
+            // Thanks to persistence and InputIngredient::set()'s smart value comparison,
+            // this will automatically reuse the existing input if the closure_hash and
+            // metadata are unchanged, without bumping the revision.
             let crate_id_hex = crate_node.id.short_hex();
             let rust_crate = RustCrate::new(
                 &*db,
