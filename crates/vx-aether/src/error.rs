@@ -10,12 +10,11 @@ use vx_oort_proto::Blake3Hash;
 #[repr(u8)]
 pub enum AetherError {
     // === RPC Errors ===
-    // Note: RpcError doesn't implement Facet (wraps io::Error), so we stringify
     #[error("CAS RPC error: {0}")]
-    CasRpc(String),
+    CasRpc(std::sync::Arc<rapace::RpcError>),
 
     #[error("Exec RPC error: {0}")]
-    ExecRpc(String),
+    ExecRpc(std::sync::Arc<rapace::RpcError>),
 
     // === Toolchain Errors ===
     #[error("toolchain acquisition failed: {0}")]

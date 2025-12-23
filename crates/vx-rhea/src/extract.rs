@@ -20,7 +20,7 @@ impl RheaService {
             .cas
             .get_blob(tree_manifest_hash)
             .await
-            .map_err(|e| RheaError::CasRpc(e.to_string()))?
+            .map_err(|e| RheaError::CasRpc(std::sync::Arc::new(e)))?
             .ok_or(RheaError::ToolchainBlobNotFound {
                 hash: tree_manifest_hash,
                 path: "tree manifest".to_string(),
