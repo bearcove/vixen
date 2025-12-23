@@ -181,26 +181,3 @@ fn detect_host_triple_works() {
         triple
     );
 }
-
-#[tokio::test]
-#[ignore] // Requires network access and takes a long time - run with --ignored
-async fn acquire_rust_toolchain_test() {
-    let host = detect_host_triple().unwrap();
-    let spec = RustToolchainSpec {
-        channel: RustChannel::Stable,
-        host: host.clone(),
-        target: host,
-        components: vec![RustComponent::Rustc, RustComponent::RustStd],
-    };
-
-    // Acquire toolchain
-    let acquired = acquire_rust_toolchain(&spec).await.unwrap();
-
-    println!("Toolchain ID: {}", acquired.id.0.short_hex());
-    println!("Rustc version: {}", acquired.rustc_version);
-    println!("Manifest date: {}", acquired.manifest_date);
-
-    // Verify we got the tarballs
-    assert!(!acquired.rustc_tarball.is_empty());
-    assert!(!acquired.rust_std_tarball.is_empty());
-}

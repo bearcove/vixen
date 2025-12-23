@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
     // Initialize tracing with sensible defaults and span events for performance monitoring
     init_tracing();
 
-    miette_arborium::install_global();
+    let _ = miette_arborium::install_global();
 
     let cli: Cli = args::from_std_args().unwrap_or_else(|e| {
         eprintln!("{:?}", miette::Report::new(e));

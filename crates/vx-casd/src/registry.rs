@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
+use futures_util::StreamExt;
 use thiserror::Error;
 use vx_cas_proto::Blake3Hash;
 use vx_cas_proto::{
@@ -144,9 +144,10 @@ pub(crate) async fn download_crate(
     ))
 }
 
-/// Single download attempt
+/// Single download attempt with streaming verification
 async fn download_crate_attempt(url: &str, expected_checksum: &str) -> Result<Vec<u8>, DownloadError> {
     use http_body_util::BodyExt;
+    use tokio::io::AsyncReadExt;
 
     tracing::info!(url = %url, "downloading crate");
 
@@ -168,25 +169,32 @@ async fn download_crate_attempt(url: &str, expected_checksum: &str) -> Result<Ve
         return Err(DownloadError::HttpError(status.as_u16()));
     }
 
-    let body = response.into_body().collect()
-        .await
-        .map_err(DownloadError::Http)?
-        .to_bytes();
-    let bytes = body.to_vec();
+    // Wrap the response body in a hash-verifying reader
+    let body_reader = tokio_util::io::StreamReader::new(
+        response.into_body().into_data_stream().map(|result| {
+            result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        }),
+    );
 
-    // Verify SHA256 checksum
-    let actual_checksum = compute_sha256(&bytes);
-    if actual_checksum.to_lowercase() != expected_checksum.to_lowercase() {
-        return Err(DownloadError::ChecksumMismatch {
+    let mut verifying_reader = crate::hash_reader::Sha256VerifyingReader::new(
+        body_reader,
+        expected_checksum.to_string(),
+    );
+
+    // Read through the verifying reader (hash verification happens on EOF)
+    let mut bytes = Vec::new();
+    verifying_reader
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| DownloadError::ChecksumMismatch {
             expected: expected_checksum.to_string(),
-            actual: actual_checksum,
-        });
-    }
+            actual: e.to_string(),
+        })?;
 
     tracing::debug!(
         url = %url,
         size = bytes.len(),
-        checksum = %actual_checksum,
+        checksum = %expected_checksum,
         "crate downloaded and verified"
     );
 
@@ -198,12 +206,6 @@ fn is_retryable_error(error: &DownloadError) -> bool {
         error,
         DownloadError::RateLimited | DownloadError::ServerError(_) | DownloadError::Http(_)
     )
-}
-
-fn compute_sha256(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
 }
 
 // =============================================================================

@@ -20,6 +20,9 @@ pub enum HttpError {
     #[error("HTTP error {0}")]
     HttpError(#[from] hyper_util::client::legacy::Error),
 
+    #[error("HTTP builder error: {0}")]
+    HttpBuilder(#[from] hyper::http::Error),
+
     #[error("invalid UTF-8 in response body")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
 

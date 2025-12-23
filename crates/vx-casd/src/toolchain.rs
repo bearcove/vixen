@@ -1,5 +1,6 @@
 //! Toolchain Manager (Inflight Deduplication)
 
+use futures_util::StreamExt;
 use jiff::Timestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,37 +36,58 @@ async fn fetch_channel_manifest(
     vx_toolchain::ChannelManifest::from_toml(&body)
 }
 
-/// Download a component with checksum verification
+/// Download a component with streaming checksum verification
 async fn download_component(url: &str, expected_hash: &str) -> Result<Vec<u8>, vx_toolchain::ToolchainError> {
+    use http_body_util::BodyExt;
+    use tokio::io::AsyncReadExt;
+
     tracing::debug!(url = %url, "downloading component");
 
-    let bytes = crate::http::get_bytes(url)
+    let response = crate::http::get(url)
         .await
         .map_err(|e| vx_toolchain::ToolchainError::FetchError {
             url: url.to_string(),
             source: Box::new(e),
         })?;
 
-    // Verify SHA256
-    let actual_hash = {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        hex::encode(hasher.finalize())
-    };
-
-    if actual_hash != expected_hash {
-        return Err(vx_toolchain::ToolchainError::ChecksumMismatch {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(vx_toolchain::ToolchainError::FetchError {
             url: url.to_string(),
-            expected: expected_hash.to_string(),
-            actual: actual_hash,
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("HTTP {}", status),
+            )),
         });
     }
+
+    // Wrap the response body in a hash-verifying reader
+    let body_reader = tokio_util::io::StreamReader::new(
+        response.into_body().into_data_stream().map(|result| {
+            result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        }),
+    );
+
+    let mut verifying_reader = crate::hash_reader::Sha256VerifyingReader::new(
+        body_reader,
+        expected_hash.to_string(),
+    );
+
+    // Read through the verifying reader (hash verification happens on EOF)
+    let mut bytes = Vec::new();
+    verifying_reader
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|e| vx_toolchain::ToolchainError::ChecksumMismatch {
+            url: url.to_string(),
+            expected: expected_hash.to_string(),
+            actual: e.to_string(),
+        })?;
 
     tracing::debug!(
         url = %url,
         size = bytes.len(),
-        hash = %actual_hash,
+        hash = %expected_hash,
         "component downloaded and verified"
     );
 

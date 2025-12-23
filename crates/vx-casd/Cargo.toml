@@ -15,17 +15,21 @@ eyre = { workspace = true }
 facet = { workspace = true }
 facet-json = { workspace = true }
 flate2 = "1"
+futures-util = { workspace = true }
 hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1.5", features = ["client", "http1", "http2"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+pin-project-lite = "0.2"
 rapace = { workspace = true }
 sha2 = "0.10"
 tar = "0.4"
 tempfile.workspace = true
+thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 vx-cas-proto = { workspace = true }
