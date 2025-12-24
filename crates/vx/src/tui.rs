@@ -1,7 +1,9 @@
 //! TUI for build progress tracking
 //!
-//! Displays a progress bar showing total/completed/pending actions,
-//! and shows the 3 longest-running actions below the bar, plus 2 recent log lines.
+//! Uses indicatif MultiProgress with:
+//! - One progress bar showing overall completion
+//! - 3 spinner bars for longest-running active actions
+//! - 10 text bars for scrolling log buffer (last 10 messages)
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{HashMap, VecDeque};
@@ -34,8 +36,10 @@ struct TuiState {
     completed: usize,
     /// Next action ID
     next_id: u64,
-    /// Recent log messages (circular buffer, keep last 50)
+    /// Recent log messages (circular buffer, keep last 100, show last 10)
     logs: VecDeque<String>,
+    /// Shutdown flag to stop the display task
+    shutdown: bool,
 }
 
 impl TuiState {
@@ -45,12 +49,17 @@ impl TuiState {
             total: 0,
             completed: 0,
             next_id: 1,
-            logs: VecDeque::with_capacity(50),
+            logs: VecDeque::with_capacity(100),
+            shutdown: false,
         }
     }
 
     fn pending(&self) -> usize {
         self.total.saturating_sub(self.completed).saturating_sub(self.active.len())
+    }
+
+    fn is_done(&self) -> bool {
+        self.completed == self.total && self.active.is_empty() && self.total > 0
     }
 }
 
@@ -110,15 +119,23 @@ impl TuiHandle {
     pub async fn log_message(&self, message: String) {
         let mut state = self.state.write().await;
         state.logs.push_back(message);
-        // Keep only last 50 messages
-        if state.logs.len() > 50 {
+        // Keep only last 100 messages
+        if state.logs.len() > 100 {
             state.logs.pop_front();
         }
     }
 
-    /// Shut down the TUI (called when build completes or fails)
+    /// Shutdown the TUI and wait for cleanup to complete
     pub async fn shutdown(&self) {
-        // The display task will exit when it sees completed == total
+        // Set the shutdown flag
+        {
+            let mut state = self.state.write().await;
+            state.shutdown = true;
+        }
+
+        // Wait a moment for the display task to clean up
+        // The display task runs at ~15fps (67ms interval), so 200ms should be plenty
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
 
     /// Background task that updates the display at ~15fps
@@ -134,28 +151,28 @@ impl TuiHandle {
                 .progress_chars("=>-"),
         );
 
-        // Action display bars (3 for longest-running actions)
+        // Active action spinners (3 for longest-running actions)
+        let spinner_style = ProgressStyle::with_template("  {spinner} {msg}")
+            .expect("valid template")
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+
         let action_bars: Vec<_> = (0..3)
             .map(|_| {
-                let bar = multi.add(ProgressBar::new(0));
-                bar.set_style(
-                    ProgressStyle::default_bar()
-                        .template("  {msg}")
-                        .expect("valid template"),
-                );
+                let bar = multi.add(ProgressBar::new_spinner());
+                bar.set_style(spinner_style.clone());
+                bar.enable_steady_tick(Duration::from_millis(100));
                 bar
             })
             .collect();
 
-        // Log display bars (2 for recent logs)
-        let log_bars: Vec<_> = (0..2)
+        // Log display bars (10 for scrolling buffer)
+        let log_style = ProgressStyle::with_template("  {msg}")
+            .expect("valid template");
+
+        let log_bars: Vec<_> = (0..10)
             .map(|_| {
                 let bar = multi.add(ProgressBar::new(0));
-                bar.set_style(
-                    ProgressStyle::default_bar()
-                        .template("  {msg}")
-                        .expect("valid template"),
-                );
+                bar.set_style(log_style.clone());
                 bar
             })
             .collect();
@@ -190,7 +207,7 @@ impl TuiHandle {
                 if let Some(action) = actions.get(i) {
                     let elapsed_secs = action.elapsed().as_secs_f64();
                     bar.set_message(format!(
-                        "{:<30} ({:.1}s)",
+                        "{:<40} ({:.1}s)",
                         action.action_type.display_name(),
                         elapsed_secs
                     ));
@@ -199,31 +216,31 @@ impl TuiHandle {
                 }
             }
 
-            // Show the last 2 log messages
+            // Show the last 10 log messages
             let log_count = state_snapshot.logs.len();
+            let start_idx = log_count.saturating_sub(10);
+
             for (i, bar) in log_bars.iter().enumerate() {
-                // i=0 -> second-to-last, i=1 -> last
-                let index = log_count.saturating_sub(2).saturating_add(i);
-                if let Some(log) = state_snapshot.logs.get(index) {
+                if let Some(log) = state_snapshot.logs.get(start_idx + i) {
                     bar.set_message(log.clone());
                 } else {
                     bar.set_message("");
                 }
             }
 
-            // If we're done, clean up TUI and exit
-            if completed == total && state_snapshot.active.is_empty() && total > 0 {
-                // Clear all bars
-                for bar in &log_bars {
+            // If shutdown was requested, clean up and exit
+            if state_snapshot.shutdown {
+                // Clear all bars in reverse order (logs, actions, progress)
+                for bar in log_bars.iter().rev() {
                     bar.finish_and_clear();
                 }
-                for bar in &action_bars {
+                for bar in action_bars.iter().rev() {
                     bar.finish_and_clear();
                 }
                 progress_bar.finish_and_clear();
 
-                // Clear the MultiProgress completely
-                multi.clear().ok();
+                // Clear the MultiProgress
+                drop(multi);
 
                 break;
             }

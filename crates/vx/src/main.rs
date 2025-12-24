@@ -328,17 +328,13 @@ async fn cmd_build(release: bool) -> Result<()> {
         release,
     };
 
-    // Print building message
-    println!("{} ({})", "Building".green().bold(), cwd);
-
     let result = daemon.build(request).await?;
 
-    if result.success {
-        // Give TUI a moment to clean up, then push it off screen with newlines
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        println!("\n\n");
+    // Shutdown the TUI and wait for cleanup
+    tui.shutdown().await;
 
-        // Print nice summary box
+    if result.success {
+        // Print nice summary box (TUI has already cleaned up)
         println!("┌─────────────────────────────────────────────────────────────");
         println!("│ {} Build Complete", "✓".green().bold());
         println!("├─────────────────────────────────────────────────────────────");
