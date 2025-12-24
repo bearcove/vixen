@@ -20,52 +20,85 @@ use camino::{Utf8Path, Utf8PathBuf};
 use facet_cargo_toml::Spanned;
 
 use miette::{Diagnostic, NamedSource, SourceSpan};
-use thiserror::Error;
 
 /// Errors that can occur during manifest parsing
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug)]
 pub enum ManifestError {
-    #[error("failed to read {path}")]
-    #[diagnostic(code(vx_manifest::read_error))]
     ReadError {
         path: Utf8PathBuf,
-        #[source]
         source: std::io::Error,
     },
-
-    #[error("failed to parse Cargo.toml: {0}")]
-    #[diagnostic(code(vx_manifest::parse_error))]
     ParseError(String),
-
-    #[error("missing required section: [{0}]")]
-    #[diagnostic(code(vx_manifest::missing_section))]
     MissingSection(&'static str),
-
-    #[error("missing required field: [package].{0}")]
-    #[diagnostic(code(vx_manifest::missing_field))]
     MissingField(&'static str),
-
-    #[error("unsupported: {feature} (found {details})")]
-    #[diagnostic(code(vx_manifest::unsupported))]
     Unsupported {
         feature: &'static str,
         details: String,
     },
-
-    #[error("no targets found (expected [lib] or [[bin]] with src/lib.rs or src/main.rs)")]
-    #[diagnostic(code(vx_manifest::no_targets))]
     NoTargets,
-
-    #[error("invalid dependency '{name}': {reason}")]
-    #[diagnostic(code(vx_manifest::invalid_dependency))]
     InvalidDependency {
         name: String,
         reason: String,
-        #[source_code]
         src: Option<NamedSource<Arc<String>>>,
-        #[label("{reason}")]
         span: Option<SourceSpan>,
     },
+}
+
+impl std::fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadError { path, .. } => write!(f, "failed to read {path}"),
+            Self::ParseError(msg) => write!(f, "failed to parse Cargo.toml: {msg}"),
+            Self::MissingSection(section) => write!(f, "missing required section: [{section}]"),
+            Self::MissingField(field) => write!(f, "missing required field: [package].{field}"),
+            Self::Unsupported { feature, details } => write!(f, "unsupported: {feature} (found {details})"),
+            Self::NoTargets => write!(f, "no targets found (expected [lib] or [[bin]] with src/lib.rs or src/main.rs)"),
+            Self::InvalidDependency { name, reason, .. } => write!(f, "invalid dependency '{name}': {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for ManifestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ReadError { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl Diagnostic for ManifestError {
+    fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        let code = match self {
+            Self::ReadError { .. } => "vx_manifest::read_error",
+            Self::ParseError(_) => "vx_manifest::parse_error",
+            Self::MissingSection(_) => "vx_manifest::missing_section",
+            Self::MissingField(_) => "vx_manifest::missing_field",
+            Self::Unsupported { .. } => "vx_manifest::unsupported",
+            Self::NoTargets => "vx_manifest::no_targets",
+            Self::InvalidDependency { .. } => "vx_manifest::invalid_dependency",
+        };
+        Some(Box::new(code))
+    }
+
+    fn source_code(&self) -> Option<&dyn miette::SourceCode> {
+        match self {
+            Self::InvalidDependency { src: Some(src), .. } => Some(src as &dyn miette::SourceCode),
+            _ => None,
+        }
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
+        match self {
+            Self::InvalidDependency { reason, span: Some(span), .. } => {
+                Some(Box::new(std::iter::once(miette::LabeledSpan::new_with_span(
+                    Some(reason.clone()),
+                    *span,
+                ))))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Edition of Rust to use

@@ -10,29 +10,32 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use thiserror::Error;
-
 // Re-export from facet-cargo-toml
 pub use facet_cargo_toml::{CargoLock, LockPackage, CRATES_IO_SOURCE};
 
 /// Errors that can occur during lockfile reachability analysis
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum LockfileError {
-    #[error("unsupported lockfile version: {0} (supported: 3, 4)")]
     UnsupportedVersion(u32),
-
-    #[error("package '{name}' has unsupported source: {source_url}")]
     UnsupportedSource { name: String, source_url: String },
-
-    #[error("registry package '{name} {version}' is missing checksum")]
     MissingChecksum { name: String, version: String },
-
-    #[error("root package '{name}' not found in lockfile")]
     RootNotFound { name: String },
-
-    #[error("dependency '{dep}' of package '{package}' not found in lockfile")]
     DependencyNotFound { package: String, dep: String },
 }
+
+impl std::fmt::Display for LockfileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedVersion(v) => write!(f, "unsupported lockfile version: {v} (supported: 3, 4)"),
+            Self::UnsupportedSource { name, source_url } => write!(f, "package '{name}' has unsupported source: {source_url}"),
+            Self::MissingChecksum { name, version } => write!(f, "registry package '{name} {version}' is missing checksum"),
+            Self::RootNotFound { name } => write!(f, "root package '{name}' not found in lockfile"),
+            Self::DependencyNotFound { package, dep } => write!(f, "dependency '{dep}' of package '{package}' not found in lockfile"),
+        }
+    }
+}
+
+impl std::error::Error for LockfileError {}
 
 /// Returns a unique key for a package: "name version"
 fn package_key(pkg: &LockPackage) -> String {

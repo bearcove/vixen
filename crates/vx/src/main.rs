@@ -141,8 +141,14 @@ fn init_tracing_stderr() {
         .init();
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     let _ = miette_arborium::install_global();
 
     let cli: Cli = args::from_std_args().unwrap_or_else(|e| {
