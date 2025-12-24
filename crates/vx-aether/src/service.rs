@@ -25,6 +25,7 @@ use vx_cass_proto::{
     RustComponent, RustToolchainSpec, ServiceVersion, TreeFile,
 };
 use vx_rhea_proto::{RheaClient, RustCompileRequest, RustDep};
+use vx_report::{BuildReport, ReportStore};
 use vx_rs::crate_graph::CrateSource;
 use vx_rs::{CrateGraph, CrateId, CrateType};
 
@@ -540,6 +541,29 @@ impl AetherService {
         // Get execution statistics
         let exec_stats = executor.get_stats();
         let duration = total_start.elapsed();
+
+        // Create and save build report
+        let mut report = BuildReport::new(
+            graph.workspace_root.to_string(),
+            profile.to_string(),
+            target_triple.clone(),
+        );
+
+        // Add node reports from execution
+        for node_report in exec_stats.node_reports.iter() {
+            report.add_node(node_report.clone());
+        }
+
+        // Finalize the report
+        report.finalize(true, None);
+
+        // Save the report to the project's .vx/runs/ directory
+        let report_store = ReportStore::new(&graph.workspace_root);
+        if let Err(e) = report_store.save(&report) {
+            warn!(error = %e, "failed to save build report");
+        } else {
+            debug!(run_id = %report.run_id, "saved build report");
+        }
 
         Ok(BuildResult {
             success: true,

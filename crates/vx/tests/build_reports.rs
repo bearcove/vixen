@@ -64,11 +64,11 @@ fn explain_shows_cache_hit_after_rebuild() {
 
     // First build (miss)
     let build1 = env.build(false);
-    assert!(build1.success, "first build failed");
+    assert!(build1.success, "first build failed: {}", build1.stderr);
 
     // Second build (hit)
     let build2 = env.build(false);
-    assert!(build2.success, "second build failed");
+    assert!(build2.success, "second build failed: {}", build2.stderr);
 
     let explain = env.explain();
     assert!(explain.success, "explain failed");
@@ -88,11 +88,11 @@ fn explain_diff_detects_source_change() {
 
     // First build - cache hit (if previous cache exists) or miss
     let build1 = env.build(false);
-    assert!(build1.success, "first build failed");
+    assert!(build1.success, "first build failed: {}", build1.stderr);
 
     // Second build - cache hit
     let build2 = env.build(false);
-    assert!(build2.success, "second build failed");
+    assert!(build2.success, "second build failed: {}", build2.stderr);
     assert!(build2.was_cached(), "second build should be cached");
 
     // Modify source

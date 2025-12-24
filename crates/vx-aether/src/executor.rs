@@ -73,6 +73,8 @@ pub struct ExecutionStats {
     pub rebuilt: usize,
     /// Path to final bin output (if any)
     pub bin_output: Option<camino::Utf8PathBuf>,
+    /// Per-node reports for build report generation
+    pub node_reports: Vec<vx_report::NodeReport>,
 }
 
 /// Message from spawned task to executor
@@ -284,27 +286,90 @@ impl Executor {
         let mut cache_hits = 0;
         let mut rebuilt = 0;
         let mut bin_output = None;
+        let mut node_reports = Vec::new();
 
-        for (_, result) in results_lock.iter() {
+        for (node_idx, result) in results_lock.iter() {
+            let action = &self.graph.graph[*node_idx].action;
+
             match result {
-                ActionResult::ToolchainAcquired { was_cached, .. } => {
+                ActionResult::ToolchainAcquired { was_cached, manifest_hash, .. } => {
                     if *was_cached {
                         cache_hits += 1;
                     } else {
                         rebuilt += 1;
                     }
+
+                    // Generate node report for toolchain acquisition
+                    node_reports.push(vx_report::NodeReport {
+                        node_id: action.display_name(),
+                        kind: "toolchain.acquire".to_string(),
+                        cache_key: manifest_hash.to_hex(),
+                        cache: if *was_cached {
+                            vx_report::CacheOutcome::Hit {
+                                manifest: manifest_hash.to_hex(),
+                            }
+                        } else {
+                            vx_report::CacheOutcome::Miss {
+                                reason: vx_report::MissReason::FirstBuild,
+                            }
+                        },
+                        timing: vx_report::NodeTiming::default(),
+                        inputs: vec![],
+                        deps: vec![],
+                        outputs: vec![vx_report::OutputRecord {
+                            logical: "toolchain".to_string(),
+                            manifest: Some(manifest_hash.to_hex()),
+                            blob: None,
+                            path: None,
+                        }],
+                        invocation: None,
+                        diagnostics: vx_report::DiagnosticsRecord::default(),
+                    });
                 }
-                ActionResult::RegistryCrateAcquired { was_cached, .. } => {
+                ActionResult::RegistryCrateAcquired { name, version, manifest_hash, was_cached } => {
                     if *was_cached {
                         cache_hits += 1;
                     } else {
                         rebuilt += 1;
                     }
+
+                    // Generate node report for registry crate acquisition
+                    node_reports.push(vx_report::NodeReport {
+                        node_id: format!("acquire-registry:{}:{}", name, version),
+                        kind: "registry.acquire".to_string(),
+                        cache_key: manifest_hash.to_hex(),
+                        cache: if *was_cached {
+                            vx_report::CacheOutcome::Hit {
+                                manifest: manifest_hash.to_hex(),
+                            }
+                        } else {
+                            vx_report::CacheOutcome::Miss {
+                                reason: vx_report::MissReason::FirstBuild,
+                            }
+                        },
+                        timing: vx_report::NodeTiming::default(),
+                        inputs: vec![
+                            vx_report::InputRecord {
+                                label: "crate".to_string(),
+                                value: format!("{}:{}", name, version),
+                            },
+                        ],
+                        deps: vec![],
+                        outputs: vec![vx_report::OutputRecord {
+                            logical: "source".to_string(),
+                            manifest: Some(manifest_hash.to_hex()),
+                            blob: None,
+                            path: None,
+                        }],
+                        invocation: None,
+                        diagnostics: vx_report::DiagnosticsRecord::default(),
+                    });
                 }
                 ActionResult::CrateCompiled {
+                    crate_id,
+                    output_manifest,
                     bin_output: bin_path,
                     was_cached,
-                    ..
                 } => {
                     if *was_cached {
                         cache_hits += 1;
@@ -315,6 +380,52 @@ impl Executor {
                     if let Some(path) = bin_path {
                         bin_output = Some(path.clone());
                     }
+
+                    // Determine crate type from action
+                    let (crate_type_str, kind) = match action {
+                        Action::CompileRustCrate { crate_type, .. } => {
+                            let type_str = crate_type.as_str();
+                            let kind = if type_str == "bin" {
+                                "rust.compile_bin"
+                            } else {
+                                "rust.compile_rlib"
+                            };
+                            (type_str.to_string(), kind.to_string())
+                        }
+                        _ => ("unknown".to_string(), "rust.compile".to_string()),
+                    };
+
+                    // Generate node report for crate compilation
+                    node_reports.push(vx_report::NodeReport {
+                        node_id: format!("compile-{}:{}", crate_type_str, action.display_name().replace("compile ", "")),
+                        kind,
+                        cache_key: crate_id.to_string(),
+                        cache: if *was_cached {
+                            vx_report::CacheOutcome::Hit {
+                                manifest: output_manifest.to_hex(),
+                            }
+                        } else {
+                            vx_report::CacheOutcome::Miss {
+                                reason: vx_report::MissReason::KeyNotFound,
+                            }
+                        },
+                        timing: vx_report::NodeTiming::default(),
+                        inputs: vec![
+                            vx_report::InputRecord {
+                                label: "source_closure".to_string(),
+                                value: crate_id.to_string(),
+                            },
+                        ],
+                        deps: vec![],
+                        outputs: vec![vx_report::OutputRecord {
+                            logical: crate_type_str,
+                            manifest: Some(output_manifest.to_hex()),
+                            blob: None,
+                            path: bin_path.as_ref().map(|p| p.to_string()),
+                        }],
+                        invocation: None,
+                        diagnostics: vx_report::DiagnosticsRecord::default(),
+                    });
                 }
             }
         }
@@ -322,6 +433,7 @@ impl Executor {
         self.stats.cache_hits = cache_hits;
         self.stats.rebuilt = rebuilt;
         self.stats.bin_output = bin_output;
+        self.stats.node_reports = node_reports;
 
         Ok(())
     }

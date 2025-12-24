@@ -59,7 +59,6 @@ jiff = "0.2"
 
 # paths
 camino = "1"
-serde_json = "1"
 
 # testing
 tempfile = "3"

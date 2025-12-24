@@ -1029,13 +1029,71 @@ fn cmd_explain_diff(before: &vx_report::BuildReport, after: &vx_report::BuildRep
     Ok(())
 }
 
+// JSON output types for cmd_explain_json
+mod explain_json {
+    use facet::Facet;
+    use std::collections::HashMap;
+
+    #[derive(Facet)]
+    pub struct ExplainOutput {
+        pub run_id: String,
+        pub prev_run_id: Option<String>,
+        pub workspace_root: String,
+        pub profile: String,
+        pub target_triple: String,
+        pub success: bool,
+        pub duration_ms: u64,
+        pub nodes: Vec<NodeJson>,
+        pub fanout: HashMap<String, Vec<String>>,
+    }
+
+    #[derive(Facet)]
+    pub struct NodeJson {
+        pub node_id: String,
+        pub kind: String,
+        pub cache: String,
+        pub execute_ms: u64,
+        #[facet(default)]
+        pub reported_reason: Option<String>,
+        #[facet(default)]
+        pub observed_reason: Option<String>,
+        #[facet(default)]
+        pub input_changes: Vec<InputChangeJson>,
+        #[facet(default)]
+        pub dep_changes: Vec<DepChangeJson>,
+    }
+
+    #[derive(Facet)]
+    pub struct InputChangeJson {
+        pub label: String,
+        pub old_value: Option<String>,
+        pub new_value: Option<String>,
+    }
+
+    #[derive(Facet)]
+    pub struct DepChangeJson {
+        pub extern_name: String,
+        pub crate_id: String,
+        pub change: DepChangeKindJson,
+    }
+
+    #[derive(Facet)]
+    #[repr(u8)]
+    pub enum DepChangeKindJson {
+        Added { rlib_hash: String, manifest_hash: String },
+        Removed { rlib_hash: String, manifest_hash: String },
+        RlibChanged { old_rlib: String, new_rlib: String, old_manifest: String, new_manifest: String },
+        ManifestChanged { rlib_hash: String, old_manifest: String, new_manifest: String },
+    }
+}
+
 /// Output explanation in JSON format
 fn cmd_explain_json(
     report: &vx_report::BuildReport,
     prev_report: Option<&vx_report::BuildReport>,
     node_filter: Option<String>,
 ) -> Result<()> {
-    use serde_json::json;
+    use explain_json::*;
     use std::collections::HashMap;
     use vx_report::{CacheOutcome, FanoutAnalysis, NodeRebuildExplanation};
 
@@ -1057,12 +1115,16 @@ fn cmd_explain_json(
 
         // For cache hits, include minimal info
         if matches!(node.cache, CacheOutcome::Hit { .. }) {
-            nodes_json.push(json!({
-                "node_id": node.node_id,
-                "kind": node.kind,
-                "cache": "hit",
-                "execute_ms": node.timing.execute_ms,
-            }));
+            nodes_json.push(NodeJson {
+                node_id: node.node_id.clone(),
+                kind: node.kind.clone(),
+                cache: "hit".to_string(),
+                execute_ms: node.timing.execute_ms,
+                reported_reason: None,
+                observed_reason: None,
+                input_changes: vec![],
+                dep_changes: vec![],
+            });
             continue;
         }
 
@@ -1070,99 +1132,82 @@ fn cmd_explain_json(
         let explanation = NodeRebuildExplanation::compute(node, prev_node);
 
         if let Some(expl) = explanation {
-            let mut input_changes = Vec::new();
-            for change in &expl.input_changes {
-                input_changes.push(json!({
-                    "label": change.label,
-                    "old_value": change.old_value,
-                    "new_value": change.new_value,
-                }));
-            }
+            let input_changes: Vec<InputChangeJson> = expl.input_changes.iter().map(|change| {
+                InputChangeJson {
+                    label: change.label.clone(),
+                    old_value: change.old_value.clone(),
+                    new_value: change.new_value.clone(),
+                }
+            }).collect();
 
-            let mut dep_changes = Vec::new();
-            for change in &expl.dep_changes {
+            let dep_changes: Vec<DepChangeJson> = expl.dep_changes.iter().map(|change| {
                 use vx_report::DepChangeKind;
 
-                let change_json = match &change.change {
-                    DepChangeKind::Added {
-                        rlib_hash,
-                        manifest_hash,
-                    } => json!({
-                        "kind": "added",
-                        "rlib_hash": rlib_hash,
-                        "manifest_hash": manifest_hash,
-                    }),
-                    DepChangeKind::Removed {
-                        rlib_hash,
-                        manifest_hash,
-                    } => json!({
-                        "kind": "removed",
-                        "rlib_hash": rlib_hash,
-                        "manifest_hash": manifest_hash,
-                    }),
-                    DepChangeKind::RlibChanged {
-                        old_rlib,
-                        new_rlib,
-                        old_manifest,
-                        new_manifest,
-                    } => json!({
-                        "kind": "rlib_changed",
-                        "old_rlib": old_rlib,
-                        "new_rlib": new_rlib,
-                        "old_manifest": old_manifest,
-                        "new_manifest": new_manifest,
-                    }),
-                    DepChangeKind::ManifestChanged {
-                        rlib_hash,
-                        old_manifest,
-                        new_manifest,
-                    } => json!({
-                        "kind": "manifest_changed",
-                        "rlib_hash": rlib_hash,
-                        "old_manifest": old_manifest,
-                        "new_manifest": new_manifest,
-                    }),
+                let change_kind = match &change.change {
+                    DepChangeKind::Added { rlib_hash, manifest_hash } => {
+                        DepChangeKindJson::Added {
+                            rlib_hash: rlib_hash.clone(),
+                            manifest_hash: manifest_hash.clone(),
+                        }
+                    }
+                    DepChangeKind::Removed { rlib_hash, manifest_hash } => {
+                        DepChangeKindJson::Removed {
+                            rlib_hash: rlib_hash.clone(),
+                            manifest_hash: manifest_hash.clone(),
+                        }
+                    }
+                    DepChangeKind::RlibChanged { old_rlib, new_rlib, old_manifest, new_manifest } => {
+                        DepChangeKindJson::RlibChanged {
+                            old_rlib: old_rlib.clone(),
+                            new_rlib: new_rlib.clone(),
+                            old_manifest: old_manifest.clone(),
+                            new_manifest: new_manifest.clone(),
+                        }
+                    }
+                    DepChangeKind::ManifestChanged { rlib_hash, old_manifest, new_manifest } => {
+                        DepChangeKindJson::ManifestChanged {
+                            rlib_hash: rlib_hash.clone(),
+                            old_manifest: old_manifest.clone(),
+                            new_manifest: new_manifest.clone(),
+                        }
+                    }
                 };
 
-                dep_changes.push(json!({
-                    "extern_name": change.extern_name,
-                    "crate_id": change.crate_id,
-                    "change": change_json,
-                }));
-            }
+                DepChangeJson {
+                    extern_name: change.extern_name.clone(),
+                    crate_id: change.crate_id.clone(),
+                    change: change_kind,
+                }
+            }).collect();
 
-            nodes_json.push(json!({
-                "node_id": expl.node_id,
-                "kind": node.kind,
-                "cache": "miss",
-                "reported_reason": expl.reported_reason.to_string(),
-                "observed_reason": expl.observed_reason.to_string(),
-                "execute_ms": node.timing.execute_ms,
-                "input_changes": input_changes,
-                "dep_changes": dep_changes,
-            }));
+            nodes_json.push(NodeJson {
+                node_id: expl.node_id.clone(),
+                kind: node.kind.clone(),
+                cache: "miss".to_string(),
+                execute_ms: node.timing.execute_ms,
+                reported_reason: Some(expl.reported_reason.to_string()),
+                observed_reason: Some(expl.observed_reason.to_string()),
+                input_changes,
+                dep_changes,
+            });
         }
     }
 
     // Compute fanout
     let fanout = FanoutAnalysis::compute(report);
-    let mut fanout_json = serde_json::Map::new();
-    for (crate_id, dependents) in &fanout.fanout_map {
-        fanout_json.insert(crate_id.clone(), json!(dependents));
-    }
 
-    let output = json!({
-        "run_id": report.run_id.to_string(),
-        "prev_run_id": prev_report.map(|r| r.run_id.to_string()),
-        "workspace_root": report.workspace_root,
-        "profile": report.profile,
-        "target_triple": report.target_triple,
-        "success": report.success,
-        "duration_ms": report.duration_ms(),
-        "nodes": nodes_json,
-        "fanout": fanout_json,
-    });
+    let output = ExplainOutput {
+        run_id: report.run_id.to_string(),
+        prev_run_id: prev_report.map(|r| r.run_id.to_string()),
+        workspace_root: report.workspace_root.clone(),
+        profile: report.profile.clone(),
+        target_triple: report.target_triple.clone(),
+        success: report.success,
+        duration_ms: report.duration_ms(),
+        nodes: nodes_json,
+        fanout: fanout.fanout_map.clone(),
+    };
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    println!("{}", facet_json::to_string_pretty(&output));
     Ok(())
 }

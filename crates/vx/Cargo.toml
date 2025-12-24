@@ -6,13 +6,13 @@ edition.workspace = true
 [dependencies]
 facet = { workspace = true }
 facet-args = { workspace = true }
+facet-json = { workspace = true }
 eyre = { workspace = true }
 owo-colors = { workspace = true }
 camino = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-serde_json = { workspace = true }
 rapace = { workspace = true }
 ur-taking-me-with-you = { workspace = true }
 indicatif = "0.17"
