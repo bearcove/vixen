@@ -1,5 +1,13 @@
 # Vixen Development Guide
 
+## IMPORTANT: Always Install After Changes
+
+**After making ANY code changes**, you MUST run:
+```bash
+cargo xtask install
+```
+This rebuilds and installs the binaries to `~/.cargo/bin` so your changes take effect.
+
 ## Testing vx build manually
 
 To test the vx build system end-to-end:
@@ -23,7 +31,7 @@ To test the vx build system end-to-end:
 3. **Check logs**:
    - Oort logs: `~/.vx/oort.log`
    - Rhea logs: `~/.vx/rhea.log`
-   - Aether logs are shown in the terminal
+   - Aether logs: `~/.vx/aether.log`
 
 4. **Clean state for testing**:
    ```bash
