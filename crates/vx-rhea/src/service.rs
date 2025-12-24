@@ -3,8 +3,8 @@ use jiff::Zoned;
 use std::process::Command;
 use std::time::Instant;
 use tracing::{debug, info, warn};
-use vx_oort_proto::ServiceVersion;
-use vx_oort_proto::{NodeId, NodeManifest, OutputEntry};
+use vx_cass_proto::ServiceVersion;
+use vx_cass_proto::{NodeId, NodeManifest, OutputEntry};
 use vx_rhea_proto::{
     CcCompileRequest, CcCompileResult, RHEA_PROTOCOL_VERSION, Rhea, RustCompileRequest,
     RustCompileResult,

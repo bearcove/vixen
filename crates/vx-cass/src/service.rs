@@ -1,27 +1,27 @@
 use jiff::Timestamp;
-use vx_oort_proto::Oort;
-use vx_oort_proto::{
+use vx_cass_proto::Cass;
+use vx_cass_proto::{
     Blake3Hash, BlobHash, CacheKey, EnsureRegistryCrateResult, EnsureStatus, EnsureToolchainResult,
     IngestTreeRequest, IngestTreeResult, ManifestHash, MaterializationPlan, MaterializeStep,
-    NodeManifest, OORT_PROTOCOL_VERSION, PublishResult, RegistryCrateManifest, RegistrySpec,
+    NodeManifest, CASS_PROTOCOL_VERSION, PublishResult, RegistryCrateManifest, RegistrySpec,
     RegistrySpecKey, RustToolchainSpec, ServiceVersion, TREE_MANIFEST_SCHEMA_VERSION,
     ToolchainKind, ToolchainManifest, ToolchainSpecKey, TreeManifest, ZigToolchainSpec,
 };
 
 use crate::registry::download_crate;
-use crate::types::OortService;
+use crate::types::CassService;
 use vx_io::atomic_write;
 
 const CRATES_IO_REGISTRY: &str = "https://crates.io";
 const REGISTRY_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MATERIALIZATION_LAYOUT_VERSION: u32 = 1;
 
-impl Oort for OortService {
+impl Cass for CassService {
     async fn version(&self) -> ServiceVersion {
         ServiceVersion {
-            service: "vx-oort".to_string(),
+            service: "vx-cass".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: OORT_PROTOCOL_VERSION,
+            protocol_version: CASS_PROTOCOL_VERSION,
         }
     }
 
@@ -206,12 +206,12 @@ impl Oort for OortService {
 
     async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
         // Delegate to the inherent method which handles deduplication via ToolchainManager
-        OortService::ensure_rust_toolchain(self, spec).await
+        CassService::ensure_rust_toolchain(self, spec).await
     }
 
     async fn ensure_zig_toolchain(&self, spec: ZigToolchainSpec) -> EnsureToolchainResult {
         // Delegate to the inherent method
-        OortService::ensure_zig_toolchain(self, spec).await
+        CassService::ensure_zig_toolchain(self, spec).await
     }
 
     async fn lookup_toolchain_spec(&self, spec_key: ToolchainSpecKey) -> Option<Blake3Hash> {

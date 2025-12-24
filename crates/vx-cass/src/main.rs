@@ -1,4 +1,4 @@
-//! vx-oort - Content-Addressed Storage daemon
+//! vx-cass - Content-Addressed Storage daemon
 //!
 //! Provides CAS, toolchain, and registry services over TCP using rapace.
 
@@ -11,20 +11,20 @@ pub(crate) mod types;
 
 use crate::registry::RegistryManager;
 use crate::toolchain::ToolchainManager;
-use crate::types::{OortService, OortServiceInner};
+use crate::types::{CassService, CassServiceInner};
 use camino::Utf8PathBuf;
 use eyre::Result;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use vx_io::atomic_write;
-use vx_oort_proto::OortServer;
-use vx_oort_proto::{
+use vx_cass_proto::CassServer;
+use vx_cass_proto::{
     Blake3Hash, BlobHash, CacheKey, ManifestHash, ToolchainManifest, ToolchainSpecKey,
 };
 
 #[derive(Debug)]
 struct Args {
-    /// Storage root directory (typically .vx/oort)
+    /// Storage root directory (typically .vx/cass)
     root: Utf8PathBuf,
 
     /// VX home directory (typically .vx)
@@ -42,7 +42,7 @@ impl Args {
         });
         let root = format!("{}/oort", vx_home);
 
-        let bind_raw = std::env::var("VX_OORT").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+        let bind_raw = std::env::var("VX_CASS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
         let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
 
         Ok(Args {
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_oort=info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_cass=info")),
         )
         .init();
 
@@ -70,16 +70,16 @@ async fn main() -> Result<()> {
 
     // Initialize oort service
     tracing::info!("Initializing oort at {}", args.root);
-    let oort = OortService::new(args.root, args.vx_home);
-    oort.init().await?;
+    let cass = CassService::new(args.root, args.vx_home);
+    cass.init().await?;
 
     // Start TCP server
     let listener = TcpListener::bind(&args.bind).await?;
-    tracing::info!("oort listening on {}", args.bind);
+    tracing::info!("cass listening on {}", args.bind);
 
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let oort = oort.clone();
+        let cass = cass.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
@@ -88,9 +88,9 @@ async fn main() -> Result<()> {
             let transport = rapace::Transport::stream(socket);
 
             // Serve the oort service
-            // Note: OortService implements the Oort trait, which is the only rapace service
+            // Note: CassService implements the CAS trait, which is the only rapace service
             // Toolchain and registry are internal implementation details, not separate services
-            let server = OortServer::new(oort);
+            let server = CassServer::new(cass);
             if let Err(e) = server.serve(transport).await {
                 tracing::warn!("Connection error from {}: {}", peer_addr, e);
             }
@@ -100,10 +100,10 @@ async fn main() -> Result<()> {
     }
 }
 
-impl OortService {
+impl CassService {
     fn new(root: Utf8PathBuf, vx_home: Utf8PathBuf) -> Self {
         Self {
-            inner: Arc::new(OortServiceInner {
+            inner: Arc::new(CassServiceInner {
                 root,
                 vx_home,
                 toolchain_manager: ToolchainManager::new(),

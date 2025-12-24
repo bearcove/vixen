@@ -12,7 +12,7 @@
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use vx_oort_proto::{Blake3Hash, TreeManifest};
+use vx_cass_proto::{Blake3Hash, TreeManifest};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TarballError {
@@ -369,7 +369,7 @@ pub async fn materialize_tree(
     dest: &Utf8Path,
     get_blob: impl AsyncFn(Blake3Hash) -> Result<Vec<u8>, String>,
 ) -> Result<(), TarballError> {
-    use vx_oort_proto::TreeEntryKind;
+    use vx_cass_proto::TreeEntryKind;
 
     // Create destination directory
     tokio::fs::create_dir_all(dest)

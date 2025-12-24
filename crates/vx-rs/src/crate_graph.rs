@@ -25,7 +25,7 @@ use miette::Diagnostic;
 use thiserror::Error;
 use vx_manifest::lockfile::{CargoLock, CargoLockExt, LockfileError, ReachablePackages};
 use vx_manifest::{Edition, Manifest, ManifestError};
-use vx_oort_proto::Blake3Hash;
+use vx_cass_proto::Blake3Hash;
 
 /// Errors during crate graph construction
 #[derive(Debug, Error, Diagnostic)]

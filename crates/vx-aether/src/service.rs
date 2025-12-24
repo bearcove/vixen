@@ -20,8 +20,8 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 use vx_aether_proto::{Aether, AETHER_PROTOCOL_VERSION, BuildRequest, BuildResult, ProgressListenerClient, ActionType};
-use vx_oort_proto::{
-    Blake3Hash, EnsureStatus, IngestTreeRequest, OortClient, RegistrySpec, RustChannel,
+use vx_cass_proto::{
+    Blake3Hash, EnsureStatus, IngestTreeRequest, CassClient, RegistrySpec, RustChannel,
     RustComponent, RustToolchainSpec, ServiceVersion, TreeFile,
 };
 use vx_rhea_proto::{RheaClient, RustCompileRequest, RustDep};
@@ -53,7 +53,7 @@ pub struct AcquiredToolchains {
 #[derive(Clone)]
 pub struct AetherService {
     /// CAS client for content-addressed storage
-    cas: Arc<OortClient>,
+    cas: Arc<CassClient>,
 
     /// Exec client for compilation
     exec: Arc<RheaClient>,
@@ -111,7 +111,7 @@ impl AetherService {
 
     /// Create a new daemon service
     pub async fn new(
-        cas: Arc<OortClient>,
+        cas: Arc<CassClient>,
         exec: Arc<RheaClient>,
         vx_home: Utf8PathBuf,
         exec_host_triple: String,
@@ -339,7 +339,7 @@ impl AetherService {
 
     /// Acquire a single registry crate
     async fn acquire_single_registry_crate(
-        cas: Arc<OortClient>,
+        cas: Arc<CassClient>,
         name: String,
         version: String,
         checksum: String,
@@ -476,7 +476,7 @@ impl AetherService {
 
         // Action graph execution (Phase 2)
         use crate::action_graph::ActionGraph;
-        use vx_oort_proto::RustChannel;
+        use vx_cass_proto::RustChannel;
 
         let action_graph = ActionGraph::from_crate_graph(
             &graph,

@@ -8,4 +8,4 @@ facet = { workspace = true }
 rapace = { workspace = true }
 facet-postcard = { workspace = true, features = ["camino"] }
 
-vx-oort-proto = { workspace = true }
+vx-cass-proto = { workspace = true }

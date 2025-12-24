@@ -13,7 +13,7 @@ use tracing::{debug, info, trace, warn};
 use crate::action_graph::{Action, ActionGraph};
 use crate::error::AetherError;
 use vx_aether_proto::{ProgressListenerClient, ActionType};
-use vx_oort_proto::{Blake3Hash, OortClient};
+use vx_cass_proto::{Blake3Hash, CassClient};
 use vx_rhea_proto::RheaClient;
 use vx_rs::CrateId;
 
@@ -110,8 +110,8 @@ pub struct Executor {
     /// Progress listener client (for reporting progress to vx CLI)
     progress_listener: Option<Arc<ProgressListenerClient>>,
 
-    /// Oort client (CAS)
-    cas: Arc<OortClient>,
+    /// CAS client (CAS)
+    cas: Arc<CassClient>,
 
     /// Rhea client for execution
     exec: Arc<RheaClient>,
@@ -140,7 +140,7 @@ impl Executor {
     pub fn new(
         graph: ActionGraph,
         progress_listener: Option<Arc<ProgressListenerClient>>,
-        cas: Arc<OortClient>,
+        cas: Arc<CassClient>,
         exec: Arc<RheaClient>,
         db: Arc<crate::db::Database>,
         workspace_root: camino::Utf8PathBuf,
@@ -389,7 +389,7 @@ impl Executor {
 /// Execute a single action
 async fn execute_action(
     action: Action,
-    cas: &Arc<OortClient>,
+    cas: &Arc<CassClient>,
     exec: &Arc<RheaClient>,
     db: &Arc<crate::db::Database>,
     results: &Arc<RwLock<HashMap<NodeIndex, ActionResult>>>,
@@ -400,7 +400,7 @@ async fn execute_action(
 ) -> Result<ActionResult, AetherError> {
     use camino::Utf8PathBuf;
     use vx_rhea_proto::{RustCompileRequest, RustDep};
-    use vx_oort_proto::{TreeFile, IngestTreeRequest};
+    use vx_cass_proto::{TreeFile, IngestTreeRequest};
     use vx_rs::crate_graph::CrateSource;
     use crate::queries::*;
 
@@ -408,7 +408,7 @@ async fn execute_action(
 
     match action {
         Action::AcquireToolchain { channel, target_triple } => {
-            use vx_oort_proto::{RustToolchainSpec, RustComponent, EnsureStatus};
+            use vx_cass_proto::{RustToolchainSpec, RustComponent, EnsureStatus};
 
             let spec = RustToolchainSpec {
                 channel,
@@ -455,7 +455,7 @@ async fn execute_action(
         }
 
         Action::AcquireRegistryCrate { name, version, checksum } => {
-            use vx_oort_proto::{RegistrySpec, EnsureStatus};
+            use vx_cass_proto::{RegistrySpec, EnsureStatus};
 
             let spec = RegistrySpec {
                 registry_url: "https://crates.io".to_string(),

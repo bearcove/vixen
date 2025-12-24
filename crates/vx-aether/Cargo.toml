@@ -22,7 +22,7 @@ miette-arborium = { version = "2.4.5", features = ["lang-toml", "lang-rust"] }
 indicatif = "0.17"
 petgraph = "0.6"
 
-vx-oort-proto = { workspace = true }
+vx-cass-proto = { workspace = true }
 vx-cc = { path = "../vx-cc" }
 vx-rhea-proto = { workspace = true }
 vx-aether-proto = { workspace = true }

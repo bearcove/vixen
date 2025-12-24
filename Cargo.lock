@@ -2830,10 +2830,10 @@ dependencies = [
  "tracing-subscriber",
  "ur-taking-me-with-you",
  "vx-aether-proto",
+ "vx-cass-proto",
  "vx-cc",
  "vx-io",
  "vx-manifest",
- "vx-oort-proto",
  "vx-report",
  "vx-rhea-proto",
  "vx-rs",
@@ -2847,7 +2847,7 @@ dependencies = [
  "camino",
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "rapace",
- "vx-oort-proto",
+ "vx-cass-proto",
 ]
 
 [[package]]
@@ -2855,45 +2855,12 @@ name = "vx-cache"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "vx-oort-proto",
+ "vx-cass-proto",
  "vx-rhea-proto",
 ]
 
 [[package]]
-name = "vx-cc"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "camino",
- "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
- "thiserror 2.0.17",
- "vx-oort-proto",
-]
-
-[[package]]
-name = "vx-io"
-version = "0.1.0"
-dependencies = [
- "camino",
- "eyre",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "vx-manifest"
-version = "0.1.0"
-dependencies = [
- "camino",
- "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
- "facet-cargo-toml",
- "miette",
- "tempfile",
- "thiserror 2.0.17",
-]
-
-[[package]]
-name = "vx-oort"
+name = "vx-cass"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -2921,14 +2888,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ur-taking-me-with-you",
+ "vx-cass-proto",
  "vx-io",
- "vx-oort-proto",
  "vx-tarball",
  "vx-toolchain",
 ]
 
 [[package]]
-name = "vx-oort-proto"
+name = "vx-cass-proto"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -2940,6 +2907,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "vx-cc"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "camino",
+ "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
+ "thiserror 2.0.17",
+ "vx-cass-proto",
+]
+
+[[package]]
+name = "vx-io"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "eyre",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "vx-manifest"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
+ "facet-cargo-toml",
+ "miette",
+ "tempfile",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "vx-report"
 version = "0.1.0"
 dependencies = [
@@ -2947,7 +2947,7 @@ dependencies = [
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-json",
  "ulid",
- "vx-oort-proto",
+ "vx-cass-proto",
 ]
 
 [[package]]
@@ -2970,9 +2970,9 @@ dependencies = [
  "tracing-subscriber",
  "ur-taking-me-with-you",
  "vx-cache",
+ "vx-cass-proto",
  "vx-cc",
  "vx-io",
- "vx-oort-proto",
  "vx-rhea-proto",
  "vx-tarball",
 ]
@@ -2984,7 +2984,7 @@ dependencies = [
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-postcard",
  "rapace",
- "vx-oort-proto",
+ "vx-cass-proto",
 ]
 
 [[package]]
@@ -3001,8 +3001,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "tracing",
+ "vx-cass-proto",
  "vx-manifest",
- "vx-oort-proto",
 ]
 
 [[package]]
@@ -3018,7 +3018,7 @@ dependencies = [
  "tokio-tar",
  "tokio-util",
  "tracing",
- "vx-oort-proto",
+ "vx-cass-proto",
 ]
 
 [[package]]
@@ -3038,7 +3038,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
- "vx-oort-proto",
+ "vx-cass-proto",
  "walkdir",
 ]
 

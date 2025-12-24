@@ -102,7 +102,7 @@ fn init_tracing_with_tui(tui: tui::TuiHandle) {
     // Default to info for vx crates, warn for everything else
     // Can be overridden with RUST_LOG env var
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("warn,vx=info,vx_aether=info,vx_oort=info,vx_toolchain=info,vx_rhea=info")
+        EnvFilter::new("warn,vx=info,vx_aether=info,vx_cass=info,vx_toolchain=info,vx_rhea=info")
     });
 
     tracing_subscriber::registry()
@@ -114,7 +114,7 @@ fn init_tracing_with_tui(tui: tui::TuiHandle) {
 /// Initialize basic tracing to stderr (for non-build commands)
 fn init_tracing_stderr() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("warn,vx=info,vx_aether=info,vx_oort=info,vx_toolchain=info,vx_rhea=info")
+        EnvFilter::new("warn,vx=info,vx_aether=info,vx_cass=info,vx_toolchain=info,vx_rhea=info")
     });
 
     tracing_subscriber::fmt()

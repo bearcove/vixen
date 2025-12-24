@@ -5,24 +5,24 @@ use tokio::sync::Semaphore;
 
 use crate::{RegistryManager, toolchain::ToolchainManager};
 
-/// Oort service implementation
+/// CAS service implementation
 #[derive(Clone)]
-pub(crate) struct OortService {
+pub(crate) struct CassService {
     /// Inner state
-    pub(crate) inner: Arc<OortServiceInner>,
+    pub(crate) inner: Arc<CassServiceInner>,
 }
 
-impl std::ops::Deref for OortService {
-    type Target = OortServiceInner;
+impl std::ops::Deref for CassService {
+    type Target = CassServiceInner;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-/// Oort service implementation
-pub(crate) struct OortServiceInner {
-    /// Root directory for CAS storage (typically .vx/oort)
+/// CAS service implementation
+pub(crate) struct CassServiceInner {
+    /// Root directory for CAS storage (typically .vx/cass)
     pub(crate) root: Utf8PathBuf,
 
     /// VX home directory (typically .vx) - parent of root, used for toolchain spec mappings

@@ -15,7 +15,7 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["fancy-no-backtrace"] }
 ra-ap-rustc_lexer = "0.144.0"
-vx-oort-proto = { workspace = true }
+vx-cass-proto = { workspace = true }
 vx-manifest = { workspace = true }
 
 [dev-dependencies]

@@ -1,7 +1,7 @@
-//! Registry crate acquisition for oort.
+//! Registry crate acquisition for cass.
 //!
 //! Downloads .crate tarballs from crates.io, validates checksums and structure,
-//! and stores them in oort.
+//! and stores them in cass.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use thiserror::Error;
-use vx_oort_proto::Blake3Hash;
-use vx_oort_proto::{
+use vx_cass_proto::Blake3Hash;
+use vx_cass_proto::{
     EnsureRegistryCrateResult, EnsureStatus, RegistryCrateManifest, RegistrySpecKey,
 };
 
-use crate::OortService;
+use crate::CassService;
 use vx_io::atomic_write;
 
 /// Maximum retry attempts for transient failures
@@ -210,7 +210,7 @@ fn is_retryable_error(error: &DownloadError) -> bool {
 // OortRegistry Implementation
 // =============================================================================
 
-impl OortService {
+impl CassService {
     /// Get the registry spec directory
     fn registry_spec_dir(&self) -> camino::Utf8PathBuf {
         self.root.join("registry/spec")

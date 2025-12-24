@@ -6,7 +6,7 @@ use facet::Facet;
 use std::collections::HashMap;
 
 use crate::{ToolchainError, detect_host_triple};
-use vx_oort_proto::{Blake3Hash, RustChannel, RustComponent, RustToolchainSpec};
+use vx_cass_proto::{Blake3Hash, RustChannel, RustComponent, RustToolchainSpec};
 
 /// Parse a channel string like "stable", "beta", or "nightly-2024-02-01"
 pub fn parse_rust_channel(s: &str) -> Result<RustChannel, ToolchainError> {

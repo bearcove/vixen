@@ -7,7 +7,7 @@ use crate::db::Db;
 use crate::inputs::*;
 use picante::PicanteResult;
 use tracing::debug;
-use vx_oort_proto::{Blake3Hash, CacheKey, NodeId};
+use vx_cass_proto::{Blake3Hash, CacheKey, NodeId};
 
 // =============================================================================
 // RUST CACHE KEYS
@@ -32,7 +32,7 @@ pub async fn cache_key_compile_bin<DB: Db>(
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"vx-cache-key-v");
-    hasher.update(&vx_oort_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(&vx_cass_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
     hasher.update(b"rust_toolchain:");
@@ -104,7 +104,7 @@ pub async fn cache_key_compile_rlib<DB: Db>(
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"vx-rlib-cache-key-v");
-    hasher.update(&vx_oort_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(&vx_cass_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
     hasher.update(b"rust_toolchain:");
@@ -177,7 +177,7 @@ pub async fn cache_key_compile_rlib_with_deps<DB: Db>(
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"vx-rlib-cache-key-v");
-    hasher.update(&vx_oort_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(&vx_cass_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
     hasher.update(b"rust_toolchain:");
@@ -240,7 +240,7 @@ pub async fn cache_key_compile_bin_with_deps<DB: Db>(
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"vx-bin-deps-cache-key-v");
-    hasher.update(&vx_oort_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(&vx_cass_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
     hasher.update(b"rust_toolchain:");
@@ -342,7 +342,7 @@ pub async fn cache_key_cc_compile<DB: Db>(
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"vx-cc-cache-key-v");
-    hasher.update(&vx_oort_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(&vx_cass_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
     hasher.update(b"toolchain:");
@@ -405,7 +405,7 @@ pub async fn cache_key_cc_link<DB: Db>(
     let mut hasher = blake3::Hasher::new();
 
     hasher.update(b"vx-cc-link-cache-key-v");
-    hasher.update(&vx_oort_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
+    hasher.update(&vx_cass_proto::CACHE_KEY_SCHEMA_VERSION.to_le_bytes());
     hasher.update(b"\n");
 
     hasher.update(b"toolchain:");

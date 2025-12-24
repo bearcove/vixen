@@ -7,4 +7,4 @@ edition.workspace = true
 facet = { workspace = true }
 rapace = { workspace = true }
 camino = { workspace = true }
-vx-oort-proto = { workspace = true }
+vx-cass-proto = { workspace = true }

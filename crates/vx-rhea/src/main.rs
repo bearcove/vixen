@@ -24,7 +24,7 @@ use eyre::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use vx_oort_proto::{Blake3Hash, OortClient};
+use vx_cass_proto::{Blake3Hash, CassClient};
 use vx_rhea_proto::RheaServer;
 
 use crate::registry::RegistryMaterializer;
@@ -60,7 +60,7 @@ impl Args {
         let registry_cache_dir = Utf8PathBuf::from(&vx_home).join("registry");
 
         let cas_endpoint_raw =
-            std::env::var("VX_OORT").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
+            std::env::var("VX_CASS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
         let cas_endpoint = vx_io::net::normalize_tcp_endpoint(&cas_endpoint_raw)?;
 
         let bind_raw = std::env::var("VX_RHEA").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
@@ -76,13 +76,13 @@ impl Args {
 }
 
 /// Connect to CAS and return a client handle
-async fn connect_to_cas(endpoint: &str) -> Result<vx_oort_proto::OortClient> {
+async fn connect_to_cas(endpoint: &str) -> Result<vx_cass_proto::CassClient> {
     let stream = TcpStream::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 
     // Create RPC session and client
     let session = Arc::new(rapace::RpcSession::new(transport));
-    let client = OortClient::new(session.clone());
+    let client = CassClient::new(session.clone());
 
     // CRITICAL: spawn session.run() in background
     // rapace requires explicit receive loop
@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
 /// Inner Exec service implementation
 pub struct RheaServiceInner {
     /// CAS client for storing outputs and fetching toolchains
-    pub(crate) cas: Arc<OortClient>,
+    pub(crate) cas: Arc<CassClient>,
 
     /// Toolchain materialization directory
     pub(crate) toolchains_dir: Utf8PathBuf,
@@ -182,7 +182,7 @@ impl std::ops::Deref for RheaService {
 
 impl RheaService {
     pub fn new(
-        cas: Arc<OortClient>,
+        cas: Arc<CassClient>,
         toolchains_dir: Utf8PathBuf,
         registry_cache_dir: Utf8PathBuf,
     ) -> Self {

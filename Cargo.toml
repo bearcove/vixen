@@ -11,7 +11,7 @@ repository = "https://github.com/bearcove/vx"
 [workspace.dependencies]
 # internal crates
 vx-cache = { path = "crates/vx-cache" }
-vx-oort-proto = { path = "crates/vx-oort-proto" }
+vx-cass-proto = { path = "crates/vx-cass-proto" }
 vx-cc = { path = "crates/vx-cc" }
 vx-rhea-proto = { path = "crates/vx-rhea-proto" }
 vx-manifest = { path = "crates/vx-manifest" }

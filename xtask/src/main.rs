@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn install_all() -> Result<(), Box<dyn std::error::Error>> {
     let binaries = vec![
         "vx",
-        "vx-oort",
+        "vx-cass",
         "vx-rhea",
         "vx-aether",
     ];
@@ -38,7 +38,7 @@ fn install_all() -> Result<(), Box<dyn std::error::Error>> {
         .arg("-p")
         .arg("vx")
         .arg("-p")
-        .arg("vx-oort")
+        .arg("vx-cass")
         .arg("-p")
         .arg("vx-rhea")
         .arg("-p")

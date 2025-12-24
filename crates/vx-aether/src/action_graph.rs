@@ -6,7 +6,7 @@
 
 use petgraph::graph::{DiGraph, NodeIndex};
 use std::collections::HashMap;
-use vx_oort_proto::{Blake3Hash, RustChannel};
+use vx_cass_proto::{Blake3Hash, RustChannel};
 use vx_rs::crate_graph::{CrateGraph, CrateId, CrateSource, CrateType};
 
 use crate::inputs::{BuildConfig, RustCrate, RustToolchain};

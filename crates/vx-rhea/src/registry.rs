@@ -9,8 +9,8 @@ use std::sync::Arc;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
-use vx_oort_proto::{Blake3Hash, OortClient};
-use vx_oort_proto::{RegistryCrateManifest, RegistryMaterializationResult};
+use vx_cass_proto::{Blake3Hash, CassClient};
+use vx_cass_proto::{RegistryCrateManifest, RegistryMaterializationResult};
 use vx_tarball::Compression;
 
 use crate::InflightMaterializations;
@@ -20,7 +20,7 @@ use crate::error::{Result, RheaError};
 ///
 /// Handles global cache extraction and workspace-local copying.
 pub struct RegistryMaterializer {
-    cas: Arc<OortClient>,
+    cas: Arc<CassClient>,
 
     /// Global cache directory (~/.vx/registry)
     global_cache_dir: Utf8PathBuf,
@@ -30,7 +30,7 @@ pub struct RegistryMaterializer {
 }
 
 impl RegistryMaterializer {
-    pub fn new(cas: Arc<OortClient>, global_cache_dir: Utf8PathBuf) -> Self {
+    pub fn new(cas: Arc<CassClient>, global_cache_dir: Utf8PathBuf) -> Self {
         Self {
             cas,
             global_cache_dir,
@@ -267,7 +267,7 @@ impl RegistryMaterializer {
 /// Uses strip_components=1 to remove the top-level <name>-<version>/ directory.
 #[allow(dead_code)]
 async fn extract_crate_tarball(
-    cas: &OortClient,
+    cas: &CassClient,
     blob_hash: Blake3Hash,
     dest: &Utf8Path,
 ) -> Result<()> {

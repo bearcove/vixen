@@ -11,7 +11,7 @@ pub mod zig;
 
 use thiserror::Error;
 
-use vx_oort_proto::{Blake3Hash, RustChannel, RustComponent, RustToolchainSpec};
+use vx_cass_proto::{Blake3Hash, RustChannel, RustComponent, RustToolchainSpec};
 
 // Re-export Rust toolchain functions
 pub use rust::{

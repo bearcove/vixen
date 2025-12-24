@@ -1,5 +1,5 @@
 [package]
-name = "vx-oort-proto"
+name = "vx-cass-proto"
 version.workspace = true
 edition.workspace = true
 

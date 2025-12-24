@@ -18,7 +18,7 @@ To test the vx build system end-to-end:
    ```
    This builds all vixen binaries in release mode and installs them to `~/.cargo/bin`:
    - `vx` - Main CLI
-   - `vx-oort` - Content-Addressed Storage service
+   - `vx-cass` - Content-Addressed Storage service
    - `vx-rhea` - Execution worker service
    - `vx-aether` - Build orchestration daemon
 
@@ -29,7 +29,7 @@ To test the vx build system end-to-end:
    ```
 
 3. **Check logs**:
-   - Oort logs: `~/.vx/oort.log`
+   - Cass logs: `~/.vx/cass.log`
    - Rhea logs: `~/.vx/rhea.log`
    - Aether logs: `~/.vx/aether.log`
 
@@ -47,9 +47,9 @@ The vx build system consists of three services:
   - Manages the action dependency graph
   - Schedules parallel execution using Kahn's algorithm
   - Tracks incremental state with picante
-  - Spawns vx-oort and vx-rhea on demand
+  - Spawns vx-cass and vx-rhea on demand
 
-- **vx-oort**: Content-Addressed Storage service that:
+- **vx-cass**: Content-Addressed Storage service that:
   - Stores build artifacts, toolchains, and source trees
   - Provides hermetic caching by content hash
   - Downloads toolchains from static.rust-lang.org

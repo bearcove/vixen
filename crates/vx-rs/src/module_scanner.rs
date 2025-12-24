@@ -589,7 +589,7 @@ pub fn rust_source_closure(
 pub fn hash_source_closure(
     paths: &[Utf8PathBuf],
     workspace_root: &Utf8Path,
-) -> std::io::Result<vx_oort_proto::Blake3Hash> {
+) -> std::io::Result<vx_cass_proto::Blake3Hash> {
     let mut hasher = blake3::Hasher::new();
 
     // Hash paths for structural changes (sorted order matters)
@@ -608,7 +608,7 @@ pub fn hash_source_closure(
         hasher.update(&content);
     }
 
-    Ok(vx_oort_proto::Blake3Hash(*hasher.finalize().as_bytes()))
+    Ok(vx_cass_proto::Blake3Hash(*hasher.finalize().as_bytes()))
 }
 
 #[cfg(test)]

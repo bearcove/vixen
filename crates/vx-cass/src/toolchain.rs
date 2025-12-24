@@ -4,15 +4,15 @@ use futures_util::StreamExt;
 use jiff::Timestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
-use vx_oort_proto::*;
-use vx_oort_proto::{
+use vx_cass_proto::*;
+use vx_cass_proto::{
     EnsureStatus as ToolchainEnsureStatus, EnsureToolchainResult, RustChannel, RustToolchainSpec,
     TOOLCHAIN_MANIFEST_SCHEMA_VERSION, ToolchainComponentTree, ToolchainKind, ToolchainManifest,
     ToolchainSpecKey, ZigToolchainSpec,
 };
 use vx_tarball::Compression;
 
-use crate::types::OortService;
+use crate::types::CassService;
 
 // =============================================================================
 // HTTP Download Functions (Rust Toolchains)
@@ -103,8 +103,8 @@ type InflightFuture = Arc<tokio::sync::OnceCell<EnsureToolchainResult>>;
 ///
 /// Inflight entries are never removed. This is intentional:
 /// - Memory cost is negligible (one OnceCell per unique ToolchainSpecKey)
-/// - Avoids race between oort lookup miss and inflight insert
-/// - Once oort has the mapping, lookup_fn fast-paths and OnceCell is never awaited
+/// - Avoids race between cass lookup miss and inflight insert
+/// - Once cass has the mapping, lookup_fn fast-paths and OnceCell is never awaited
 pub(crate) struct ToolchainManager {
     inflight: tokio::sync::Mutex<HashMap<ToolchainSpecKey, InflightFuture>>,
 }
@@ -118,14 +118,14 @@ impl ToolchainManager {
 
     /// Ensure a toolchain, deduplicating concurrent requests.
     ///
-    /// `lookup_fn` is async because oort is remote in production.
+    /// `lookup_fn` is async because cass is remote in production.
     pub(crate) async fn ensure(
         &self,
         spec_key: ToolchainSpecKey,
         lookup_fn: impl AsyncFn() -> Option<Blake3Hash>,
         acquire_fn: impl AsyncFn() -> EnsureToolchainResult,
     ) -> EnsureToolchainResult {
-        // Fast path: check if already in oort (async RPC)
+        // Fast path: check if already in CAS (async RPC)
         if let Some(manifest_hash) = lookup_fn().await {
             return EnsureToolchainResult {
                 spec_key: Some(spec_key),
@@ -152,11 +152,11 @@ impl ToolchainManager {
 }
 
 // =============================================================================
-// Toolchain methods (Inherent methods, NOT part of Oort RPC trait)
+// Toolchain methods (Inherent methods, NOT part of CAS RPC trait)
 // =============================================================================
 
-impl OortService {
-    /// Ensure a Rust toolchain exists in oort (internal helper, not an RPC method).
+impl CassService {
+    /// Ensure a Rust toolchain exists in CAS (internal helper, not an RPC method).
     #[tracing::instrument(skip(self), fields(spec_key = tracing::field::Empty))]
     pub async fn ensure_rust_toolchain(&self, spec: RustToolchainSpec) -> EnsureToolchainResult {
         // Validate and compute spec_key first
@@ -414,7 +414,7 @@ impl OortService {
             spec_key = %spec_key.short_hex(),
             toolchain_id = %toolchain_id.short_hex(),
             manifest_hash = %manifest_hash.short_hex(),
-            "stored Rust toolchain in Oort"
+            "stored Rust toolchain in CAS"
         );
 
         EnsureToolchainResult {
@@ -426,7 +426,7 @@ impl OortService {
         }
     }
 
-    /// Ensure a Zig toolchain exists in Oort (internal helper, not an RPC method).
+    /// Ensure a Zig toolchain exists in CAS (internal helper, not an RPC method).
     pub async fn ensure_zig_toolchain(&self, _spec: ZigToolchainSpec) -> EnsureToolchainResult {
         // TODO: Implement Zig toolchain acquisition
         EnsureToolchainResult {

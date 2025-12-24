@@ -20,7 +20,7 @@ blake3 = { workspace = true }
 futures-util = { workspace = true }
 
 vx-cache = { workspace = true }
-vx-oort-proto = { workspace = true }
+vx-cass-proto = { workspace = true }
 vx-cc = { workspace = true }
 vx-rhea-proto = { workspace = true }
 vx-io = { workspace = true }

@@ -10,6 +10,6 @@ blake3 = { workspace = true }
 camino = { workspace = true }
 facet = { workspace = true }
 thiserror = { workspace = true }
-vx-oort-proto = { workspace = true }
+vx-cass-proto = { workspace = true }
 
 [dev-dependencies]

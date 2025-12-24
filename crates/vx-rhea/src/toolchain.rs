@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use tracing::{debug, info};
-use vx_oort_proto::{Blake3Hash, MaterializeStep};
+use vx_cass_proto::{Blake3Hash, MaterializeStep};
 
 use crate::RheaService;
 use crate::error::{Result, RheaError};

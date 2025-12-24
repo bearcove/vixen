@@ -7,7 +7,7 @@ use std::io::Write;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use thiserror::Error;
-use vx_oort_proto::Blake3Hash;
+use vx_cass_proto::Blake3Hash;
 
 /// Errors that can occur during Zig toolchain operations
 #[derive(Debug, Error)]

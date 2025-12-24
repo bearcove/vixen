@@ -3,7 +3,7 @@
 use camino::Utf8PathBuf;
 use facet::Facet;
 use thiserror::Error;
-use vx_oort_proto::Blake3Hash;
+use vx_cass_proto::Blake3Hash;
 
 /// Errors that can occur during aether operations.
 #[derive(Debug, Clone, Error, Facet)]

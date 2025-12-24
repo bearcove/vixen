@@ -1,9 +1,9 @@
-//! Simple test client to verify vx-oort TCP connectivity
+//! Simple test client to verify vx-cass TCP connectivity
 
 use eyre::Result;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use vx_oort_proto::OortClient;
+use vx_cass_proto::CassClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -30,11 +30,11 @@ async fn main() -> Result<()> {
     });
 
     // Create CAS client
-    let client = OortClient::new(session.clone());
+    let client = CassClient::new(session.clone());
 
     // Test: put a blob
     tracing::info!("Testing put_blob...");
-    let test_data = b"Hello from vx-oort test client!";
+    let test_data = b"Hello from vx-cass test client!";
     let blob_hash = client.put_blob(test_data.to_vec()).await?;
     tracing::info!("Put blob: {}", blob_hash.to_hex());
 

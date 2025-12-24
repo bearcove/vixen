@@ -19,7 +19,7 @@
 //! - Materialize final outputs locally (if needed)
 
 use facet::Facet;
-use vx_oort_proto::{ManifestHash, ServiceVersion};
+use vx_cass_proto::{ManifestHash, ServiceVersion};
 
 /// Rhea protocol version.
 /// Bump this when making breaking changes to the Rhea RPC interface.
