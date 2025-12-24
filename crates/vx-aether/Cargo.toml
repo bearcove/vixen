@@ -28,6 +28,7 @@ vx-rhea-proto = { workspace = true }
 vx-aether-proto = { workspace = true }
 vx-io = { workspace = true }
 vx-manifest = { workspace = true }
+vx-project = { workspace = true }
 vx-report = { workspace = true }
 vx-rs = { path = "../vx-rs" }
 vx-toolchain = { path = "../vx-toolchain" }

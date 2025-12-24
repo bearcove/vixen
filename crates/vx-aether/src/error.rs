@@ -44,6 +44,9 @@ pub enum AetherError {
     #[error("failed to build crate graph: {0}")]
     CrateGraph(String),
 
+    #[error("invalid manifest: {0}")]
+    InvalidManifest(String),
+
     #[error("failed to compute source closure for {crate_name}: {message}")]
     SourceClosure { crate_name: String, message: String },
 

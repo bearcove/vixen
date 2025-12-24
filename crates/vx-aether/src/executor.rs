@@ -1004,5 +1004,56 @@ async fn execute_action(
                 was_cached,
             })
         }
+
+        Action::AcquireZigToolchain { version } => {
+            // TODO: Implement Zig toolchain acquisition
+            // - Download from ziglang.org
+            // - Extract and hash
+            // - Ingest to CAS
+            // - Return toolchain ID
+            warn!(version = %version, "Zig toolchain acquisition not yet implemented");
+            Err(AetherError::ToolchainAcquisition(
+                format!("Zig toolchain {} acquisition not yet implemented", version)
+            ))
+        }
+
+        Action::CompileCObject { source, output, target_triple, profile } => {
+            // TODO: Implement C object compilation
+            // - Materialize Zig toolchain from CAS
+            // - Run `zig cc -c source -o output -target target_triple`
+            // - Ingest output to CAS
+            // - Return output hash
+            warn!(
+                source = %source,
+                output = %output,
+                target = %target_triple,
+                profile = %profile,
+                "C object compilation not yet implemented"
+            );
+            Err(AetherError::Compilation {
+                crate_name: source.clone(),
+                message: "C compilation not yet implemented".to_string(),
+            })
+        }
+
+        Action::LinkCBinary { name, objects, output, target_triple } => {
+            // TODO: Implement C binary linking
+            // - Materialize Zig toolchain from CAS
+            // - Materialize object files from CAS
+            // - Run `zig cc objects... -o output -target target_triple`
+            // - Ingest output to CAS
+            // - Return output hash and path
+            warn!(
+                name = %name,
+                objects = ?objects,
+                output = %output,
+                target = %target_triple,
+                "C binary linking not yet implemented"
+            );
+            Err(AetherError::Compilation {
+                crate_name: name.clone(),
+                message: "C linking not yet implemented".to_string(),
+            })
+        }
     }
 }

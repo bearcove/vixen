@@ -424,6 +424,62 @@ impl AetherService {
         Ok(results.into_iter().collect())
     }
 
+    /// Build from vx.kdl manifest (C, Rust, or mixed projects)
+    async fn build_from_vx_kdl(
+        &self,
+        _request: BuildRequest,
+        vx_kdl_path: camino::Utf8PathBuf,
+    ) -> Result<BuildResult> {
+        use vx_project::{VxManifest, Language};
+
+        // Parse vx.kdl
+        let manifest = VxManifest::from_path(&vx_kdl_path)
+            .map_err(|e| AetherError::InvalidManifest(format!("Failed to parse vx.kdl: {}", e)))?;
+
+        manifest.validate()
+            .map_err(|e| AetherError::InvalidManifest(format!("Invalid vx.kdl: {}", e)))?;
+
+        // Determine project language
+        let language = manifest.project.language()
+            .ok_or_else(|| AetherError::InvalidManifest(
+                format!("Unknown language: {}", manifest.project.lang)
+            ))?;
+
+        match language {
+            Language::C => {
+                info!(
+                    project = %manifest.project.name,
+                    bins = manifest.bins.len(),
+                    "C project detected"
+                );
+
+                // TODO: Implement C project building
+                // - Create action graph with AcquireZigToolchain, CompileCObject, LinkCBinary
+                // - Execute action graph
+                // - Return build result
+
+                Ok(BuildResult {
+                    success: false,
+                    message: "C compilation not yet implemented".to_string(),
+                    cached: false,
+                    duration_ms: 0,
+                    output_path: None,
+                    error: Some("C compilation support is coming soon - action types are defined but execution is not yet implemented".to_string()),
+                    total_actions: 0,
+                    cache_hits: 0,
+                    rebuilt: 0,
+                })
+            }
+            Language::Rust => {
+                // TODO: Convert vx.kdl Rust project to Cargo.toml path
+                // For now, fail with helpful message
+                Err(AetherError::InvalidManifest(
+                    "Rust projects via vx.kdl not yet supported - use Cargo.toml for now".to_string()
+                ))
+            }
+        }
+    }
+
     /// Build a project.
     pub async fn do_build(&self, request: BuildRequest) -> Result<BuildResult> {
         let project_path = &request.project_path;
@@ -431,6 +487,14 @@ impl AetherService {
 
         let target_triple = self.exec_host_triple.clone();
 
+        // Check for vx.kdl first (unified project manifest)
+        let vx_kdl_path = project_path.join("vx.kdl");
+        if vx_kdl_path.exists() {
+            info!("Found vx.kdl, using unified project manifest");
+            return self.build_from_vx_kdl(request, vx_kdl_path).await;
+        }
+
+        // Fall back to Cargo.toml (Rust-only projects)
         // Build the crate graph with lockfile support
         let graph = CrateGraph::build_with_lockfile(project_path)
             .map_err(|e| AetherError::CrateGraph(format!("{:?}", miette::Report::new(e))))?;

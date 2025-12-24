@@ -3118,6 +3118,7 @@ dependencies = [
  "vx-cc",
  "vx-io",
  "vx-manifest",
+ "vx-project",
  "vx-report",
  "vx-rhea-proto",
  "vx-rs",
