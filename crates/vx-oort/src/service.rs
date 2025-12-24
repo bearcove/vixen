@@ -313,11 +313,25 @@ impl Oort for OortService {
         // Finalize manifest (sorts entries, computes unique blob count)
         manifest.finalize();
 
-        // Store manifest as blob (JSON serialized)
+        // Serialize manifest to JSON
         let manifest_json = facet_json::to_string(&manifest);
         let manifest_hash = ManifestHash::from_bytes(manifest_json.as_bytes());
-        let manifest_path = self.tree_manifest_path(&manifest_hash);
 
+        // Store as blob (for rhea's materialize_tree_from_cas which calls get_blob)
+        let blob_path = self.blob_path(&manifest_hash);
+        if let Err(e) = vx_io::atomic_write(&blob_path, manifest_json.as_bytes()).await {
+            return IngestTreeResult {
+                success: false,
+                manifest_hash: None,
+                file_count: 0,
+                total_bytes: 0,
+                new_blobs: 0,
+                error: Some(format!("failed to write tree manifest blob: {}", e)),
+            };
+        }
+
+        // Also store in tree_manifests (for get_tree_manifest API)
+        let manifest_path = self.tree_manifest_path(&manifest_hash);
         if let Err(e) = vx_io::atomic_write(&manifest_path, manifest_json.as_bytes()).await {
             return IngestTreeResult {
                 success: false,

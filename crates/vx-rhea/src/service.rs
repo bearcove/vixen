@@ -341,8 +341,8 @@ impl Rhea for RheaService {
         }
 
         // 4. Build rustc command
-        let rustc_path = toolchain_dir.join("bin/rustc");
-        let sysroot_path = &toolchain_dir;
+        let rustc_path = toolchain_dir.join("sysroot/rustc/bin/rustc");
+        let sysroot_path = toolchain_dir.join("sysroot");
 
         // Determine output path
         let output_filename = if request.crate_type == "lib" {
