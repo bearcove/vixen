@@ -111,11 +111,25 @@ async fn try_connect(endpoint: &str) -> Result<TcpStream> {
 }
 
 /// Spawn a service binary and return the child process
-fn spawn_service(binary_name: &str, env_vars: &[(&str, &str)]) -> Result<Child> {
+fn spawn_service(binary_name: &str, env_vars: &[(&str, &str)], log_path: &camino::Utf8Path) -> Result<Child> {
+    use std::fs::OpenOptions;
+    use std::process::Stdio;
+
+    // Open log file for appending
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+
     let mut cmd = std::process::Command::new(binary_name);
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
+
+    // Redirect stdout and stderr to log file
+    cmd.stdout(Stdio::from(log_file.try_clone()?));
+    cmd.stderr(Stdio::from(log_file));
+
     ur_taking_me_with_you::spawn_dying_with_parent(cmd).map_err(Into::into)
 }
 
@@ -135,14 +149,17 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
         tracing::info!("Oort not running, spawning vx-oort on {}", args.cas_endpoint);
 
+        let oort_log = args.vx_home.join("oort.log");
         let child = spawn_service(
             "vx-oort",
             &[
                 ("VX_HOME", args.vx_home.as_str()),
                 ("VX_OORT", &args.cas_endpoint),
             ],
+            &oort_log,
         )?;
 
+        tracing::info!("vx-oort logs: {}", oort_log);
         spawn_tracker.lock().await.oort = Some(child);
 
         for (attempt, delay) in backoff_ms.iter().enumerate() {
@@ -173,6 +190,7 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
             args.exec_endpoint
         );
 
+        let rhea_log = args.vx_home.join("rhea.log");
         let child = spawn_service(
             "vx-rhea",
             &[
@@ -180,8 +198,10 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
                 ("VX_OORT", &args.cas_endpoint),
                 ("VX_RHEA", &args.exec_endpoint),
             ],
+            &rhea_log,
         )?;
 
+        tracing::info!("vx-rhea logs: {}", rhea_log);
         spawn_tracker.lock().await.rhea = Some(child);
 
         for (attempt, delay) in backoff_ms.iter().enumerate() {
@@ -202,22 +222,25 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // If spawned by parent, die when parent dies
-    ur_taking_me_with_you::die_with_parent();
-
-    // Create TUI first so we can route tracing to it
+    // FIRST THING: Create TUI and install tracing layer
+    // This MUST happen before ANY other code that might log
     let tui = crate::tui::TuiHandle::new();
     let tui_layer = tui.tracing_layer();
 
-    // Install tracing with TUI layer
     use tracing_subscriber::prelude::*;
+    use tracing_subscriber::fmt;
+
+    // TEMPORARY: Write logs to stderr for debugging instead of TUI
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=trace")),
         )
-        .with(tui_layer)
+        .with(fmt::layer().with_writer(std::io::stderr))
         .init();
+
+    // Now safe to call things that might log
+    ur_taking_me_with_you::die_with_parent();
 
     // Install miette-arborium for rich syntax-highlighted diagnostics
     if let Err(e) = miette_arborium::install_global() {

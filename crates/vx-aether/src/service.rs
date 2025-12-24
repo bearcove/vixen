@@ -9,6 +9,7 @@
 use crate::SpawnTracker;
 use crate::db::Database;
 use crate::error::{AetherError, Result};
+use crate::executor::Executor;
 use crate::inputs::*;
 use crate::queries::*;
 use crate::tui::{ActionType, TuiHandle};
@@ -62,7 +63,7 @@ pub struct AetherService {
     exec_host_triple: String,
 
     /// The picante incremental database
-    db: Arc<Mutex<Database>>,
+    db: Arc<Database>,
 
     /// Path to the picante cache file
     picante_cache: Utf8PathBuf,
@@ -146,7 +147,7 @@ impl AetherService {
             cas,
             exec,
             exec_host_triple,
-            db: Arc::new(Mutex::new(db)),
+            db: Arc::new(db),
             picante_cache: cache_path,
             picante_wal: wal_path,
             wal_writer: Arc::new(Mutex::new(wal_writer)),
@@ -393,12 +394,10 @@ impl AetherService {
         // Set up picante inputs (for cache key computation)
         // We create placeholder toolchain/config inputs since we don't have the actual
         // toolchain yet - it will be acquired by the action graph executor
-        let db = self.db.lock().await;
-
         // Use a placeholder toolchain_id and manifest_hash - these will be acquired dynamically
         let placeholder_hash = Blake3Hash([0u8; 32]);
         let toolchain = RustToolchain::new(
-            &*db,
+            &*self.db,
             placeholder_hash,
             placeholder_hash,
             target_triple.clone(),
@@ -406,7 +405,7 @@ impl AetherService {
         )
         .map_err(|e| AetherError::Picante(e.to_string()))?;
 
-        RustToolchainManifest::set(&*db, placeholder_hash)
+        RustToolchainManifest::set(&*self.db, placeholder_hash)
             .map_err(|e| AetherError::Picante(e.to_string()))?;
 
         let build_key = BuildConfig::compute_key(
@@ -415,7 +414,7 @@ impl AetherService {
             &graph.workspace_root.to_string(),
         );
         let config = BuildConfig::new(
-            &*db,
+            &*self.db,
             build_key,
             profile.to_string(),
             target_triple.clone(),
@@ -425,7 +424,6 @@ impl AetherService {
 
         // Action graph execution (Phase 2)
         use crate::action_graph::ActionGraph;
-        use crate::executor::Executor;
         use vx_oort_proto::RustChannel;
 
         let action_graph = ActionGraph::from_crate_graph(
@@ -434,8 +432,11 @@ impl AetherService {
             target_triple.clone(),
             toolchain,
             config,
-            &*db,
+            &*self.db,
         )?;
+
+        // Dump graph for debugging
+        action_graph.dump_graph();
 
         // Set total number of actions for the TUI
         // Total = 1 toolchain + N registry crates + M compilations
@@ -444,6 +445,7 @@ impl AetherService {
         let max_concurrency = std::thread::available_parallelism()
             .map(|n| n.get() * 2)
             .unwrap_or(16);
+        tracing::info!("SERVICE: creating executor with max_concurrency={}", max_concurrency);
         let mut executor = Executor::new(
             action_graph,
             self.tui.clone(),
@@ -455,11 +457,13 @@ impl AetherService {
             profile.to_string(),
             max_concurrency,
         );
+        tracing::info!("SERVICE: calling executor.execute()");
         executor.execute().await?;
+        tracing::info!("SERVICE: executor.execute() completed");
 
         // Append changes to WAL after build (incremental persistence)
         if let Some(ref mut wal) = *self.wal_writer.lock().await {
-            match db.append_to_wal(wal).await {
+            match self.db.append_to_wal(wal).await {
                 Ok(count) if count > 0 => {
                     info!(path = %self.picante_wal, entries = count, "appended changes to WAL");
                     // Explicit flush to ensure durability (WAL auto-flushes after threshold, but we flush after each build)
@@ -475,10 +479,9 @@ impl AetherService {
                 }
             }
         }
-        drop(db);
 
         // Get execution statistics
-        let exec_stats = executor.get_stats().await;
+        let exec_stats = executor.get_stats();
         let duration = total_start.elapsed();
 
         Ok(BuildResult {
@@ -516,8 +519,8 @@ impl Aether for AetherService {
         tracing::info!("Shutdown requested");
 
         // Compact WAL before shutdown to create a clean snapshot
-        let db = self.db.lock().await;
-        match db
+        match self
+            .db
             .compact_wal(&self.picante_cache, &self.picante_wal, false)
             .await
         {
@@ -532,7 +535,6 @@ impl Aether for AetherService {
                 warn!(error = %e, "failed to compact WAL on shutdown");
             }
         }
-        drop(db);
 
         // Kill spawned services
         self.kill_spawned_services().await;

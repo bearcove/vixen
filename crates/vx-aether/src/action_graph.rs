@@ -141,20 +141,26 @@ impl ActionGraph {
         config: BuildConfig,
         db: &crate::db::Database,
     ) -> Result<Self, crate::error::AetherError> {
+        use tracing::debug;
+
+        debug!("Building action graph from crate graph");
         let mut graph = DiGraph::new();
         let mut crate_to_node = HashMap::new();
         let mut registry_nodes = HashMap::new();
 
         // 1. Create toolchain acquisition action (all compilations depend on this)
+        debug!("Creating toolchain acquisition action");
         let toolchain_node = graph.add_node(ActionNode {
             action: Action::AcquireToolchain {
                 channel: rust_channel,
                 target_triple: target_triple.clone(),
             },
         });
+        debug!(node = ?toolchain_node, "Toolchain node created");
 
         // 2. Create registry crate acquisition actions
-        for registry_crate in crate_graph.iter_registry_crates() {
+        debug!(registry_count = crate_graph.iter_registry_crates().count(), "Creating registry acquisition actions");
+        for (i, registry_crate) in crate_graph.iter_registry_crates().enumerate() {
             let registry_action = graph.add_node(ActionNode {
                 action: Action::AcquireRegistryCrate {
                     name: registry_crate.name.clone(),
@@ -166,10 +172,15 @@ impl ActionGraph {
                 (registry_crate.name.clone(), registry_crate.version.clone()),
                 registry_action,
             );
+            if (i + 1) % 10 == 0 {
+                debug!(created = i + 1, "Registry nodes created");
+            }
         }
+        debug!(total = registry_nodes.len(), "All registry nodes created");
 
         // 3. Create compilation action nodes for all crates
-        for crate_node in crate_graph.nodes.values() {
+        debug!(crate_count = crate_graph.nodes.len(), "Creating compilation actions");
+        for (i, crate_node) in crate_graph.nodes.values().enumerate() {
             // Create RustCrate input
             let crate_id_hex = crate_node.id.short_hex();
             let rust_crate = RustCrate::new(
@@ -220,9 +231,15 @@ impl ActionGraph {
 
             let node_idx = graph.add_node(ActionNode { action });
             crate_to_node.insert(crate_node.id, node_idx);
+
+            if (i + 1) % 10 == 0 {
+                debug!(created = i + 1, "Compilation nodes created");
+            }
         }
+        debug!(total = crate_to_node.len(), "All compilation nodes created");
 
         // 4. Add dependency edges
+        debug!("Adding dependency edges");
         // Edge from dependent → dependency means "dependent needs dependency to complete first"
         for crate_node in crate_graph.nodes.values() {
             let compile_idx = crate_to_node[&crate_node.id];
@@ -245,6 +262,12 @@ impl ActionGraph {
             }
         }
 
+        debug!(
+            nodes = graph.node_count(),
+            edges = graph.edge_count(),
+            "Action graph construction complete"
+        );
+
         Ok(Self {
             graph,
             crate_to_node,
@@ -256,5 +279,64 @@ impl ActionGraph {
     /// Get total number of actions
     pub fn node_count(&self) -> usize {
         self.graph.node_count()
+    }
+
+    /// Dump graph structure for debugging
+    pub fn dump_graph(&self) {
+        use petgraph::Direction::Incoming;
+        use tracing::info;
+
+        // Collect nodes with their dependency counts
+        let mut nodes_info: Vec<_> = self.graph.node_indices().map(|idx| {
+            let node = &self.graph[idx];
+            let outgoing = self.graph.neighbors(idx).count();
+            let incoming = self.graph.neighbors_directed(idx, Incoming).count();
+            (idx, node, outgoing, incoming)
+        }).collect();
+
+        // Count ready nodes
+        let ready_count = nodes_info.iter().filter(|(_, _, out, _)| *out == 0).count();
+
+        info!(
+            nodes = self.graph.node_count(),
+            edges = self.graph.edge_count(),
+            ready_nodes = ready_count,
+            "Graph summary"
+        );
+
+        // Show first few ready nodes as examples
+        let ready_examples: Vec<_> = nodes_info.iter()
+            .filter(|(_, _, out, _)| *out == 0)
+            .take(3)
+            .collect();
+
+        for (idx, node, outgoing, incoming) in ready_examples {
+            info!(
+                node = ?idx,
+                action = node.action.display_name(),
+                incoming = incoming,
+                "Example ready node"
+            );
+        }
+
+        // Show first few non-ready nodes with their deps
+        let blocked_examples: Vec<_> = nodes_info.iter()
+            .filter(|(_, _, out, _)| *out > 0)
+            .take(2)
+            .collect();
+
+        for (idx, node, outgoing, _incoming) in blocked_examples {
+            let deps: Vec<_> = self.graph.neighbors(*idx)
+                .take(3)
+                .map(|dep_idx| self.graph[dep_idx].action.display_name())
+                .collect();
+            info!(
+                node = ?idx,
+                action = node.action.display_name(),
+                dep_count = outgoing,
+                deps = ?deps,
+                "Example blocked node"
+            );
+        }
     }
 }

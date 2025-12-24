@@ -7,8 +7,8 @@ use petgraph::graph::NodeIndex;
 use petgraph::Direction::Incoming;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock, Semaphore};
-use tracing::{debug, info};
+use tokio::sync::{RwLock, Semaphore};
+use tracing::{debug, info, trace, warn};
 
 use crate::action_graph::{Action, ActionGraph};
 use crate::error::AetherError;
@@ -67,29 +67,37 @@ pub struct ExecutionStats {
     pub bin_output: Option<camino::Utf8PathBuf>,
 }
 
+/// Message from spawned task to executor
+enum ExecutorMessage {
+    ActionCompleted {
+        node_idx: NodeIndex,
+        result: Result<ActionResult, AetherError>,
+    },
+}
+
 /// Executor for action graph
 pub struct Executor {
-    /// The action graph (wrapped in RwLock to allow dynamic expansion in future)
-    graph: Arc<RwLock<ActionGraph>>,
+    /// The action graph (owned by executor, no lock needed)
+    graph: ActionGraph,
 
-    /// Current state of each action
-    states: Arc<RwLock<HashMap<NodeIndex, ActionState>>>,
+    /// Current state of each action (owned by executor)
+    states: HashMap<NodeIndex, ActionState>,
 
-    /// Results from completed actions
+    /// Results from completed actions (shared read-only with spawned tasks)
     results: Arc<RwLock<HashMap<NodeIndex, ActionResult>>>,
 
-    /// Remaining dependency count for each action
-    remaining_deps: Arc<RwLock<HashMap<NodeIndex, usize>>>,
+    /// Remaining dependency count for each action (owned by executor)
+    remaining_deps: HashMap<NodeIndex, usize>,
 
-    /// Queue of actions ready to execute
-    ready_queue: Arc<RwLock<VecDeque<NodeIndex>>>,
+    /// Queue of actions ready to execute (owned by executor)
+    ready_queue: VecDeque<NodeIndex>,
 
     /// Semaphore limiting concurrency
     concurrency_limit: Arc<Semaphore>,
 
-    /// Channel for completion notifications
-    completion_tx: tokio::sync::mpsc::UnboundedSender<NodeIndex>,
-    completion_rx: tokio::sync::mpsc::UnboundedReceiver<NodeIndex>,
+    /// Channel for messages from spawned tasks
+    message_tx: tokio::sync::mpsc::UnboundedSender<ExecutorMessage>,
+    message_rx: tokio::sync::mpsc::UnboundedReceiver<ExecutorMessage>,
 
     /// TUI handle for progress tracking
     tui: TuiHandle,
@@ -100,14 +108,14 @@ pub struct Executor {
     /// Rhea client for execution
     exec: Arc<RheaClient>,
 
-    /// Picante database
-    db: Arc<Mutex<crate::db::Database>>,
+    /// Picante database (Arc-shareable with internal synchronization)
+    db: Arc<crate::db::Database>,
 
-    /// Execution statistics
-    stats: Arc<RwLock<ExecutionStats>>,
+    /// Execution statistics (owned by executor)
+    stats: ExecutionStats,
 
-    /// First error encountered during execution (for early abort)
-    first_error: Arc<RwLock<Option<AetherError>>>,
+    /// First error encountered during execution (owned by executor)
+    first_error: Option<AetherError>,
 
     /// Workspace root for bin materialization
     workspace_root: camino::Utf8PathBuf,
@@ -126,52 +134,72 @@ impl Executor {
         tui: TuiHandle,
         cas: Arc<OortClient>,
         exec: Arc<RheaClient>,
-        db: Arc<Mutex<crate::db::Database>>,
+        db: Arc<crate::db::Database>,
         workspace_root: camino::Utf8PathBuf,
         target_triple: String,
         profile: String,
         max_concurrency: usize,
     ) -> Self {
-        let graph_ref = Arc::new(RwLock::new(graph));
+        trace!("EXECUTOR NEW: starting initialization");
+        trace!("EXECUTOR NEW: graph has {} nodes", graph.graph.node_count());
 
-        // Initialize remaining deps count
+        // Initialize remaining deps count and ready queue
+        // We own the graph here, so no locking needed
         let mut remaining_deps = HashMap::new();
         let mut ready_queue = VecDeque::new();
 
-        // We need to use tokio::runtime::Handle to block on async operations
-        // during initialization. This is safe because we're in a tokio context.
-        let rt = tokio::runtime::Handle::current();
-        let graph_lock = rt.block_on(graph_ref.read());
-
-        for node_idx in graph_lock.graph.node_indices() {
+        for node_idx in graph.graph.node_indices() {
             // Count outgoing edges (dependencies)
-            let dep_count = graph_lock.graph.neighbors(node_idx).count();
+            let dep_count = graph.graph.neighbors(node_idx).count();
+            let action = &graph.graph[node_idx].action;
+            trace!(
+                "EXECUTOR NEW: node {:?} action={} dep_count={}",
+                node_idx, action.display_name(), dep_count
+            );
             remaining_deps.insert(node_idx, dep_count);
 
             // If no dependencies, it's ready immediately
             if dep_count == 0 {
+                info!(
+                    "EXECUTOR NEW: READY node {:?} action={}",
+                    node_idx, action.display_name()
+                );
                 ready_queue.push_back(node_idx);
             }
         }
-        drop(graph_lock);
 
-        let (completion_tx, completion_rx) = tokio::sync::mpsc::unbounded_channel();
+        info!(
+            "EXECUTOR NEW: initialized with ready_queue_size={} total_nodes={}",
+            ready_queue.len(),
+            graph.graph.node_count()
+        );
+
+        // Log first few ready actions for debugging
+        for (i, &node_idx) in ready_queue.iter().enumerate().take(3) {
+            let action = &graph.graph[node_idx].action;
+            info!(
+                "EXECUTOR NEW: ready[{}] = {:?} {}",
+                i, node_idx, action.display_name()
+            );
+        }
+
+        let (message_tx, message_rx) = tokio::sync::mpsc::unbounded_channel();
 
         Self {
-            graph: graph_ref,
-            states: Arc::new(RwLock::new(HashMap::new())),
+            graph,
+            states: HashMap::new(),
             results: Arc::new(RwLock::new(HashMap::new())),
-            remaining_deps: Arc::new(RwLock::new(remaining_deps)),
-            ready_queue: Arc::new(RwLock::new(ready_queue)),
+            remaining_deps,
+            ready_queue,
             concurrency_limit: Arc::new(Semaphore::new(max_concurrency)),
-            completion_tx,
-            completion_rx,
+            message_tx,
+            message_rx,
             tui,
             cas,
             exec,
             db,
-            stats: Arc::new(RwLock::new(ExecutionStats::default())),
-            first_error: Arc::new(RwLock::new(None)),
+            stats: ExecutionStats::default(),
+            first_error: None,
             workspace_root,
             target_triple,
             profile,
@@ -179,62 +207,67 @@ impl Executor {
     }
 
     /// Get execution statistics
-    pub async fn get_stats(&self) -> ExecutionStats {
-        self.stats.read().await.clone()
+    pub fn get_stats(&self) -> ExecutionStats {
+        self.stats.clone()
     }
 
     /// Main execution loop
     pub async fn execute(&mut self) -> Result<(), AetherError> {
-        info!("Starting action graph execution");
+        info!("EXECUTE: Starting action graph execution");
 
         loop {
             // Check if any action has failed
-            if let Some(error) = self.first_error.read().await.as_ref() {
+            if let Some(ref error) = self.first_error {
+                warn!("EXECUTE: error detected, aborting");
                 return Err(error.clone());
             }
 
-            // Try to spawn all ready actions
-            loop {
-                let node_idx = {
-                    let mut queue = self.ready_queue.write().await;
-                    queue.pop_front()
-                };
-
-                match node_idx {
-                    Some(idx) => {
-                        let permit = self.concurrency_limit.clone().acquire_owned().await.unwrap();
-                        self.spawn_action(idx, permit).await;
-                    }
-                    None => break, // No more ready actions
-                }
+            // Spawn all ready actions
+            while let Some(node_idx) = self.ready_queue.pop_front() {
+                info!("EXECUTE: spawning action for node {:?}", node_idx);
+                self.states.insert(node_idx, ActionState::Running);
+                let permit = self.concurrency_limit.clone().acquire_owned().await.unwrap();
+                self.spawn_action(node_idx, permit);
             }
 
-            // Wait for completion or check if we're done
-            tokio::select! {
-                Some(completed_idx) = self.completion_rx.recv() => {
-                    self.handle_completion(completed_idx).await?;
+            // Check if we're done
+            let total = self.graph.graph.node_count();
+            let completed = self.states.values().filter(|&&s| s == ActionState::Completed).count();
+            if completed == total && total > 0 {
+                info!("EXECUTE: all {} actions completed", total);
+                break;
+            }
+
+            // Wait for a completion message
+            match self.message_rx.recv().await {
+                Some(ExecutorMessage::ActionCompleted { node_idx, result }) => {
+                    match result {
+                        Ok(action_result) => {
+                            info!("EXECUTE: action {:?} completed successfully", node_idx);
+                            self.states.insert(node_idx, ActionState::Completed);
+                            self.results.write().await.insert(node_idx, action_result);
+
+                            // Decrement dependency counts and add newly ready actions to queue
+                            for dependent_idx in self.graph.graph.neighbors_directed(node_idx, Incoming) {
+                                let count = self.remaining_deps.get_mut(&dependent_idx).unwrap();
+                                *count -= 1;
+                                if *count == 0 {
+                                    info!("EXECUTE: action {:?} now ready", dependent_idx);
+                                    self.ready_queue.push_back(dependent_idx);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            warn!("EXECUTE: action {:?} failed: {}", node_idx, error);
+                            self.first_error = Some(error.clone());
+                            return Err(error);
+                        }
+                    }
                 }
-                else => {
-                    // Channel closed and no more messages
+                None => {
+                    // Channel closed
                     break;
                 }
-            }
-
-            // Check if all actions are complete
-            let (total, completed) = {
-                let graph = self.graph.read().await;
-                let states = self.states.read().await;
-                let total = graph.graph.node_count();
-                let completed = states
-                    .values()
-                    .filter(|&&s| s == ActionState::Completed)
-                    .count();
-                (total, completed)
-            };
-
-            if completed == total && total > 0 {
-                info!(total, "All actions completed");
-                break;
             }
         }
 
@@ -242,113 +275,55 @@ impl Executor {
     }
 
     /// Spawn an action for execution
-    async fn spawn_action(&self, node_idx: NodeIndex, _permit: tokio::sync::OwnedSemaphorePermit) {
-        let graph = self.graph.clone();
-        let states = self.states.clone();
-        let results = self.results.clone();
-        let completion_tx = self.completion_tx.clone();
+    fn spawn_action(&self, node_idx: NodeIndex, _permit: tokio::sync::OwnedSemaphorePermit) {
+        // Get action before spawning (we own the graph, no lock needed)
+        let action = self.graph.graph[node_idx].action.clone();
+
+        let message_tx = self.message_tx.clone();
         let cas = self.cas.clone();
         let exec = self.exec.clone();
         let db = self.db.clone();
         let tui = self.tui.clone();
-        let stats = self.stats.clone();
-        let first_error = self.first_error.clone();
         let workspace_root = self.workspace_root.clone();
         let target_triple = self.target_triple.clone();
         let profile = self.profile.clone();
+        let results = self.results.clone(); // Cloned Arc for execute_action
 
         tokio::spawn(async move {
-            // Mark as running
-            states.write().await.insert(node_idx, ActionState::Running);
-
-            // Get action
-            let action = {
-                let g = graph.read().await;
-                g.graph[node_idx].action.clone()
-            };
+            info!("SPAWN_ACTION task: started for {:?}", node_idx);
 
             // Start TUI tracking
             let action_type = action.to_tui_action_type();
             let action_id = tui.start_action(action_type).await;
 
-            // Execute action
+            info!("SPAWN_ACTION task: calling execute_action for {:?}", node_idx);
+            // Execute action - pass results as immutable ref
             let result = execute_action(
                 action,
                 &cas,
                 &exec,
                 &db,
                 &results,
-                &stats,
                 &workspace_root,
                 &target_triple,
                 &profile,
             )
             .await;
 
+            info!("SPAWN_ACTION task: execute_action returned for {:?}: {:?}", node_idx, result.is_ok());
+
             // Complete TUI tracking
             tui.complete_action(action_id).await;
 
-            // Store result
-            match result {
-                Ok(r) => {
-                    debug!(node = ?node_idx, "Action completed successfully");
-                    states.write().await.insert(node_idx, ActionState::Completed);
-                    results.write().await.insert(node_idx, r);
-                }
-                Err(e) => {
-                    tracing::error!(node = ?node_idx, error = %e, "Action failed");
-                    states.write().await.insert(node_idx, ActionState::Failed);
+            info!("SPAWN_ACTION task: sending completion message for {:?}", node_idx);
+            // Send result back to executor
+            let _ = message_tx.send(ExecutorMessage::ActionCompleted { node_idx, result });
 
-                    // Store first error for build abortion
-                    let mut error_lock = first_error.write().await;
-                    if error_lock.is_none() {
-                        *error_lock = Some(e);
-                    }
-                }
-            }
-
-            // Notify completion
-            let _ = completion_tx.send(node_idx);
-
+            info!("SPAWN_ACTION task: done for {:?}", node_idx);
             // Permit dropped here, allowing next action to run
         });
     }
 
-    /// Handle completion of an action
-    async fn handle_completion(&mut self, completed_idx: NodeIndex) -> Result<(), AetherError> {
-        // Find dependents (actions waiting on this one)
-        let dependents: Vec<NodeIndex> = {
-            let graph = self.graph.read().await;
-            graph
-                .graph
-                .neighbors_directed(completed_idx, Incoming)
-                .collect()
-        };
-
-        // Decrement remaining deps for each dependent
-        let mut newly_ready = Vec::new();
-        {
-            let mut remaining = self.remaining_deps.write().await;
-            for dependent_idx in dependents {
-                if let Some(count) = remaining.get_mut(&dependent_idx) {
-                    *count -= 1;
-                    if *count == 0 {
-                        newly_ready.push(dependent_idx);
-                    }
-                }
-            }
-        }
-
-        // Add newly ready actions to queue
-        {
-            let mut queue = self.ready_queue.write().await;
-            for idx in newly_ready {
-                queue.push_back(idx);
-            }
-        }
-
-        Ok(())
-    }
 }
 
 /// Execute a single action
@@ -356,9 +331,8 @@ async fn execute_action(
     action: Action,
     cas: &Arc<OortClient>,
     exec: &Arc<RheaClient>,
-    db: &Arc<Mutex<crate::db::Database>>,
+    db: &Arc<crate::db::Database>,
     results: &Arc<RwLock<HashMap<NodeIndex, ActionResult>>>,
-    stats: &Arc<RwLock<ExecutionStats>>,
     workspace_root: &camino::Utf8PathBuf,
     target_triple: &str,
     profile: &str,
@@ -368,6 +342,8 @@ async fn execute_action(
     use vx_oort_proto::{TreeFile, IngestTreeRequest};
     use vx_rs::crate_graph::CrateSource;
     use crate::queries::*;
+
+    info!("EXECUTE_ACTION: processing action {}", action.display_name());
 
     match action {
         Action::AcquireToolchain { channel, target_triple } => {
@@ -482,8 +458,10 @@ async fn execute_action(
             toolchain,
             config,
         } => {
+            info!("COMPILE: starting compilation for crate {}", crate_name);
             let workspace_root = Utf8PathBuf::from(&workspace_root_str);
 
+            info!("COMPILE: computing source closure for {}", crate_name);
             // Compute source closure and hash (for path crates)
             let (closure_paths, closure_hash) = match &source {
                 CrateSource::Path { .. } => {
@@ -505,11 +483,11 @@ async fn execute_action(
                 }
             };
 
+            info!("COMPILE: source closure computed for {}, updating picante", crate_name);
             // Update RustCrate with actual closure hash
             let crate_id_hex = crate_id.short_hex();
-            let db_guard = db.lock().await;
             rust_crate = crate::inputs::RustCrate::new(
-                &*db_guard,
+                &**db,
                 crate_id_hex,
                 crate_name.clone(),
                 edition.clone(),
@@ -518,7 +496,6 @@ async fn execute_action(
                 closure_hash,
             )
             .map_err(|e| AetherError::Picante(e.to_string()))?;
-            drop(db_guard);
 
             // Collect dependency results from completed actions
             let (deps, registry_crate_manifests): (Vec<RustDep>, HashMap<(String, String), Blake3Hash>) = {
@@ -588,27 +565,27 @@ async fn execute_action(
                 .map(|d| (d.extern_name.clone(), d.manifest_hash))
                 .collect();
 
-            // Compute cache key
-            let db_guard = db.lock().await;
-            let cache_key = match crate_type {
-                vx_rs::CrateType::Lib => {
-                    if dep_rlib_hashes.is_empty() {
-                        cache_key_compile_rlib(&*db_guard, rust_crate, toolchain, config)
-                            .await
-                            .map_err(|e| AetherError::CacheKey(e.to_string()))?
-                    } else {
-                        cache_key_compile_rlib_with_deps(&*db_guard, rust_crate, toolchain, config, dep_rlib_hashes.clone())
+            // Compute cache key - tracked functions need db but don't hold lock during execution
+            let cache_key = {
+                match crate_type {
+                    vx_rs::CrateType::Lib => {
+                        if dep_rlib_hashes.is_empty() {
+                            cache_key_compile_rlib(&**db, rust_crate, toolchain, config)
+                                .await
+                                .map_err(|e| AetherError::CacheKey(e.to_string()))?
+                        } else {
+                            cache_key_compile_rlib_with_deps(&**db, rust_crate, toolchain, config, dep_rlib_hashes.clone())
+                                .await
+                                .map_err(|e| AetherError::CacheKey(e.to_string()))?
+                        }
+                    }
+                    vx_rs::CrateType::Bin => {
+                        cache_key_compile_bin_with_deps(&**db, rust_crate, toolchain, config, dep_rlib_hashes.clone())
                             .await
                             .map_err(|e| AetherError::CacheKey(e.to_string()))?
                     }
                 }
-                vx_rs::CrateType::Bin => {
-                    cache_key_compile_bin_with_deps(&*db_guard, rust_crate, toolchain, config, dep_rlib_hashes.clone())
-                        .await
-                        .map_err(|e| AetherError::CacheKey(e.to_string()))?
-                }
             };
-            drop(db_guard);
 
             // Check cache
             let (output_manifest, was_cached) = if let Some(cached) = cas
@@ -622,7 +599,6 @@ async fn execute_action(
                     "cache hit"
                 );
                 // Track cache hit
-                stats.write().await.cache_hits += 1;
                 (cached, true)
             } else {
                 // Cache miss - need to compile
@@ -735,7 +711,6 @@ async fn execute_action(
                     .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
 
                 // Track rebuild
-                stats.write().await.rebuilt += 1;
 
                 (output_manifest, false)
             };
@@ -778,7 +753,6 @@ async fn execute_action(
                             })?;
 
                         // Update stats with bin output path
-                        stats.write().await.bin_output = Some(output_path.clone());
                         break;
                     }
                 }
