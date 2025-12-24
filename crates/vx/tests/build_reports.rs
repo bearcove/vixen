@@ -9,7 +9,7 @@
 mod harness;
 use harness::{TestEnv, create_hello_world};
 
-#[test_log::test]
+#[test]
 fn build_writes_report_file() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -24,7 +24,7 @@ fn build_writes_report_file() {
     );
 }
 
-#[test_log::test]
+#[test]
 fn explain_shows_build_summary() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -57,7 +57,7 @@ fn explain_shows_build_summary() {
     );
 }
 
-#[test_log::test]
+#[test]
 fn explain_shows_cache_hit_after_rebuild() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -81,7 +81,7 @@ fn explain_shows_cache_hit_after_rebuild() {
     );
 }
 
-#[test_log::test]
+#[test]
 fn explain_diff_detects_source_change() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -130,7 +130,7 @@ fn explain_diff_detects_source_change() {
     );
 }
 
-#[test_log::test]
+#[test]
 fn explain_last_miss_shows_inputs() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -171,7 +171,7 @@ fn explain_last_miss_shows_inputs() {
     );
 }
 
-#[test_log::test]
+#[test]
 fn explain_with_no_builds_shows_error() {
     let env = TestEnv::new();
     create_hello_world(&env);

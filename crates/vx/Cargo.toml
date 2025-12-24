@@ -25,4 +25,3 @@ miette-arborium = { version = "2.4.5", features = ["lang-toml", "lang-rust"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-test-log = { version = "0.2", features = ["trace"] }

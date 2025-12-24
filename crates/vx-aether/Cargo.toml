@@ -31,3 +31,4 @@ vx-manifest = { workspace = true }
 vx-report = { workspace = true }
 vx-rs = { path = "../vx-rs" }
 vx-toolchain = { path = "../vx-toolchain" }
+vx-test-macros = { path = "../vx-test-macros" }

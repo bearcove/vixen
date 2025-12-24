@@ -18,6 +18,9 @@ mod inputs;
 mod queries;
 mod service;
 
+#[cfg(test)]
+mod tests;
+
 use camino::Utf8PathBuf;
 use eyre::Result;
 use std::process::Child;
@@ -262,8 +265,14 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     // Install tracing to stderr (logs will go to ~/.vx/aether.log via spawn_service redirection)
     use tracing_subscriber::prelude::*;
 

@@ -1,4 +1,5 @@
 use super::*;
+use vx_test_macros::vx_test;
 
 /// Create a fresh database for testing
 fn test_db() -> Database {
@@ -22,7 +23,7 @@ fn setup_cc_config(db: &Database) -> BuildConfig {
     config
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_cache_key_cc_compile_deterministic() {
     let db = test_db();
     let config = setup_cc_config(&db);
@@ -40,7 +41,7 @@ async fn test_cache_key_cc_compile_deterministic() {
     assert_eq!(key1, key2);
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_cache_key_cc_compile_changes_with_source() {
     let db = test_db();
     let config = setup_cc_config(&db);
@@ -69,7 +70,7 @@ async fn test_cache_key_cc_compile_changes_with_source() {
     assert_ne!(key1, key2);
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_cache_key_cc_compile_changes_with_profile() {
     let db = test_db();
 
@@ -118,7 +119,7 @@ async fn test_cache_key_cc_compile_changes_with_profile() {
     assert_ne!(key_debug, key_release);
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_plan_cc_compile_generates_correct_args() {
     let db = test_db();
     setup_cc_config(&db);
@@ -174,7 +175,7 @@ async fn test_plan_cc_compile_generates_correct_args() {
     );
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_plan_cc_compile_release_flags() {
     let db = test_db();
 
@@ -208,7 +209,7 @@ async fn test_plan_cc_compile_release_flags() {
     assert!(!invocation.args.contains(&"-g".to_string()));
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_node_id_cc_compile_format() {
     let db = test_db();
     let config = setup_cc_config(&db);
@@ -229,7 +230,7 @@ async fn test_node_id_cc_compile_format() {
     assert!(node_id.0.contains("debug"));
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_cache_key_cc_link_deterministic() {
     let db = test_db();
     setup_cc_config(&db);
@@ -253,7 +254,7 @@ async fn test_cache_key_cc_link_deterministic() {
     assert_eq!(key1, key2);
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_cache_key_cc_link_changes_with_objects() {
     let db = test_db();
     setup_cc_config(&db);
@@ -283,7 +284,7 @@ async fn test_cache_key_cc_link_changes_with_objects() {
     assert_ne!(key1, key2);
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_plan_cc_link_generates_correct_args() {
     let db = test_db();
     setup_cc_config(&db);
@@ -326,7 +327,7 @@ async fn test_plan_cc_link_generates_correct_args() {
     assert!(invocation.expected_outputs[0].executable);
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_plan_cc_link_release_strips() {
     let db = test_db();
 
@@ -357,7 +358,7 @@ async fn test_plan_cc_link_release_strips() {
     assert!(invocation.args.contains(&"-s".to_string()));
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_node_id_cc_link_format() {
     let db = test_db();
     let config = setup_cc_config(&db);
@@ -379,7 +380,7 @@ async fn test_node_id_cc_link_format() {
     assert!(node_id.0.contains("debug"));
 }
 
-#[tokio::test]
+#[vx_test]
 async fn test_discovered_deps_affects_cache_key() {
     let db = test_db();
     let config = setup_cc_config(&db);

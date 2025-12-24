@@ -9,8 +9,9 @@
 mod harness;
 use harness::{create_hello_world, TestEnv};
 
-#[test_log::test]
+#[test]
 fn fresh_build_succeeds() {
+    harness::init_test_tracing();
     let env = TestEnv::new();
     create_hello_world(&env);
 
@@ -24,7 +25,7 @@ fn fresh_build_succeeds() {
     assert!(!result.was_cached(), "fresh build should not be cached");
 }
 
-#[test_log::test]
+#[test]
 fn second_build_is_cache_hit() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -40,7 +41,7 @@ fn second_build_is_cache_hit() {
     assert!(result2.was_cached(), "second build should be cached");
 }
 
-#[test_log::test]
+#[test]
 fn source_change_causes_cache_miss() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -67,7 +68,7 @@ fn source_change_causes_cache_miss() {
     );
 }
 
-#[test_log::test]
+#[test]
 fn profile_change_causes_cache_miss() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -91,7 +92,7 @@ fn profile_change_causes_cache_miss() {
     assert!(result3.was_cached(), "debug build should be cached");
 }
 
-#[test_log::test]
+#[test]
 fn edition_change_causes_cache_miss() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -119,7 +120,7 @@ edition = "2018"
     );
 }
 
-#[test_log::test]
+#[test]
 fn clean_removes_project_local_vx_dir() {
     let env = TestEnv::new();
     create_hello_world(&env);
@@ -142,7 +143,7 @@ fn clean_removes_project_local_vx_dir() {
     assert!(!env.file_exists(".vx"), ".vx should not exist after clean");
 }
 
-#[test_log::test]
+#[test]
 fn multi_file_crate_builds_successfully() {
     // This test verifies that crates with multiple source files
     // (using mod declarations) build correctly.
@@ -181,7 +182,7 @@ fn main() {
     );
 }
 
-#[test_log::test]
+#[test]
 fn module_change_causes_cache_miss() {
     // This test verifies that changing a non-main module file
     // correctly invalidates the cache.
@@ -244,7 +245,7 @@ fn main() {
     );
 }
 
-#[test_log::test]
+#[test]
 fn different_checkout_path_is_cache_hit() {
     // This test verifies that the same project checked out in different locations
     // produces a cache hit (path normalization via --remap-path-prefix)

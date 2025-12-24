@@ -5,8 +5,14 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use vx_cass_proto::CassClient;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("test_client=debug")
         .init();

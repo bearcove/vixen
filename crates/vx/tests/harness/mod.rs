@@ -19,6 +19,17 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
+/// Initialize tracing for tests
+///
+/// This replaces test-log's functionality without pulling in syn-dependent macros.
+/// Call this at the start of tests that need tracing output.
+pub fn init_test_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .try_init();
+}
+
 /// A test environment with isolated CAS, project directories, and Unix sockets
 pub struct TestEnv {
     /// Temp dir for global CAS (simulates ~/.vx/)
