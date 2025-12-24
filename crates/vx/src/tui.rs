@@ -1,42 +1,17 @@
 //! TUI for build progress tracking
 //!
-//! Displays a progress bar showing total/completed/pending actions,
-//! and shows the 3 longest-running actions below the bar, plus 2 recent log lines.
+//! Uses indicatif MultiProgress with:
+//! - One progress bar showing overall completion
+//! - 3 spinner bars for longest-running active actions
+//! - 10 text bars for scrolling log buffer (last 10 messages)
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
-use tracing::Subscriber;
+use tokio::sync::{oneshot, RwLock};
 use tracing_subscriber::Layer;
-
-/// Action type being tracked
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ActionType {
-    /// Compiling a Rust crate
-    CompileRust(String),
-    /// Acquiring toolchain
-    AcquireToolchain,
-    /// Acquiring registry crate
-    AcquireRegistryCrate(String, String), // name, version
-    /// Ingesting source tree to CAS
-    IngestSource(String),
-}
-
-impl ActionType {
-    /// Get a display name for this action
-    pub fn display_name(&self) -> String {
-        match self {
-            ActionType::CompileRust(name) => format!("compile {}", name),
-            ActionType::AcquireToolchain => "acquire toolchain".to_string(),
-            ActionType::AcquireRegistryCrate(name, version) => {
-                format!("acquire {}@{}", name, version)
-            }
-            ActionType::IngestSource(name) => format!("ingest {}", name),
-        }
-    }
-}
+use vx_aether_proto::ActionType;
 
 /// Tracks a single action
 #[derive(Debug, Clone)]
@@ -61,8 +36,10 @@ struct TuiState {
     completed: usize,
     /// Next action ID
     next_id: u64,
-    /// Recent log messages (circular buffer, keep last 50)
+    /// Recent log messages (circular buffer, keep last 100, show last 10)
     logs: VecDeque<String>,
+    /// Shutdown flag to stop the display task
+    shutdown: bool,
 }
 
 impl TuiState {
@@ -72,7 +49,8 @@ impl TuiState {
             total: 0,
             completed: 0,
             next_id: 1,
-            logs: VecDeque::with_capacity(50),
+            logs: VecDeque::with_capacity(100),
+            shutdown: false,
         }
     }
 
@@ -82,22 +60,34 @@ impl TuiState {
 }
 
 /// Handle for interacting with the TUI
-#[derive(Clone)]
 pub struct TuiHandle {
     state: Arc<RwLock<TuiState>>,
+    /// Receiver that signals when display task has finished cleanup
+    shutdown_rx: Arc<RwLock<Option<oneshot::Receiver<()>>>>,
+}
+
+impl Clone for TuiHandle {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            shutdown_rx: self.shutdown_rx.clone(),
+        }
+    }
 }
 
 impl TuiHandle {
     /// Create a new TUI handle and spawn the display task
     pub fn new() -> Self {
         let state = Arc::new(RwLock::new(TuiState::new()));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let handle = Self {
             state: state.clone(),
+            shutdown_rx: Arc::new(RwLock::new(Some(shutdown_rx))),
         };
 
         // Spawn the display task
-        tokio::spawn(Self::display_task(state));
+        tokio::spawn(Self::display_task(state, shutdown_tx));
 
         handle
     }
@@ -137,14 +127,28 @@ impl TuiHandle {
     pub async fn log_message(&self, message: String) {
         let mut state = self.state.write().await;
         state.logs.push_back(message);
-        // Keep only last 50 messages
-        if state.logs.len() > 50 {
+        // Keep only last 100 messages
+        if state.logs.len() > 100 {
             state.logs.pop_front();
         }
     }
 
+    /// Shutdown the TUI and wait for cleanup to complete
+    pub async fn shutdown(&self) {
+        // Set the shutdown flag
+        {
+            let mut state = self.state.write().await;
+            state.shutdown = true;
+        }
+
+        // Wait for the display task to signal completion
+        if let Some(rx) = self.shutdown_rx.write().await.take() {
+            let _ = rx.await; // Ignore errors (channel closed is fine)
+        }
+    }
+
     /// Background task that updates the display at ~15fps
-    async fn display_task(state: Arc<RwLock<TuiState>>) {
+    async fn display_task(state: Arc<RwLock<TuiState>>, shutdown_tx: oneshot::Sender<()>) {
         let multi = MultiProgress::new();
 
         // Main progress bar
@@ -156,28 +160,31 @@ impl TuiHandle {
                 .progress_chars("=>-"),
         );
 
-        // Action display bars (3 for longest-running actions)
+        // Active action spinners (3 for longest-running actions)
+        let spinner_style = ProgressStyle::with_template("  {spinner} {msg}")
+            .expect("valid template")
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+
+        let empty_style = ProgressStyle::with_template("")
+            .expect("valid template");
+
         let action_bars: Vec<_> = (0..3)
             .map(|_| {
-                let bar = multi.add(ProgressBar::new(0));
-                bar.set_style(
-                    ProgressStyle::default_bar()
-                        .template("  {msg}")
-                        .expect("valid template"),
-                );
+                let bar = multi.add(ProgressBar::new_spinner());
+                bar.set_style(empty_style.clone());
+                // Don't enable steady tick - we'll tick manually only when active
                 bar
             })
             .collect();
 
-        // Log display bars (2 for recent logs)
-        let log_bars: Vec<_> = (0..2)
+        // Log display bars (10 for scrolling buffer)
+        let log_style = ProgressStyle::with_template("  {msg}")
+            .expect("valid template");
+
+        let log_bars: Vec<_> = (0..10)
             .map(|_| {
                 let bar = multi.add(ProgressBar::new(0));
-                bar.set_style(
-                    ProgressStyle::default_bar()
-                        .template("  {msg}")
-                        .expect("valid template"),
-                );
+                bar.set_style(log_style.clone());
                 bar
             })
             .collect();
@@ -210,107 +217,118 @@ impl TuiHandle {
 
             for (i, bar) in action_bars.iter().enumerate() {
                 if let Some(action) = actions.get(i) {
+                    bar.set_style(spinner_style.clone());
                     let elapsed_secs = action.elapsed().as_secs_f64();
                     bar.set_message(format!(
-                        "{:<30} ({:.1}s)",
+                        "{:<40} ({:.1}s)",
                         action.action_type.display_name(),
                         elapsed_secs
                     ));
+                    bar.tick(); // Manually tick to advance spinner animation
                 } else {
+                    // Hide inactive slots completely
+                    bar.set_style(empty_style.clone());
                     bar.set_message("");
                 }
             }
 
-            // Show the last 2 log messages
+            // Show the last 10 log messages
             let log_count = state_snapshot.logs.len();
+            let start_idx = log_count.saturating_sub(10);
+
             for (i, bar) in log_bars.iter().enumerate() {
-                // i=0 -> second-to-last, i=1 -> last
-                let index = log_count.saturating_sub(2).saturating_add(i);
-                if let Some(log) = state_snapshot.logs.get(index) {
+                if let Some(log) = state_snapshot.logs.get(start_idx + i) {
                     bar.set_message(log.clone());
                 } else {
                     bar.set_message("");
                 }
             }
 
-            // If we're done, finish and break
-            if completed == total && state_snapshot.active.is_empty() && total > 0 {
-                progress_bar.finish_with_message("build complete");
-                for bar in &action_bars {
+            // If shutdown was requested, clean up and exit
+            if state_snapshot.shutdown {
+                // Clear all bars in reverse order (logs, actions, progress)
+                for bar in log_bars.iter().rev() {
                     bar.finish_and_clear();
                 }
-                for bar in &log_bars {
+                for bar in action_bars.iter().rev() {
                     bar.finish_and_clear();
                 }
+                progress_bar.finish_and_clear();
+
+                // Clear the MultiProgress
+                drop(multi);
+
+                // Signal that cleanup is complete
+                let _ = shutdown_tx.send(());
+
                 break;
             }
         }
     }
-
-    /// Create a tracing layer that sends log events to the TUI
-    pub fn tracing_layer(&self) -> TuiLayer {
-        TuiLayer {
-            handle: self.clone(),
-        }
-    }
 }
 
-/// Tracing layer that sends log events to the TUI instead of stdout
+/// Custom tracing layer that sends logs to the TUI
 pub struct TuiLayer {
-    handle: TuiHandle,
+    tui: TuiHandle,
+}
+
+impl TuiLayer {
+    pub fn new(tui: TuiHandle) -> Self {
+        Self { tui }
+    }
 }
 
 impl<S> Layer<S> for TuiLayer
 where
-    S: Subscriber,
+    S: tracing::Subscriber,
 {
     fn on_event(
         &self,
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        // Format the event into a string
-        let mut visitor = LogVisitor::new();
+        use std::fmt::Write;
+        use tracing::field::Visit;
+
+        // Visitor to extract the log message
+        struct MessageVisitor {
+            message: String,
+        }
+
+        impl Visit for MessageVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    let _ = write!(self.message, "{:?}", value);
+                } else {
+                    let _ = write!(self.message, " {}={:?}", field.name(), value);
+                }
+            }
+
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "message" {
+                    self.message = value.to_string();
+                } else {
+                    let _ = write!(self.message, " {}={}", field.name(), value);
+                }
+            }
+        }
+
+        let mut visitor = MessageVisitor {
+            message: String::new(),
+        };
         event.record(&mut visitor);
 
-        let level = event.metadata().level();
-        let target = event.metadata().target();
-        let message = visitor.message;
+        // Format with level and target
+        let metadata = event.metadata();
+        let level = metadata.level();
+        let target = metadata.target();
 
-        // Format: "LEVEL target: message"
-        let formatted = format!("{:5} {}: {}", level, target, message);
+        let formatted = format!("[{:<5}] {}: {}", level, target, visitor.message);
 
-        // Send to TUI (spawn task since we can't be async here)
-        let handle = self.handle.clone();
+        // Send to TUI (spawn to avoid blocking)
+        let tui = self.tui.clone();
         tokio::spawn(async move {
-            handle.log_message(formatted).await;
+            tui.log_message(formatted).await;
         });
-    }
-}
-
-/// Visitor to extract the message from a tracing event
-struct LogVisitor {
-    message: String,
-}
-
-impl LogVisitor {
-    fn new() -> Self {
-        Self {
-            message: String::new(),
-        }
-    }
-}
-
-impl tracing::field::Visit for LogVisitor {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" {
-            self.message = format!("{:?}", value);
-        }
-    }
-
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        if field.name() == "message" {
-            self.message = value.to_string();
-        }
     }
 }

@@ -17,7 +17,6 @@ mod executor;
 mod inputs;
 mod queries;
 mod service;
-mod tui;
 
 use camino::Utf8PathBuf;
 use eyre::Result;
@@ -33,7 +32,6 @@ pub use db::Database;
 pub use inputs::*;
 pub use queries::*;
 pub use service::AetherService;
-pub use tui::{ActionType, TuiHandle};
 
 // No longer needed! The #[rapace::service] macro on the Aether trait
 // generates a blanket impl for Arc<T>, solving the orphan rule issue.
@@ -114,6 +112,11 @@ async fn try_connect(endpoint: &str) -> Result<TcpStream> {
 fn spawn_service(binary_name: &str, env_vars: &[(&str, &str)], log_path: &camino::Utf8Path) -> Result<Child> {
     use std::fs::OpenOptions;
     use std::process::Stdio;
+
+    // Ensure parent directory exists for log file
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     // Open log file for appending
     let log_file = OpenOptions::new()
@@ -222,21 +225,15 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // FIRST THING: Create TUI and install tracing layer
-    // This MUST happen before ANY other code that might log
-    let tui = crate::tui::TuiHandle::new();
-    let tui_layer = tui.tracing_layer();
-
+    // Install tracing to stderr (logs will go to ~/.vx/aether.log via spawn_service redirection)
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::fmt;
 
-    // TEMPORARY: Write logs to stderr for debugging instead of TUI
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=trace")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=debug")),
         )
-        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
     // Now safe to call things that might log
@@ -303,7 +300,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Initialize aether service
+    // Initialize aether service (singleton shared across all connections)
     tracing::info!("Initializing aether service");
     let aether = Arc::new(
         AetherService::new(
@@ -312,7 +309,6 @@ async fn main() -> Result<()> {
             args.vx_home,
             exec_host_triple,
             spawn_tracker,
-            tui,
         )
         .await,
     );
@@ -329,11 +325,34 @@ async fn main() -> Result<()> {
             tracing::debug!("New connection from {}", peer_addr);
 
             let transport = rapace::Transport::stream(socket);
-            let server = AetherServer::new(aether);
 
-            if let Err(e) = server.serve(transport).await {
-                tracing::warn!("Connection error from {}: {}", peer_addr, e);
+            // Create RPC session with even channel IDs (server uses 0, 2, 4, ...)
+            let session = Arc::new(rapace::RpcSession::with_channel_start(transport, 0));
+
+            // Create ProgressListenerClient from this session
+            let progress_listener = Arc::new(vx_aether_proto::ProgressListenerClient::new(session.clone()));
+
+            // Set progress listener for this connection
+            aether.set_progress_listener(Some(progress_listener)).await;
+
+            // Set up dispatcher for Aether service
+            let server = Arc::new(AetherServer::new(aether.clone()));
+            let buffer_pool = session.buffer_pool().clone();
+            session.set_dispatcher(move |request| {
+                let server = server.clone();
+                let buffer_pool = buffer_pool.clone();
+                Box::pin(async move {
+                    server.dispatch(request.desc.method_id, &request, &buffer_pool).await
+                })
+            });
+
+            // Run the session
+            if let Err(e) = session.run().await {
+                tracing::warn!("Session error from {}: {}", peer_addr, e);
             }
+
+            // Clear progress listener when connection closes
+            aether.set_progress_listener(None).await;
 
             tracing::debug!("Connection from {} closed", peer_addr);
         });

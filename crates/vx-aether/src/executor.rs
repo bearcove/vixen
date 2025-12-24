@@ -12,7 +12,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::action_graph::{Action, ActionGraph};
 use crate::error::AetherError;
-use crate::tui::TuiHandle;
+use vx_aether_proto::{ProgressListenerClient, ActionType};
 use vx_oort_proto::{Blake3Hash, OortClient};
 use vx_rhea_proto::RheaClient;
 use vx_rs::CrateId;
@@ -35,6 +35,8 @@ pub enum ActionResult {
         toolchain_id: Blake3Hash,
         /// Toolchain manifest hash
         manifest_hash: Blake3Hash,
+        /// Whether this was a cache hit
+        was_cached: bool,
     },
 
     /// Registry crate acquired successfully
@@ -45,6 +47,8 @@ pub enum ActionResult {
         version: String,
         /// Manifest hash
         manifest_hash: Blake3Hash,
+        /// Whether this was a cache hit
+        was_cached: bool,
     },
 
     /// Rust crate compiled successfully
@@ -53,6 +57,10 @@ pub enum ActionResult {
         crate_id: CrateId,
         /// Output manifest hash from CAS
         output_manifest: Blake3Hash,
+        /// Path to materialized bin (if this was a bin crate)
+        bin_output: Option<camino::Utf8PathBuf>,
+        /// Whether this was a cache hit
+        was_cached: bool,
     },
 }
 
@@ -99,8 +107,8 @@ pub struct Executor {
     message_tx: tokio::sync::mpsc::UnboundedSender<ExecutorMessage>,
     message_rx: tokio::sync::mpsc::UnboundedReceiver<ExecutorMessage>,
 
-    /// TUI handle for progress tracking
-    tui: TuiHandle,
+    /// Progress listener client (for reporting progress to vx CLI)
+    progress_listener: Option<Arc<ProgressListenerClient>>,
 
     /// Oort client (CAS)
     cas: Arc<OortClient>,
@@ -131,7 +139,7 @@ impl Executor {
     /// Create a new executor
     pub fn new(
         graph: ActionGraph,
-        tui: TuiHandle,
+        progress_listener: Option<Arc<ProgressListenerClient>>,
         cas: Arc<OortClient>,
         exec: Arc<RheaClient>,
         db: Arc<crate::db::Database>,
@@ -194,7 +202,7 @@ impl Executor {
             concurrency_limit: Arc::new(Semaphore::new(max_concurrency)),
             message_tx,
             message_rx,
-            tui,
+            progress_listener,
             cas,
             exec,
             db,
@@ -271,6 +279,50 @@ impl Executor {
             }
         }
 
+        // Compute stats from results
+        let results_lock = self.results.read().await;
+        let mut cache_hits = 0;
+        let mut rebuilt = 0;
+        let mut bin_output = None;
+
+        for (_, result) in results_lock.iter() {
+            match result {
+                ActionResult::ToolchainAcquired { was_cached, .. } => {
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+                }
+                ActionResult::RegistryCrateAcquired { was_cached, .. } => {
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+                }
+                ActionResult::CrateCompiled {
+                    bin_output: bin_path,
+                    was_cached,
+                    ..
+                } => {
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+                    // Track the bin output (if any)
+                    if let Some(path) = bin_path {
+                        bin_output = Some(path.clone());
+                    }
+                }
+            }
+        }
+
+        self.stats.cache_hits = cache_hits;
+        self.stats.rebuilt = rebuilt;
+        self.stats.bin_output = bin_output;
+
         Ok(())
     }
 
@@ -283,7 +335,7 @@ impl Executor {
         let cas = self.cas.clone();
         let exec = self.exec.clone();
         let db = self.db.clone();
-        let tui = self.tui.clone();
+        let progress_listener = self.progress_listener.clone();
         let workspace_root = self.workspace_root.clone();
         let target_triple = self.target_triple.clone();
         let profile = self.profile.clone();
@@ -293,9 +345,13 @@ impl Executor {
         tokio::spawn(async move {
             info!("SPAWN_ACTION task: started for {:?}", node_idx);
 
-            // Start TUI tracking
-            let action_type = action.to_tui_action_type();
-            let action_id = tui.start_action(action_type).await;
+            // Start progress tracking
+            let action_type = action.to_progress_action_type();
+            let action_id = if let Some(ref listener) = progress_listener {
+                listener.start_action(action_type).await.ok()
+            } else {
+                None
+            };
 
             info!("SPAWN_ACTION task: calling execute_action for {:?}", node_idx);
             // Execute action - pass results as immutable ref
@@ -314,8 +370,10 @@ impl Executor {
 
             info!("SPAWN_ACTION task: execute_action returned for {:?}: {:?}", node_idx, result.is_ok());
 
-            // Complete TUI tracking
-            tui.complete_action(action_id).await;
+            // Complete progress tracking
+            if let (Some(listener), Some(id)) = (&progress_listener, action_id) {
+                let _ = listener.complete_action(id).await;
+            }
 
             info!("SPAWN_ACTION task: sending completion message for {:?}", node_idx);
             // Send result back to executor
@@ -392,6 +450,7 @@ async fn execute_action(
             Ok(ActionResult::ToolchainAcquired {
                 toolchain_id,
                 manifest_hash,
+                was_cached: result.status == EnsureStatus::Hit,
             })
         }
 
@@ -422,10 +481,13 @@ async fn execute_action(
                                 version: version.clone(),
                             })?;
 
+                    let was_cached = result.status == EnsureStatus::Hit;
+
                     debug!(
                         name = %name,
                         version = %version,
                         manifest_hash = %manifest_hash.short_hex(),
+                        was_cached = was_cached,
                         "acquired registry crate"
                     );
 
@@ -433,6 +495,7 @@ async fn execute_action(
                         name,
                         version,
                         manifest_hash,
+                        was_cached,
                     })
                 }
                 EnsureStatus::Failed => Err(AetherError::RegistryCrateAcquisition {
@@ -467,7 +530,7 @@ async fn execute_action(
             let (toolchain_manifest, toolchain_id) = if let Some(toolchain_idx) = toolchain_node_idx {
                 let results_lock = results.read().await;
                 match results_lock.get(&toolchain_idx) {
-                    Some(ActionResult::ToolchainAcquired { toolchain_id, manifest_hash }) => {
+                    Some(ActionResult::ToolchainAcquired { toolchain_id, manifest_hash, .. }) => {
                         info!("COMPILE: using acquired toolchain manifest_hash={} toolchain_id={}",
                               manifest_hash.short_hex(), toolchain_id.short_hex());
                         (*manifest_hash, *toolchain_id)
@@ -549,6 +612,7 @@ async fn execute_action(
                             ActionResult::CrateCompiled {
                                 crate_id,
                                 output_manifest,
+                                ..
                             } => Some((*crate_id, *output_manifest)),
                             _ => None,
                         }
@@ -564,6 +628,7 @@ async fn execute_action(
                                 name,
                                 version,
                                 manifest_hash,
+                                ..
                             } => Some(((name.clone(), version.clone()), *manifest_hash)),
                             _ => None,
                         }
@@ -755,8 +820,8 @@ async fn execute_action(
                 (output_manifest, false)
             };
 
-            // Materialize bin outputs
-            if crate_type == vx_rs::crate_graph::CrateType::Bin && !was_cached {
+            // Materialize bin outputs (always materialize, even on cache hit)
+            let bin_output = if crate_type == vx_rs::crate_graph::CrateType::Bin {
                 let output_dir = workspace_root
                     .join(".vx/build")
                     .join(target_triple)
@@ -778,6 +843,7 @@ async fn execute_action(
                     .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
                     .ok_or(AetherError::OutputManifestNotFound(output_manifest))?;
 
+                let mut materialized = false;
                 for output in &manifest.outputs {
                     if output.logical == "bin" {
                         let blob_data = cas
@@ -792,15 +858,25 @@ async fn execute_action(
                                 message: e.to_string(),
                             })?;
 
-                        // Update stats with bin output path
+                        materialized = true;
                         break;
                     }
                 }
-            }
+
+                if materialized {
+                    Some(output_path)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             Ok(ActionResult::CrateCompiled {
                 crate_id,
                 output_manifest,
+                bin_output,
+                was_cached,
             })
         }
     }

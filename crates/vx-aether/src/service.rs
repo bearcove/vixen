@@ -12,15 +12,14 @@ use crate::error::{AetherError, Result};
 use crate::executor::Executor;
 use crate::inputs::*;
 use crate::queries::*;
-use crate::tui::{ActionType, TuiHandle};
 use camino::Utf8PathBuf;
 use picante::wal::WalWriter;
 use picante::HasRuntime;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
-use vx_aether_proto::{Aether, AETHER_PROTOCOL_VERSION, BuildRequest, BuildResult};
+use vx_aether_proto::{Aether, AETHER_PROTOCOL_VERSION, BuildRequest, BuildResult, ProgressListenerClient, ActionType};
 use vx_oort_proto::{
     Blake3Hash, EnsureStatus, IngestTreeRequest, OortClient, RegistrySpec, RustChannel,
     RustComponent, RustToolchainSpec, ServiceVersion, TreeFile,
@@ -80,11 +79,36 @@ pub struct AetherService {
     /// Spawn tracker for child services
     spawn_tracker: Arc<Mutex<SpawnTracker>>,
 
-    /// TUI for progress tracking
-    tui: TuiHandle,
+    /// Progress listener client (for reporting progress to vx CLI)
+    /// Uses RwLock for interior mutability so it can be updated per-connection
+    progress_listener: Arc<RwLock<Option<Arc<ProgressListenerClient>>>>,
 }
 
 impl AetherService {
+    /// Report progress to CLI if connected
+    async fn report_start_action(&self, action_type: ActionType) -> Option<u64> {
+        let listener_guard = self.progress_listener.read().await;
+        if let Some(ref listener) = *listener_guard {
+            listener.start_action(action_type).await.ok()
+        } else {
+            None
+        }
+    }
+
+    async fn report_complete_action(&self, action_id: Option<u64>) {
+        let listener_guard = self.progress_listener.read().await;
+        if let (Some(listener), Some(id)) = (listener_guard.as_ref(), action_id) {
+            let _ = listener.complete_action(id).await;
+        }
+    }
+
+    async fn report_set_total(&self, total: u64) {
+        let listener_guard = self.progress_listener.read().await;
+        if let Some(ref listener) = *listener_guard {
+            let _ = listener.set_total(total).await;
+        }
+    }
+
     /// Create a new daemon service
     pub async fn new(
         cas: Arc<OortClient>,
@@ -92,7 +116,6 @@ impl AetherService {
         vx_home: Utf8PathBuf,
         exec_host_triple: String,
         spawn_tracker: Arc<Mutex<SpawnTracker>>,
-        tui: TuiHandle,
     ) -> Self {
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
@@ -156,8 +179,13 @@ impl AetherService {
                 zig: None,
             })),
             spawn_tracker,
-            tui,
+            progress_listener: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Update the progress listener for the current connection
+    pub async fn set_progress_listener(&self, listener: Option<Arc<ProgressListenerClient>>) {
+        *self.progress_listener.write().await = listener;
     }
 
     /// Ensure Rust toolchain exists in CAS. Returns info for cache keys.
@@ -175,6 +203,9 @@ impl AetherService {
             }
         }
 
+        // Track toolchain acquisition
+        let action_id = self.report_start_action(ActionType::AcquireToolchain).await;
+
         let spec = RustToolchainSpec {
             channel,
             host: self.exec_host_triple.clone(),
@@ -186,23 +217,41 @@ impl AetherService {
             .cas
             .ensure_rust_toolchain(spec)
             .await
-            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
+            .map_err(|e| {
+                // Complete action on error
+                let this = self.clone();
+                tokio::spawn(async move { this.report_complete_action(action_id).await });
+                AetherError::CasRpc(std::sync::Arc::new(e))
+            })?;
 
         if result.status == EnsureStatus::Failed {
+            self.report_complete_action(action_id).await;
             return Err(AetherError::ToolchainAcquisition(
                 result.error.unwrap_or_else(|| "unknown error".to_string()),
             ));
         }
 
-        let manifest_hash = result.manifest_hash.ok_or(AetherError::NoManifestHash)?;
+        let manifest_hash = result.manifest_hash.ok_or_else(|| {
+            let this = self.clone();
+            tokio::spawn(async move { this.report_complete_action(action_id).await });
+            AetherError::NoManifestHash
+        })?;
 
         // Get manifest for version info (and toolchain_id on cache hit)
         let manifest = self
             .cas
             .get_toolchain_manifest(manifest_hash)
             .await
-            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
-            .ok_or(AetherError::ToolchainManifestNotFound(manifest_hash))?;
+            .map_err(|e| {
+                let this = self.clone();
+                tokio::spawn(async move { this.report_complete_action(action_id).await });
+                AetherError::CasRpc(std::sync::Arc::new(e))
+            })?
+            .ok_or_else(|| {
+                let this = self.clone();
+                tokio::spawn(async move { this.report_complete_action(action_id).await });
+                AetherError::ToolchainManifestNotFound(manifest_hash)
+            })?;
 
         // On cache hit, toolchain_id comes from manifest; on download, it's in the result
         let toolchain_id = result.toolchain_id.unwrap_or(manifest.toolchain_id);
@@ -224,6 +273,9 @@ impl AetherService {
                 manifest_date: manifest.rust_manifest_date,
             });
         }
+
+        // Complete the action
+        self.report_complete_action(action_id).await;
 
         Ok(info)
     }
@@ -438,17 +490,22 @@ impl AetherService {
         // Dump graph for debugging
         action_graph.dump_graph();
 
-        // Set total number of actions for the TUI
+        // Set total number of actions for progress tracking
         // Total = 1 toolchain + N registry crates + M compilations
-        self.tui.set_total(action_graph.node_count()).await;
+        let total_actions = action_graph.node_count();
+        self.report_set_total(total_actions as u64).await;
 
         let max_concurrency = std::thread::available_parallelism()
             .map(|n| n.get() * 2)
             .unwrap_or(16);
         tracing::info!("SERVICE: creating executor with max_concurrency={}", max_concurrency);
+
+        // Get current progress listener (clones the Option<Arc<...>> inside the RwLock)
+        let progress_listener = self.progress_listener.read().await.clone();
+
         let mut executor = Executor::new(
             action_graph,
-            self.tui.clone(),
+            progress_listener,
             self.cas.clone(),
             self.exec.clone(),
             self.db.clone(),
@@ -494,6 +551,9 @@ impl AetherService {
             duration_ms: duration.as_millis() as u64,
             output_path: exec_stats.bin_output,
             error: None,
+            total_actions,
+            cache_hits: exec_stats.cache_hits,
+            rebuilt: exec_stats.rebuilt,
         })
     }
 }
@@ -511,6 +571,9 @@ impl Aether for AetherService {
                 output_path: None,
                 // Convert structured error to string at RPC boundary
                 error: Some(e.to_string()),
+                total_actions: 0,
+                cache_hits: 0,
+                rebuilt: 0,
             },
         }
     }

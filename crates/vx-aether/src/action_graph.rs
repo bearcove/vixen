@@ -87,17 +87,17 @@ impl Action {
         }
     }
 
-    /// Convert to TUI ActionType
-    pub fn to_tui_action_type(&self) -> crate::tui::ActionType {
+    /// Convert to Progress ActionType
+    pub fn to_progress_action_type(&self) -> vx_aether_proto::ActionType {
         match self {
             Action::AcquireToolchain { .. } => {
-                crate::tui::ActionType::AcquireToolchain
+                vx_aether_proto::ActionType::AcquireToolchain
             }
             Action::AcquireRegistryCrate { name, version, .. } => {
-                crate::tui::ActionType::AcquireRegistryCrate(name.clone(), version.clone())
+                vx_aether_proto::ActionType::AcquireRegistryCrate(name.clone(), version.clone())
             }
             Action::CompileRustCrate { crate_name, .. } => {
-                crate::tui::ActionType::CompileRust(crate_name.clone())
+                vx_aether_proto::ActionType::CompileRust(crate_name.clone())
             }
         }
     }
