@@ -115,6 +115,11 @@ fn spawn_service(binary_name: &str, env_vars: &[(&str, &str)], log_path: &camino
     use std::fs::OpenOptions;
     use std::process::Stdio;
 
+    // Ensure parent directory exists for log file
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
     // Open log file for appending
     let log_file = OpenOptions::new()
         .create(true)
