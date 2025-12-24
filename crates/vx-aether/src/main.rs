@@ -300,7 +300,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Initialize aether service (no session for standalone daemon mode)
+    // Initialize aether service (singleton shared across all connections)
     tracing::info!("Initializing aether service");
     let aether = Arc::new(
         AetherService::new(
@@ -309,7 +309,6 @@ async fn main() -> Result<()> {
             args.vx_home,
             exec_host_triple,
             spawn_tracker,
-            None, // No progress listener when running as standalone daemon
         )
         .await,
     );
@@ -326,11 +325,34 @@ async fn main() -> Result<()> {
             tracing::debug!("New connection from {}", peer_addr);
 
             let transport = rapace::Transport::stream(socket);
-            let server = AetherServer::new(aether);
 
-            if let Err(e) = server.serve(transport).await {
-                tracing::warn!("Connection error from {}: {}", peer_addr, e);
+            // Create RPC session with even channel IDs (server uses 0, 2, 4, ...)
+            let session = Arc::new(rapace::RpcSession::with_channel_start(transport, 0));
+
+            // Create ProgressListenerClient from this session
+            let progress_listener = Arc::new(vx_aether_proto::ProgressListenerClient::new(session.clone()));
+
+            // Set progress listener for this connection
+            aether.set_progress_listener(Some(progress_listener)).await;
+
+            // Set up dispatcher for Aether service
+            let server = Arc::new(AetherServer::new(aether.clone()));
+            let buffer_pool = session.buffer_pool().clone();
+            session.set_dispatcher(move |request| {
+                let server = server.clone();
+                let buffer_pool = buffer_pool.clone();
+                Box::pin(async move {
+                    server.dispatch(request.desc.method_id, &request, &buffer_pool).await
+                })
+            });
+
+            // Run the session
+            if let Err(e) = session.run().await {
+                tracing::warn!("Session error from {}: {}", peer_addr, e);
             }
+
+            // Clear progress listener when connection closes
+            aether.set_progress_listener(None).await;
 
             tracing::debug!("Connection from {} closed", peer_addr);
         });

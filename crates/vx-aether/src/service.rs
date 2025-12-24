@@ -17,7 +17,7 @@ use picante::wal::WalWriter;
 use picante::HasRuntime;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 use vx_aether_proto::{Aether, AETHER_PROTOCOL_VERSION, BuildRequest, BuildResult, ProgressListenerClient, ActionType};
 use vx_oort_proto::{
@@ -80,13 +80,15 @@ pub struct AetherService {
     spawn_tracker: Arc<Mutex<SpawnTracker>>,
 
     /// Progress listener client (for reporting progress to vx CLI)
-    progress_listener: Option<Arc<ProgressListenerClient>>,
+    /// Uses RwLock for interior mutability so it can be updated per-connection
+    progress_listener: Arc<RwLock<Option<Arc<ProgressListenerClient>>>>,
 }
 
 impl AetherService {
     /// Report progress to CLI if connected
     async fn report_start_action(&self, action_type: ActionType) -> Option<u64> {
-        if let Some(ref listener) = self.progress_listener {
+        let listener_guard = self.progress_listener.read().await;
+        if let Some(ref listener) = *listener_guard {
             listener.start_action(action_type).await.ok()
         } else {
             None
@@ -94,13 +96,15 @@ impl AetherService {
     }
 
     async fn report_complete_action(&self, action_id: Option<u64>) {
-        if let (Some(listener), Some(id)) = (&self.progress_listener, action_id) {
+        let listener_guard = self.progress_listener.read().await;
+        if let (Some(listener), Some(id)) = (listener_guard.as_ref(), action_id) {
             let _ = listener.complete_action(id).await;
         }
     }
 
     async fn report_set_total(&self, total: u64) {
-        if let Some(ref listener) = self.progress_listener {
+        let listener_guard = self.progress_listener.read().await;
+        if let Some(ref listener) = *listener_guard {
             let _ = listener.set_total(total).await;
         }
     }
@@ -112,10 +116,7 @@ impl AetherService {
         vx_home: Utf8PathBuf,
         exec_host_triple: String,
         spawn_tracker: Arc<Mutex<SpawnTracker>>,
-        session: Option<Arc<rapace::RpcSession>>,
     ) -> Self {
-        // Create progress listener client if session provided (bidirectional RPC)
-        let progress_listener = session.as_ref().map(|s| Arc::new(ProgressListenerClient::new(s.clone())));
         let db = Database::new();
         let cache_path = vx_home.join("picante.cache");
         let wal_path = vx_home.join("picante.wal");
@@ -178,8 +179,13 @@ impl AetherService {
                 zig: None,
             })),
             spawn_tracker,
-            progress_listener,
+            progress_listener: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Update the progress listener for the current connection
+    pub async fn set_progress_listener(&self, listener: Option<Arc<ProgressListenerClient>>) {
+        *self.progress_listener.write().await = listener;
     }
 
     /// Ensure Rust toolchain exists in CAS. Returns info for cache keys.
@@ -492,9 +498,13 @@ impl AetherService {
             .map(|n| n.get() * 2)
             .unwrap_or(16);
         tracing::info!("SERVICE: creating executor with max_concurrency={}", max_concurrency);
+
+        // Get current progress listener (clones the Option<Arc<...>> inside the RwLock)
+        let progress_listener = self.progress_listener.read().await.clone();
+
         let mut executor = Executor::new(
             action_graph,
-            self.progress_listener.clone(),
+            progress_listener,
             self.cas.clone(),
             self.exec.clone(),
             self.db.clone(),
