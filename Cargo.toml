@@ -15,6 +15,7 @@ vx-cass-proto = { path = "crates/vx-cass-proto" }
 vx-cc = { path = "crates/vx-cc" }
 vx-rhea-proto = { path = "crates/vx-rhea-proto" }
 vx-manifest = { path = "crates/vx-manifest" }
+vx-project = { path = "crates/vx-project" }
 vx-aether-proto = { path = "crates/vx-aether-proto" }
 vx-report = { path = "crates/vx-report" }
 vx-io = { path = "crates/vx-io" }
@@ -25,6 +26,7 @@ vx-toolchain = { path = "crates/vx-toolchain" }
 facet = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jiff02", "camino"] }
 facet-args = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-json = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-kdl = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-toml = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-value = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["jiff02", "camino"] }
