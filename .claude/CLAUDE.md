@@ -22,22 +22,34 @@ To test the vx build system end-to-end:
    - `vx-rhea` - Execution worker service
    - `vx-aether` - Build orchestration daemon
 
-2. **Test in a project**:
+2. **Use test VX_HOME** (IMPORTANT):
+   ```bash
+   # Use the .envrc to set VX_HOME to /tmp/.vx-for-tests
+   direnv allow
+   ```
+   This prevents polluting the user's `~/.vx` with test data and downloaded crates.
+
+   **NEVER run `rm -rf ~/.vx` - it nukes the CAS and forces redownloading all registry crates!**
+
+3. **Test in a project**:
    ```bash
    cd ~/bearcove/helloworld
    vx build
    ```
 
-3. **Check logs**:
-   - Cass logs: `~/.vx/cass.log`
-   - Rhea logs: `~/.vx/rhea.log`
-   - Aether logs: `~/.vx/aether.log`
+4. **Check logs**:
+   - Cass logs: `$VX_HOME/cass.log`
+   - Rhea logs: `$VX_HOME/rhea.log`
+   - Aether logs: `$VX_HOME/aether.log`
 
-4. **Clean state for testing**:
+5. **Clean state for testing**:
    ```bash
-   rm -rf ~/.vx
+   # Only clean the project's .vx directory
+   rm -rf .vx
+
+   # Or clean the test VX_HOME (if using .envrc)
+   rm -rf /tmp/.vx-for-tests
    ```
-   This removes the picante cache, CAS blobs, toolchains, etc. for a fresh start.
 
 ## Architecture Overview
 
