@@ -834,6 +834,19 @@ async fn execute_action(
                     }
                 })?;
 
+                // Ensure .vx is in .gitignore (best-effort, don't fail build if this fails)
+                match vx_io::git::ensure_vx_gitignored(&workspace_root).await {
+                    Ok(true) => {
+                        debug!("Added /.vx to .gitignore");
+                    }
+                    Ok(false) => {
+                        // Already in gitignore or not in a git repo
+                    }
+                    Err(e) => {
+                        warn!("Failed to update .gitignore: {}", e);
+                    }
+                }
+
                 let output_path = output_dir.join(&crate_name);
 
                 // Fetch manifest and materialize

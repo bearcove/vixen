@@ -2,6 +2,7 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+pub mod git;
 pub mod net;
 
 /// Atomically write contents to a file.
