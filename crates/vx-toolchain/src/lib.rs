@@ -11,13 +11,17 @@ pub mod zig;
 
 use thiserror::Error;
 
-use vx_cass_proto::{Blake3Hash, RustChannel, RustComponent, RustToolchainSpec};
+use vx_cass_proto::RustChannel;
 
 // Re-export Rust toolchain functions
 pub use rust::{
     parse_rust_channel, rust_channel_manifest_url, rust_toolchain_spec_cross,
     rust_toolchain_spec_native, ChannelManifest, PackageManifest, RustToolchainId, TargetManifest,
 };
+
+// Re-export types used in tests
+#[cfg(test)]
+pub use vx_cass_proto::{RustComponent, RustToolchainSpec};
 
 // Type alias for backward compatibility
 pub type Channel = RustChannel;

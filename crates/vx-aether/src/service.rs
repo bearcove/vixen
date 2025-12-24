@@ -462,9 +462,9 @@ impl AetherService {
             .map_err(|e| AetherError::Picante(e.to_string()))?;
 
         let build_key = BuildConfig::compute_key(
-            &profile,
+            profile,
             &target_triple,
-            &graph.workspace_root.to_string(),
+            graph.workspace_root.as_ref(),
         );
         let config = BuildConfig::new(
             &*self.db,
@@ -485,7 +485,7 @@ impl AetherService {
             target_triple.clone(),
             toolchain,
             config,
-            &*self.db,
+            &self.db,
         )?;
 
         // Dump graph for debugging

@@ -13,6 +13,7 @@
 //! 2. **CrateId uses source-aware identity**:
 //!    - Path crates: hash of `(workspace_rel, package_name)`
 //!    - Registry crates: hash of `(name, version, checksum)`
+//!
 //!    This ensures stable cache keys regardless of checkout location.
 //!
 //! 3. **All paths are workspace-relative**: No absolute paths leak into cache keys
@@ -393,7 +394,7 @@ impl CrateGraph {
             let source = CrateSource::Path {
                 workspace_rel: workspace_rel.clone(),
             };
-            let id = CrateId::for_path(&workspace_rel, &&**manifest.name);
+            let id = CrateId::for_path(&workspace_rel, &manifest.name);
 
             let node = CrateNode {
                 id,
@@ -618,7 +619,7 @@ impl CrateGraph {
             let source = CrateSource::Path {
                 workspace_rel: workspace_rel.clone(),
             };
-            let id = CrateId::for_path(&workspace_rel, &&**manifest.name);
+            let id = CrateId::for_path(&workspace_rel, &manifest.name);
 
             let node = CrateNode {
                 id,
@@ -849,7 +850,7 @@ impl CrateGraph {
             let package_name = package
                 .name
                 .clone()
-                .ok_or({ CrateGraphError::ManifestError(ManifestError::MissingField("name")) })?;
+                .ok_or(CrateGraphError::ManifestError(ManifestError::MissingField("name")))?;
 
             // Extract edition, converting from facet_cargo_toml::Edition to vx_manifest::Edition
             let edition = match &package.edition {

@@ -451,7 +451,7 @@ fn parse_dependencies(
                     .map(|f_list| {
                         let span = f_list.span();
                         f_list.value.iter()
-                            .map(|s| Spanned::new(s.clone(), span.clone()))
+                            .map(|s| Spanned::new(s.clone(), span))
                             .collect()
                     })
                     .unwrap_or_default();

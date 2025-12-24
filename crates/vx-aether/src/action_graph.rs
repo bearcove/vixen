@@ -33,6 +33,12 @@ pub enum Action {
         target_triple: String,
     },
 
+    /// Acquire Zig toolchain for C/C++ compilation
+    AcquireZigToolchain {
+        /// Zig version (e.g., "0.13.0")
+        version: String,
+    },
+
     /// Acquire registry crate from crates.io
     AcquireRegistryCrate {
         /// Crate name
@@ -69,6 +75,30 @@ pub enum Action {
         /// Build configuration (for cache key computation)
         config: BuildConfig,
     },
+
+    /// Compile a C source file to an object file
+    CompileCObject {
+        /// Source file path (workspace-relative)
+        source: String,
+        /// Output object file path (workspace-relative, usually .vx/obj/...)
+        output: String,
+        /// Target triple
+        target_triple: String,
+        /// Build profile (debug/release)
+        profile: String,
+    },
+
+    /// Link C object files into a binary
+    LinkCBinary {
+        /// Binary name
+        name: String,
+        /// Object files to link (workspace-relative)
+        objects: Vec<String>,
+        /// Output binary path (workspace-relative)
+        output: String,
+        /// Target triple
+        target_triple: String,
+    },
 }
 
 impl Action {
@@ -78,11 +108,20 @@ impl Action {
             Action::AcquireToolchain { channel, .. } => {
                 format!("acquire toolchain {:?}", channel)
             }
+            Action::AcquireZigToolchain { version } => {
+                format!("acquire zig {}", version)
+            }
             Action::AcquireRegistryCrate { name, version, .. } => {
                 format!("acquire {}@{}", name, version)
             }
             Action::CompileRustCrate { crate_name, .. } => {
                 format!("compile {}", crate_name)
+            }
+            Action::CompileCObject { source, .. } => {
+                format!("compile {}", source)
+            }
+            Action::LinkCBinary { name, .. } => {
+                format!("link {}", name)
             }
         }
     }
@@ -93,11 +132,20 @@ impl Action {
             Action::AcquireToolchain { .. } => {
                 vx_aether_proto::ActionType::AcquireToolchain
             }
+            Action::AcquireZigToolchain { version } => {
+                vx_aether_proto::ActionType::AcquireZigToolchain(version.clone())
+            }
             Action::AcquireRegistryCrate { name, version, .. } => {
                 vx_aether_proto::ActionType::AcquireRegistryCrate(name.clone(), version.clone())
             }
             Action::CompileRustCrate { crate_name, .. } => {
                 vx_aether_proto::ActionType::CompileRust(crate_name.clone())
+            }
+            Action::CompileCObject { source, .. } => {
+                vx_aether_proto::ActionType::CompileC(source.clone())
+            }
+            Action::LinkCBinary { name, .. } => {
+                vx_aether_proto::ActionType::LinkC(name.clone())
             }
         }
     }
@@ -244,10 +292,9 @@ impl ActionGraph {
             graph.add_edge(compile_idx, toolchain_node, ());
 
             // Registry crates also depend on their registry acquisition
-            if let CrateSource::Registry { name, version, .. } = &crate_node.source {
-                if let Some(&registry_idx) = registry_nodes.get(&(name.clone(), version.clone())) {
-                    graph.add_edge(compile_idx, registry_idx, ());
-                }
+            if let CrateSource::Registry { name, version, .. } = &crate_node.source
+                && let Some(&registry_idx) = registry_nodes.get(&(name.clone(), version.clone())) {
+                graph.add_edge(compile_idx, registry_idx, ());
             }
 
             // Add edges to crate dependencies

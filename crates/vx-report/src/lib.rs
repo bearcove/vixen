@@ -39,19 +39,23 @@ impl RunId {
     pub fn new() -> Self {
         Self(ulid::Ulid::new().to_string())
     }
+}
+
+impl std::str::FromStr for RunId {
+    type Err = &'static str;
 
     /// Parse a RunId from a string.
-    pub fn from_str(s: &str) -> Option<Self> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Basic validation: 26 characters, all valid Crockford base32
         if s.len() != 26 {
-            return None;
+            return Err("RunId must be 26 characters");
         }
         for c in s.chars() {
             if !matches!(c, '0'..='9' | 'A'..='H' | 'J' | 'K' | 'M' | 'N' | 'P'..='T' | 'V'..='Z') {
-                return None;
+                return Err("RunId contains invalid characters");
             }
         }
-        Some(Self(s.to_string()))
+        Ok(Self(s.to_string()))
     }
 }
 
@@ -503,7 +507,7 @@ impl ReportStore {
         }
 
         let id_str = std::fs::read_to_string(&latest_path)?;
-        Ok(RunId::from_str(id_str.trim()))
+        Ok(id_str.trim().parse().ok())
     }
 
     /// Load the latest build report.
@@ -528,7 +532,7 @@ impl ReportStore {
             if let Some(ext) = path.extension()
                 && ext == "json"
                     && let Some(stem) = path.file_stem()
-                        && let Some(run_id) = RunId::from_str(&stem.to_string_lossy()) {
+                        && let Ok(run_id) = stem.to_string_lossy().parse::<RunId>() {
                             runs.push(run_id);
                         }
         }
@@ -967,7 +971,7 @@ mod tests {
         assert_eq!(id2.0.len(), 26);
 
         // Should parse back
-        assert!(RunId::from_str(&id1.0).is_some());
+        assert!(id1.0.parse::<RunId>().is_ok());
     }
 
     #[test]

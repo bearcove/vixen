@@ -16,59 +16,27 @@ This allows:
 ### Example 1: Pure Rust (equivalent to Cargo.toml)
 
 ```kdl
-project {
-    name "my-app"
-    lang "rust"
-}
-
-bin {
-    name "my-app"
-    sources "src/main.rs"
-}
-
-dependency "serde" version="1.0"
-dependency "tokio" version="1.0"
+project name="my-app" lang="rust"
+bin name="my-app" sources="src/main.rs"
 ```
 
 ### Example 2: Pure C
 
 ```kdl
-project {
-    name "hello"
-    lang "c"
-}
-
-bin {
-    name "hello"
-    sources "src/main.c"
-}
-
-// No dependencies for now - keep it simple
+project name="hello" lang="c"
+bin name="hello" sources="main.c"
 ```
 
 ### Example 3: Rust + C (future)
 
 ```kdl
-project {
-    name "mixed-app"
-    lang "rust"
-}
+project name="mixed-app" lang="rust"
 
 // Rust binary that links against C library
-bin {
-    name "app"
-    lang "rust"
-    sources "src/main.rs"
-    link "mylib"
-}
+bin name="app" lang="rust" sources="src/main.rs" link="mylib"
 
 // C library
-lib {
-    name "mylib"
-    lang "c"
-    sources "csrc/*.c"
-    headers "csrc/*.h"
-}
+lib name="mylib" lang="c" sources="csrc/*.c" headers="csrc/*.h"
 ```
 
 ## Build Flow
@@ -187,15 +155,8 @@ project/
 
 **vx.kdl:**
 ```kdl
-project {
-    name "hello"
-    lang "c"
-}
-
-bin {
-    name "hello"
-    sources "main.c"
-}
+project name="hello" lang="c"
+bin name="hello" sources="main.c"
 ```
 
 **main.c:**
