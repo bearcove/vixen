@@ -175,6 +175,9 @@ impl AetherService {
             }
         }
 
+        // Track toolchain acquisition in TUI
+        let action_id = self.tui.start_action(crate::tui::ActionType::AcquireToolchain).await;
+
         let spec = RustToolchainSpec {
             channel,
             host: self.exec_host_triple.clone(),
@@ -186,23 +189,41 @@ impl AetherService {
             .cas
             .ensure_rust_toolchain(spec)
             .await
-            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
+            .map_err(|e| {
+                // Complete action on error
+                let tui = self.tui.clone();
+                tokio::spawn(async move { tui.complete_action(action_id).await });
+                AetherError::CasRpc(std::sync::Arc::new(e))
+            })?;
 
         if result.status == EnsureStatus::Failed {
+            self.tui.complete_action(action_id).await;
             return Err(AetherError::ToolchainAcquisition(
                 result.error.unwrap_or_else(|| "unknown error".to_string()),
             ));
         }
 
-        let manifest_hash = result.manifest_hash.ok_or(AetherError::NoManifestHash)?;
+        let manifest_hash = result.manifest_hash.ok_or_else(|| {
+            let tui = self.tui.clone();
+            tokio::spawn(async move { tui.complete_action(action_id).await });
+            AetherError::NoManifestHash
+        })?;
 
         // Get manifest for version info (and toolchain_id on cache hit)
         let manifest = self
             .cas
             .get_toolchain_manifest(manifest_hash)
             .await
-            .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
-            .ok_or(AetherError::ToolchainManifestNotFound(manifest_hash))?;
+            .map_err(|e| {
+                let tui = self.tui.clone();
+                tokio::spawn(async move { tui.complete_action(action_id).await });
+                AetherError::CasRpc(std::sync::Arc::new(e))
+            })?
+            .ok_or_else(|| {
+                let tui = self.tui.clone();
+                tokio::spawn(async move { tui.complete_action(action_id).await });
+                AetherError::ToolchainManifestNotFound(manifest_hash)
+            })?;
 
         // On cache hit, toolchain_id comes from manifest; on download, it's in the result
         let toolchain_id = result.toolchain_id.unwrap_or(manifest.toolchain_id);
@@ -224,6 +245,9 @@ impl AetherService {
                 manifest_date: manifest.rust_manifest_date,
             });
         }
+
+        // Complete the TUI action
+        self.tui.complete_action(action_id).await;
 
         Ok(info)
     }

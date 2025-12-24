@@ -235,13 +235,13 @@ async fn main() -> Result<()> {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::fmt;
 
-    // TEMPORARY: Write logs to stderr for debugging instead of TUI
+    // Install TUI tracing layer
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=trace")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=debug")),
         )
-        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(tui_layer)
         .init();
 
     // Now safe to call things that might log

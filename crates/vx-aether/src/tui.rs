@@ -288,15 +288,35 @@ where
     }
 }
 
-/// Visitor to extract the message from a tracing event
+/// Visitor to extract all fields from a tracing event
 struct LogVisitor {
     message: String,
+    fields: Vec<(String, String)>,
 }
 
 impl LogVisitor {
     fn new() -> Self {
         Self {
             message: String::new(),
+            fields: Vec::new(),
+        }
+    }
+
+    fn format(&self) -> String {
+        if self.fields.is_empty() {
+            return self.message.clone();
+        }
+
+        let fields_str = self.fields
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if self.message.is_empty() {
+            fields_str
+        } else {
+            format!("{} {}", self.message, fields_str)
         }
     }
 }
@@ -305,12 +325,34 @@ impl tracing::field::Visit for LogVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.message = format!("{:?}", value);
+        } else {
+            self.fields.push((field.name().to_string(), format!("{:?}", value)));
         }
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
             self.message = value.to_string();
+        } else {
+            self.fields.push((field.name().to_string(), value.to_string()));
+        }
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() != "message" {
+            self.fields.push((field.name().to_string(), value.to_string()));
+        }
+    }
+
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        if field.name() != "message" {
+            self.fields.push((field.name().to_string(), value.to_string()));
+        }
+    }
+
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        if field.name() != "message" {
+            self.fields.push((field.name().to_string(), value.to_string()));
         }
     }
 }
