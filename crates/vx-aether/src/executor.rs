@@ -35,6 +35,8 @@ pub enum ActionResult {
         toolchain_id: Blake3Hash,
         /// Toolchain manifest hash
         manifest_hash: Blake3Hash,
+        /// Whether this was a cache hit
+        was_cached: bool,
     },
 
     /// Registry crate acquired successfully
@@ -45,6 +47,8 @@ pub enum ActionResult {
         version: String,
         /// Manifest hash
         manifest_hash: Blake3Hash,
+        /// Whether this was a cache hit
+        was_cached: bool,
     },
 
     /// Rust crate compiled successfully
@@ -283,6 +287,20 @@ impl Executor {
 
         for (_, result) in results_lock.iter() {
             match result {
+                ActionResult::ToolchainAcquired { was_cached, .. } => {
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+                }
+                ActionResult::RegistryCrateAcquired { was_cached, .. } => {
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+                }
                 ActionResult::CrateCompiled {
                     bin_output: bin_path,
                     was_cached,
@@ -298,7 +316,6 @@ impl Executor {
                         bin_output = Some(path.clone());
                     }
                 }
-                _ => {}
             }
         }
 
@@ -433,6 +450,7 @@ async fn execute_action(
             Ok(ActionResult::ToolchainAcquired {
                 toolchain_id,
                 manifest_hash,
+                was_cached: result.status == EnsureStatus::Hit,
             })
         }
 
@@ -463,10 +481,13 @@ async fn execute_action(
                                 version: version.clone(),
                             })?;
 
+                    let was_cached = result.status == EnsureStatus::Hit;
+
                     debug!(
                         name = %name,
                         version = %version,
                         manifest_hash = %manifest_hash.short_hex(),
+                        was_cached = was_cached,
                         "acquired registry crate"
                     );
 
@@ -474,6 +495,7 @@ async fn execute_action(
                         name,
                         version,
                         manifest_hash,
+                        was_cached,
                     })
                 }
                 EnsureStatus::Failed => Err(AetherError::RegistryCrateAcquisition {
@@ -508,7 +530,7 @@ async fn execute_action(
             let (toolchain_manifest, toolchain_id) = if let Some(toolchain_idx) = toolchain_node_idx {
                 let results_lock = results.read().await;
                 match results_lock.get(&toolchain_idx) {
-                    Some(ActionResult::ToolchainAcquired { toolchain_id, manifest_hash }) => {
+                    Some(ActionResult::ToolchainAcquired { toolchain_id, manifest_hash, .. }) => {
                         info!("COMPILE: using acquired toolchain manifest_hash={} toolchain_id={}",
                               manifest_hash.short_hex(), toolchain_id.short_hex());
                         (*manifest_hash, *toolchain_id)
@@ -606,6 +628,7 @@ async fn execute_action(
                                 name,
                                 version,
                                 manifest_hash,
+                                ..
                             } => Some(((name.clone(), version.clone()), *manifest_hash)),
                             _ => None,
                         }
