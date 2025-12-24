@@ -94,6 +94,7 @@ mod tests {
             target_triple: "aarch64-apple-darwin".to_string(),
             profile: "release".to_string(),
             deps: vec![],
+            registry_crate_manifest: None,
         };
 
         let key1 = rust_compile_cache_key(&request);
@@ -125,6 +126,7 @@ mod tests {
             target_triple: "aarch64-apple-darwin".to_string(),
             profile: "release".to_string(),
             deps: vec![dep_a.clone(), dep_b.clone()],
+            registry_crate_manifest: None,
         };
 
         let request2 = RustCompileRequest {
@@ -137,6 +139,7 @@ mod tests {
             target_triple: "aarch64-apple-darwin".to_string(),
             profile: "release".to_string(),
             deps: vec![dep_b, dep_a], // reversed order
+            registry_crate_manifest: None,
         };
 
         let key1 = rust_compile_cache_key(&request1);

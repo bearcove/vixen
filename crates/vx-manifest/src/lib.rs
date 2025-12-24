@@ -587,6 +587,11 @@ fn determine_bin_target(
 mod tests {
     use super::*;
 
+    /// Helper to create a test source from TOML string
+    fn test_source(toml: &str) -> Arc<NamedSource<String>> {
+        Arc::new(NamedSource::new("Cargo.toml", toml.to_string()))
+    }
+
     #[test]
     fn parse_minimal_manifest() {
         let toml = r#"
@@ -596,7 +601,7 @@ edition = "2021"
 "#;
         // This will fail because no src/main.rs exists
         // In real usage, base_dir points to actual directory
-        let result = Manifest::parse(toml, None);
+        let result = Manifest::parse(test_source(toml), None);
         // Without base_dir, it can't check file existence, so it defaults to no targets
         assert!(result.is_err());
     }
@@ -613,11 +618,11 @@ edition = "2021"
 name = "mylib"
 edition = "2021"
 "#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
-        assert_eq!(manifest.name, "mylib");
+        let manifest = Manifest::parse(test_source(toml), Some(&base)).unwrap();
+        assert_eq!(manifest.name.value, "mylib");
         assert!(manifest.lib.is_some());
         assert!(manifest.bin.is_none());
-        assert_eq!(manifest.lib.as_ref().unwrap().name, "mylib");
+        assert_eq!(manifest.lib.as_ref().unwrap().name.value, "mylib");
     }
 
     #[test]
@@ -632,11 +637,11 @@ edition = "2021"
 name = "mybin"
 edition = "2021"
 "#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
-        assert_eq!(manifest.name, "mybin");
+        let manifest = Manifest::parse(test_source(toml), Some(&base)).unwrap();
+        assert_eq!(manifest.name.value, "mybin");
         assert!(manifest.lib.is_none());
         assert!(manifest.bin.is_some());
-        assert_eq!(manifest.bin.as_ref().unwrap().name, "mybin");
+        assert_eq!(manifest.bin.as_ref().unwrap().name.value, "mybin");
     }
 
     #[test]
@@ -654,10 +659,10 @@ edition = "2021"
 [dependencies]
 util = { path = "../util" }
 "#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(test_source(toml), Some(&base)).unwrap();
         assert_eq!(manifest.deps.len(), 1);
-        assert_eq!(manifest.deps[0].name, "util");
-        assert_eq!(manifest.deps[0].path, Utf8PathBuf::from("../util"));
+        assert_eq!(manifest.deps[0].name.value, "util");
+        assert_eq!(manifest.deps[0].path.value, "../util");
     }
 
     #[test]
@@ -676,10 +681,10 @@ edition = "2021"
 util = { path = "../util" }
 common = { path = "../common" }
 "#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(test_source(toml), Some(&base)).unwrap();
         assert_eq!(manifest.deps.len(), 2);
         // Note: order may vary since we're iterating a map
-        let names: Vec<_> = manifest.deps.iter().map(|d| d.name.as_str()).collect();
+        let names: Vec<_> = manifest.deps.iter().map(|d| d.name.value.as_str()).collect();
         assert!(names.contains(&"util"));
         assert!(names.contains(&"common"));
     }
@@ -698,10 +703,10 @@ name = "app"
 [dependencies]
 serde = "1.0"
 "#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(test_source(toml), Some(&base)).unwrap();
         assert_eq!(manifest.version_deps.len(), 1);
-        assert_eq!(manifest.version_deps[0].name, "serde");
-        assert_eq!(manifest.version_deps[0].version, "1.0");
+        assert_eq!(manifest.version_deps[0].name.value, "serde");
+        assert_eq!(manifest.version_deps[0].version.value, "1.0");
         assert!(manifest.has_version_deps());
     }
 
@@ -719,10 +724,10 @@ name = "app"
 [dependencies]
 serde = { version = "1.0.197" }
 "#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(test_source(toml), Some(&base)).unwrap();
         assert_eq!(manifest.version_deps.len(), 1);
-        assert_eq!(manifest.version_deps[0].name, "serde");
-        assert_eq!(manifest.version_deps[0].version, "1.0.197");
+        assert_eq!(manifest.version_deps[0].name.value, "serde");
+        assert_eq!(manifest.version_deps[0].version.value, "1.0.197");
     }
 
     #[test]
@@ -740,11 +745,11 @@ name = "app"
 serde = "1.0"
 mylib = { path = "../mylib" }
 "#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(test_source(toml), Some(&base)).unwrap();
         assert_eq!(manifest.deps.len(), 1);
-        assert_eq!(manifest.deps[0].name, "mylib");
+        assert_eq!(manifest.deps[0].name.value, "mylib");
         assert_eq!(manifest.version_deps.len(), 1);
-        assert_eq!(manifest.version_deps[0].name, "serde");
+        assert_eq!(manifest.version_deps[0].name.value, "serde");
     }
 
     #[test]
@@ -761,7 +766,7 @@ name = "app"
 [dependencies]
 foo = { git = "https://github.com/example/foo" }
 "#;
-        let err = Manifest::parse(toml, Some(&base)).unwrap_err();
+        let err = Manifest::parse(test_source(toml), Some(&base)).unwrap_err();
         assert!(
             matches!(err, ManifestError::InvalidDependency { name, reason, .. }
             if name == "foo" && reason.contains("git"))
@@ -782,10 +787,11 @@ name = "app"
 [dependencies]
 util = { path = "../util", features = ["foo", "bar"] }
 "#;
-        let manifest = Manifest::parse(toml, Some(&base)).unwrap();
+        let manifest = Manifest::parse(test_source(toml), Some(&base)).unwrap();
         assert_eq!(manifest.deps.len(), 1);
-        assert_eq!(manifest.deps[0].name, "util");
-        assert_eq!(manifest.deps[0].features, vec!["foo", "bar"]);
+        assert_eq!(manifest.deps[0].name.value, "util");
+        let features: Vec<&str> = manifest.deps[0].features.iter().map(|s| s.value.as_str()).collect();
+        assert_eq!(features, vec!["foo", "bar"]);
     }
 
     #[test]
@@ -802,7 +808,7 @@ name = "app"
 [dependencies]
 util = { path = "../util", optional = true }
 "#;
-        let err = Manifest::parse(toml, Some(&base)).unwrap_err();
+        let err = Manifest::parse(test_source(toml), Some(&base)).unwrap_err();
         assert!(
             matches!(err, ManifestError::InvalidDependency { name, reason, .. }
             if name == "util" && reason.contains("optional"))
@@ -816,7 +822,7 @@ util = { path = "../util", optional = true }
 name = "hello"
 build = "build.rs"
 "#;
-        let err = Manifest::parse(toml, None).unwrap_err();
+        let err = Manifest::parse(test_source(toml), None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -835,7 +841,7 @@ name = "hello"
 [lib]
 proc-macro = true
 "#;
-        let err = Manifest::parse(toml, None).unwrap_err();
+        let err = Manifest::parse(test_source(toml), None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -854,7 +860,7 @@ name = "hello"
 [[test]]
 name = "integration"
 "#;
-        let err = Manifest::parse(toml, None).unwrap_err();
+        let err = Manifest::parse(test_source(toml), None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -873,7 +879,7 @@ name = "hello"
 [[bench]]
 name = "mybench"
 "#;
-        let err = Manifest::parse(toml, None).unwrap_err();
+        let err = Manifest::parse(test_source(toml), None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -892,7 +898,7 @@ name = "hello"
 [[example]]
 name = "myexample"
 "#;
-        let err = Manifest::parse(toml, None).unwrap_err();
+        let err = Manifest::parse(test_source(toml), None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -916,7 +922,7 @@ path = "src/one.rs"
 name = "two"
 path = "src/two.rs"
 "#;
-        let err = Manifest::parse(toml, None).unwrap_err();
+        let err = Manifest::parse(test_source(toml), None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
@@ -936,7 +942,7 @@ name = "hello"
 default = []
 foo = []
 "#;
-        let err = Manifest::parse(toml, None).unwrap_err();
+        let err = Manifest::parse(test_source(toml), None).unwrap_err();
         assert!(matches!(
             err,
             ManifestError::Unsupported {
