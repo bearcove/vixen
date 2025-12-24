@@ -9,7 +9,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 use tracing_subscriber::Layer;
 use vx_aether_proto::ActionType;
 
@@ -57,29 +57,37 @@ impl TuiState {
     fn pending(&self) -> usize {
         self.total.saturating_sub(self.completed).saturating_sub(self.active.len())
     }
-
-    fn is_done(&self) -> bool {
-        self.completed == self.total && self.active.is_empty() && self.total > 0
-    }
 }
 
 /// Handle for interacting with the TUI
-#[derive(Clone)]
 pub struct TuiHandle {
     state: Arc<RwLock<TuiState>>,
+    /// Receiver that signals when display task has finished cleanup
+    shutdown_rx: Arc<RwLock<Option<oneshot::Receiver<()>>>>,
+}
+
+impl Clone for TuiHandle {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            shutdown_rx: self.shutdown_rx.clone(),
+        }
+    }
 }
 
 impl TuiHandle {
     /// Create a new TUI handle and spawn the display task
     pub fn new() -> Self {
         let state = Arc::new(RwLock::new(TuiState::new()));
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let handle = Self {
             state: state.clone(),
+            shutdown_rx: Arc::new(RwLock::new(Some(shutdown_rx))),
         };
 
         // Spawn the display task
-        tokio::spawn(Self::display_task(state));
+        tokio::spawn(Self::display_task(state, shutdown_tx));
 
         handle
     }
@@ -133,13 +141,14 @@ impl TuiHandle {
             state.shutdown = true;
         }
 
-        // Wait a moment for the display task to clean up
-        // The display task runs at ~15fps (67ms interval), so 200ms should be plenty
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        // Wait for the display task to signal completion
+        if let Some(rx) = self.shutdown_rx.write().await.take() {
+            let _ = rx.await; // Ignore errors (channel closed is fine)
+        }
     }
 
     /// Background task that updates the display at ~15fps
-    async fn display_task(state: Arc<RwLock<TuiState>>) {
+    async fn display_task(state: Arc<RwLock<TuiState>>, shutdown_tx: oneshot::Sender<()>) {
         let multi = MultiProgress::new();
 
         // Main progress bar
@@ -156,11 +165,14 @@ impl TuiHandle {
             .expect("valid template")
             .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
 
+        let empty_style = ProgressStyle::with_template("")
+            .expect("valid template");
+
         let action_bars: Vec<_> = (0..3)
             .map(|_| {
                 let bar = multi.add(ProgressBar::new_spinner());
-                bar.set_style(spinner_style.clone());
-                bar.enable_steady_tick(Duration::from_millis(100));
+                bar.set_style(empty_style.clone());
+                // Don't enable steady tick - we'll tick manually only when active
                 bar
             })
             .collect();
@@ -205,13 +217,17 @@ impl TuiHandle {
 
             for (i, bar) in action_bars.iter().enumerate() {
                 if let Some(action) = actions.get(i) {
+                    bar.set_style(spinner_style.clone());
                     let elapsed_secs = action.elapsed().as_secs_f64();
                     bar.set_message(format!(
                         "{:<40} ({:.1}s)",
                         action.action_type.display_name(),
                         elapsed_secs
                     ));
+                    bar.tick(); // Manually tick to advance spinner animation
                 } else {
+                    // Hide inactive slots completely
+                    bar.set_style(empty_style.clone());
                     bar.set_message("");
                 }
             }
@@ -241,6 +257,9 @@ impl TuiHandle {
 
                 // Clear the MultiProgress
                 drop(multi);
+
+                // Signal that cleanup is complete
+                let _ = shutdown_tx.send(());
 
                 break;
             }

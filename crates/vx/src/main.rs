@@ -335,20 +335,31 @@ async fn cmd_build(release: bool) -> Result<()> {
 
     if result.success {
         // Print nice summary box (TUI has already cleaned up)
-        println!("┌─────────────────────────────────────────────────────────────");
-        println!("│ {} Build Complete", "✓".green().bold());
-        println!("├─────────────────────────────────────────────────────────────");
+        println!("─────────────────────────────────────────────────────────────");
+        println!("{} Build Complete", "✓".green().bold());
+        println!("─────────────────────────────────────────────────────────────");
 
         if result.cached {
-            println!("│ {} {}", "Status:".dimmed(), "Cached (no rebuild needed)".cyan());
+            println!("{} {}", "Status:".dimmed(), "Cached (no rebuild needed)".cyan());
         } else {
-            println!("│ {} {}", "Status:".dimmed(), "Success".green());
+            println!("{} {}", "Status:".dimmed(), "Success".green());
         }
 
-        println!("│ {} {} ({:.2}s)",
-            "Duration:".dimmed(),
-            format!("{}ms", result.duration_ms).yellow(),
-            result.duration_ms as f64 / 1000.0
+        // Format duration nicely
+        let duration_str = if result.duration_ms < 1000 {
+            format!("{}ms", result.duration_ms)
+        } else {
+            format!("{:.2}s", result.duration_ms as f64 / 1000.0)
+        };
+        println!("{} {}", "Duration:".dimmed(), duration_str.yellow());
+
+        // Show action stats
+        let executed = result.total_actions.saturating_sub(result.cache_hits);
+        println!("{} {} total, {} cached, {} executed",
+            "Actions:".dimmed(),
+            result.total_actions.to_string().yellow(),
+            result.cache_hits.to_string().cyan(),
+            executed.to_string().green()
         );
 
         if let Some(output_path) = &result.output_path {
@@ -358,11 +369,11 @@ async fn cmd_build(release: bool) -> Result<()> {
             } else {
                 output_path.to_string()
             };
-            println!("│ {} {}", "Binary:".dimmed(), display_path.cyan());
+            println!("{} {}", "Binary:".dimmed(), display_path.cyan());
         }
 
-        println!("│ {} {}", "Project:".dimmed(), cwd.to_string().dimmed());
-        println!("└─────────────────────────────────────────────────────────────");
+        println!("{} {}", "Project:".dimmed(), cwd.to_string().dimmed());
+        println!("─────────────────────────────────────────────────────────────");
 
         Ok(())
     } else {

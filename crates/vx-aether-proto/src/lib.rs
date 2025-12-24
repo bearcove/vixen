@@ -39,6 +39,12 @@ pub struct BuildResult {
     pub output_path: Option<Utf8PathBuf>,
     /// Error message (if failed)
     pub error: Option<String>,
+    /// Total number of actions in the build graph
+    pub total_actions: usize,
+    /// Number of actions that were cache hits
+    pub cache_hits: usize,
+    /// Number of actions that were actually executed
+    pub rebuilt: usize,
 }
 
 /// Action type being tracked

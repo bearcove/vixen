@@ -492,7 +492,8 @@ impl AetherService {
 
         // Set total number of actions for progress tracking
         // Total = 1 toolchain + N registry crates + M compilations
-        self.report_set_total(action_graph.node_count() as u64).await;
+        let total_actions = action_graph.node_count();
+        self.report_set_total(total_actions as u64).await;
 
         let max_concurrency = std::thread::available_parallelism()
             .map(|n| n.get() * 2)
@@ -550,6 +551,9 @@ impl AetherService {
             duration_ms: duration.as_millis() as u64,
             output_path: exec_stats.bin_output,
             error: None,
+            total_actions,
+            cache_hits: exec_stats.cache_hits,
+            rebuilt: exec_stats.rebuilt,
         })
     }
 }
@@ -567,6 +571,9 @@ impl Aether for AetherService {
                 output_path: None,
                 // Convert structured error to string at RPC boundary
                 error: Some(e.to_string()),
+                total_actions: 0,
+                cache_hits: 0,
+                rebuilt: 0,
             },
         }
     }
