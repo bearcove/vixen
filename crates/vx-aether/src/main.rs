@@ -22,10 +22,10 @@ use camino::Utf8PathBuf;
 use eyre::Result;
 use std::process::Child;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use vx_aether_proto::AetherServer;
 use vx_cass_proto::CassClient;
+use vx_io::net::{Endpoint, Listener};
 use vx_rhea_proto::RheaClient;
 
 pub use db::Database;
@@ -42,14 +42,14 @@ struct Args {
     /// VX_HOME directory
     vx_home: Utf8PathBuf,
 
-    /// CAS endpoint (host:port)
-    cas_endpoint: String,
+    /// CAS endpoint
+    cas_endpoint: Endpoint,
 
-    /// Exec endpoint (host:port)
-    exec_endpoint: String,
+    /// Exec endpoint
+    exec_endpoint: Endpoint,
 
-    /// Bind address (host:port)
-    bind: String,
+    /// Bind endpoint
+    bind: Endpoint,
 }
 
 impl Args {
@@ -58,20 +58,55 @@ impl Args {
             let home = std::env::var("HOME").expect("HOME not set");
             format!("{}/.vx", home)
         });
+        let vx_home = Utf8PathBuf::from(&vx_home);
 
-        let cas_endpoint_raw =
-            std::env::var("VX_CASS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
-        let cas_endpoint = vx_io::net::normalize_tcp_endpoint(&cas_endpoint_raw)?;
+        // Parse CAS endpoint (defaults to Unix socket)
+        let cas_endpoint = match std::env::var("VX_CASS") {
+            Ok(v) => Endpoint::parse(&v)?,
+            Err(_) => {
+                #[cfg(unix)]
+                {
+                    vx_io::net::default_unix_endpoint(&vx_home, "cass")
+                }
+                #[cfg(not(unix))]
+                {
+                    Endpoint::parse("127.0.0.1:9002")?
+                }
+            }
+        };
 
-        let exec_endpoint_raw =
-            std::env::var("VX_RHEA").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
-        let exec_endpoint = vx_io::net::normalize_tcp_endpoint(&exec_endpoint_raw)?;
+        // Parse Rhea endpoint (defaults to Unix socket)
+        let exec_endpoint = match std::env::var("VX_RHEA") {
+            Ok(v) => Endpoint::parse(&v)?,
+            Err(_) => {
+                #[cfg(unix)]
+                {
+                    vx_io::net::default_unix_endpoint(&vx_home, "rhea")
+                }
+                #[cfg(not(unix))]
+                {
+                    Endpoint::parse("127.0.0.1:9003")?
+                }
+            }
+        };
 
-        let bind_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
-        let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
+        // Parse bind endpoint (defaults to Unix socket)
+        let bind = match std::env::var("VX_AETHER") {
+            Ok(v) => Endpoint::parse(&v)?,
+            Err(_) => {
+                #[cfg(unix)]
+                {
+                    vx_io::net::default_unix_endpoint(&vx_home, "aether")
+                }
+                #[cfg(not(unix))]
+                {
+                    Endpoint::parse("127.0.0.1:9001")?
+                }
+            }
+        };
 
         Ok(Args {
-            vx_home: Utf8PathBuf::from(vx_home),
+            vx_home,
             cas_endpoint,
             exec_endpoint,
             bind,
@@ -103,13 +138,12 @@ impl SpawnTracker {
     }
 }
 
-/// Try to connect to a service endpoint
-async fn try_connect(endpoint: &str) -> Result<TcpStream> {
-    TcpStream::connect(endpoint).await.map_err(Into::into)
-}
-
 /// Spawn a service binary and return the child process
-fn spawn_service(binary_name: &str, env_vars: &[(&str, &str)], log_path: &camino::Utf8Path) -> Result<Child> {
+fn spawn_service(
+    binary_name: &str,
+    env_vars: &[(&str, String)],
+    log_path: &camino::Utf8Path,
+) -> Result<Child> {
     use std::fs::OpenOptions;
     use std::process::Stdio;
 
@@ -141,23 +175,26 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
     let backoff_ms = [10, 50, 100, 500, 1000];
 
     // Check CAS (storage)
-    if try_connect(&args.cas_endpoint).await.is_err() {
-        if !vx_io::net::is_loopback_endpoint(&args.cas_endpoint) {
+    if vx_io::net::try_connect(&args.cas_endpoint).await?.is_none() {
+        if !args.cas_endpoint.is_local() {
             eyre::bail!(
-                "Cass is not reachable at {}. Auto-spawn is only supported for loopback endpoints.\n\
+                "Cass is not reachable at {}. Auto-spawn is only supported for local endpoints.\n\
                 Start vx-cass on the remote host, or point VX_CASS to a local endpoint.",
                 args.cas_endpoint
             );
         }
 
-        tracing::info!("Cass not running, spawning vx-cass on {}", args.cas_endpoint);
+        tracing::info!(
+            "Cass not running, spawning vx-cass on {}",
+            args.cas_endpoint
+        );
 
         let cass_log = args.vx_home.join("cass.log");
         let child = spawn_service(
             "vx-cass",
             &[
-                ("VX_HOME", args.vx_home.as_str()),
-                ("VX_CASS", &args.cas_endpoint),
+                ("VX_HOME", args.vx_home.to_string()),
+                ("VX_CASS", args.cas_endpoint.display()),
             ],
             &cass_log,
         )?;
@@ -167,22 +204,23 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
         for (attempt, delay) in backoff_ms.iter().enumerate() {
             tokio::time::sleep(tokio::time::Duration::from_millis(*delay)).await;
-            if try_connect(&args.cas_endpoint).await.is_ok() {
+            if vx_io::net::try_connect(&args.cas_endpoint).await?.is_some() {
                 tracing::info!("Connected to Cass after {} attempts", attempt + 1);
                 break;
             }
         }
 
-        try_connect(&args.cas_endpoint).await?;
+        // Final connection attempt
+        vx_io::net::connect(&args.cas_endpoint).await?;
     } else {
         tracing::info!("Cass already running at {}", args.cas_endpoint);
     }
 
     // Check Rhea (worker)
-    if try_connect(&args.exec_endpoint).await.is_err() {
-        if !vx_io::net::is_loopback_endpoint(&args.exec_endpoint) {
+    if vx_io::net::try_connect(&args.exec_endpoint).await?.is_none() {
+        if !args.exec_endpoint.is_local() {
             eyre::bail!(
-                "Rhea is not reachable at {}. Auto-spawn is only supported for loopback endpoints.\n\
+                "Rhea is not reachable at {}. Auto-spawn is only supported for local endpoints.\n\
                 Start vx-rhea on the remote host, or point VX_RHEA to a local endpoint.",
                 args.exec_endpoint
             );
@@ -197,9 +235,9 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
         let child = spawn_service(
             "vx-rhea",
             &[
-                ("VX_HOME", args.vx_home.as_str()),
-                ("VX_CASS", &args.cas_endpoint),
-                ("VX_RHEA", &args.exec_endpoint),
+                ("VX_HOME", args.vx_home.to_string()),
+                ("VX_CASS", args.cas_endpoint.display()),
+                ("VX_RHEA", args.exec_endpoint.display()),
             ],
             &rhea_log,
         )?;
@@ -209,13 +247,14 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
         for (attempt, delay) in backoff_ms.iter().enumerate() {
             tokio::time::sleep(tokio::time::Duration::from_millis(*delay)).await;
-            if try_connect(&args.exec_endpoint).await.is_ok() {
+            if vx_io::net::try_connect(&args.exec_endpoint).await?.is_some() {
                 tracing::info!("Connected to Rhea after {} attempts", attempt + 1);
                 break;
             }
         }
 
-        try_connect(&args.exec_endpoint).await?;
+        // Final connection attempt
+        vx_io::net::connect(&args.exec_endpoint).await?;
     } else {
         tracing::info!("Rhea already running at {}", args.exec_endpoint);
     }
@@ -258,9 +297,9 @@ async fn main() -> Result<()> {
     let exec_host_triple = match std::env::var("VX_RHEA_HOST_TRIPLE") {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => {
-            if !vx_io::net::is_loopback_endpoint(&args.exec_endpoint) {
+            if !args.exec_endpoint.is_local() {
                 eyre::bail!(
-                    "VX_RHEA points to a non-loopback endpoint ({}) but VX_RHEA_HOST_TRIPLE is not set.\n\
+                    "VX_RHEA points to a non-local endpoint ({}) but VX_RHEA_HOST_TRIPLE is not set.\n\
                     vx-aether must know the rhea host triple to request the correct Rust toolchain from CAS.\n\
                     Set VX_RHEA_HOST_TRIPLE (e.g. x86_64-unknown-linux-gnu) and retry.",
                     args.exec_endpoint
@@ -274,13 +313,13 @@ async fn main() -> Result<()> {
 
     // Create rapace clients for CAS and Exec
     tracing::info!("Connecting to CAS at {}", args.cas_endpoint);
-    let cas_stream = TcpStream::connect(&args.cas_endpoint).await?;
+    let cas_stream = vx_io::net::connect(&args.cas_endpoint).await?;
     let cas_transport = rapace::Transport::stream(cas_stream);
     let cas_session = Arc::new(rapace::RpcSession::new(cas_transport));
     let cas_client = Arc::new(CassClient::new(cas_session.clone()));
 
     tracing::info!("Connecting to Exec at {}", args.exec_endpoint);
-    let exec_stream = TcpStream::connect(&args.exec_endpoint).await?;
+    let exec_stream = vx_io::net::connect(&args.exec_endpoint).await?;
     let exec_transport = rapace::Transport::stream(exec_stream);
     let exec_session = Arc::new(rapace::RpcSession::new(exec_transport));
     let exec_client = Arc::new(RheaClient::new(exec_session.clone()));
@@ -313,18 +352,18 @@ async fn main() -> Result<()> {
         .await,
     );
 
-    // Start TCP server
-    let listener = TcpListener::bind(&args.bind).await?;
+    // Start server (TCP or Unix socket)
+    let listener = Listener::bind(&args.bind).await?;
     tracing::info!("Aether listening on {}", args.bind);
 
     loop {
-        let (socket, peer_addr) = listener.accept().await?;
+        let (stream, peer_addr) = listener.accept().await?;
         let aether = aether.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
 
-            let transport = rapace::Transport::stream(socket);
+            let transport = rapace::Transport::stream(stream);
 
             // Create RPC session with even channel IDs (server uses 0, 2, 4, ...)
             let session = Arc::new(rapace::RpcSession::with_channel_start(transport, 0));

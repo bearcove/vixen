@@ -2,6 +2,9 @@
 //!
 //! Provides utilities for creating isolated test environments with temp directories
 //! for both the global CAS (~/.vx/) and project-local build outputs (.vx/).
+//!
+//! Each test uses Unix sockets in its unique VX_HOME directory, avoiding any port
+//! conflicts when tests run in parallel.
 
 // Each integration test file compiles this module separately, so functions
 // used by one test file appear "unused" when compiling another.
@@ -11,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::TempDir;
 
-/// A test environment with isolated CAS and project directories
+/// A test environment with isolated CAS, project directories, and Unix sockets
 pub struct TestEnv {
     /// Temp dir for global CAS (simulates ~/.vx/)
     pub vx_home: TempDir,
@@ -21,6 +24,9 @@ pub struct TestEnv {
 
 impl TestEnv {
     /// Create a new isolated test environment
+    ///
+    /// Each test gets its own unique VX_HOME with Unix sockets for IPC.
+    /// No ports are used, so tests can run in parallel without conflicts.
     pub fn new() -> Self {
         Self {
             vx_home: TempDir::new().expect("failed to create vx_home temp dir"),
@@ -38,6 +44,15 @@ impl TestEnv {
         path.push("debug");
         path.push("vx");
         path
+    }
+
+    /// Set up common environment variables for all vx commands
+    ///
+    /// Uses Unix sockets in VX_HOME for all services (no TCP ports needed).
+    fn setup_env(&self, cmd: &mut Command, vx_home: &Path) {
+        // Set VX_HOME - services will default to Unix sockets in this directory
+        cmd.env("VX_HOME", vx_home);
+        // Don't set VX_AETHER/VX_CASS/VX_RHEA - let them default to Unix sockets
     }
 
     /// Run `vx build` in this environment
@@ -59,7 +74,7 @@ impl TestEnv {
     ) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path().join(subdir));
-        cmd.env("VX_HOME", vx_home);
+        self.setup_env(&mut cmd, vx_home);
         cmd.arg("build");
         if release {
             cmd.arg("--release");
@@ -83,7 +98,7 @@ impl TestEnv {
     ) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        cmd.env("VX_HOME", vx_home);
+        self.setup_env(&mut cmd, vx_home);
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
@@ -100,7 +115,7 @@ impl TestEnv {
     pub fn clean(&self) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        cmd.env("VX_HOME", self.vx_home.path());
+        self.setup_env(&mut cmd, self.vx_home.path());
         cmd.arg("clean");
 
         let output = cmd.output().expect("failed to run vx");
@@ -111,7 +126,7 @@ impl TestEnv {
     pub fn explain(&self) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        cmd.env("VX_HOME", self.vx_home.path());
+        self.setup_env(&mut cmd, self.vx_home.path());
         cmd.arg("explain");
 
         let output = cmd.output().expect("failed to run vx");
@@ -122,7 +137,7 @@ impl TestEnv {
     pub fn explain_diff(&self) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        cmd.env("VX_HOME", self.vx_home.path());
+        self.setup_env(&mut cmd, self.vx_home.path());
         cmd.args(["explain", "--diff"]);
 
         let output = cmd.output().expect("failed to run vx");
@@ -133,7 +148,7 @@ impl TestEnv {
     pub fn explain_last_miss(&self) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        cmd.env("VX_HOME", self.vx_home.path());
+        self.setup_env(&mut cmd, self.vx_home.path());
         cmd.args(["explain", "--last-miss"]);
 
         let output = cmd.output().expect("failed to run vx");

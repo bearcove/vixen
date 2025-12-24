@@ -1,6 +1,6 @@
 //! vx-cass - Content-Addressed Storage daemon
 //!
-//! Provides CAS, toolchain, and registry services over TCP using rapace.
+//! Provides CAS, toolchain, and registry services over TCP or Unix sockets using rapace.
 
 pub(crate) mod hash_reader;
 pub(crate) mod http;
@@ -15,12 +15,12 @@ use crate::types::{CassService, CassServiceInner};
 use camino::Utf8PathBuf;
 use eyre::Result;
 use std::sync::Arc;
-use tokio::net::TcpListener;
-use vx_io::atomic_write;
 use vx_cass_proto::CassServer;
 use vx_cass_proto::{
     Blake3Hash, BlobHash, CacheKey, ManifestHash, ToolchainManifest, ToolchainSpecKey,
 };
+use vx_io::atomic_write;
+use vx_io::net::{Endpoint, Listener};
 
 #[derive(Debug)]
 struct Args {
@@ -30,8 +30,8 @@ struct Args {
     /// VX home directory (typically .vx)
     vx_home: Utf8PathBuf,
 
-    /// Bind address (host:port)
-    bind: String,
+    /// Bind endpoint (host:port or unix:/path/to/socket)
+    bind: Endpoint,
 }
 
 impl Args {
@@ -40,14 +40,32 @@ impl Args {
             let home = std::env::var("HOME").expect("HOME not set");
             format!("{}/.vx", home)
         });
-        let root = format!("{}/oort", vx_home);
+        let vx_home = Utf8PathBuf::from(&vx_home);
+        let root = vx_home.join("oort");
 
-        let bind_raw = std::env::var("VX_CASS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
-        let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
+        // VX_CASS can be:
+        // - host:port (TCP)
+        // - unix:/path/to/socket
+        // - /path/to/socket (Unix socket shorthand)
+        // - unset: defaults to Unix socket at $VX_HOME/cass.sock
+        let bind = match std::env::var("VX_CASS") {
+            Ok(v) => Endpoint::parse(&v)?,
+            Err(_) => {
+                // Default to Unix socket in VX_HOME
+                #[cfg(unix)]
+                {
+                    vx_io::net::default_unix_endpoint(&vx_home, "cass")
+                }
+                #[cfg(not(unix))]
+                {
+                    Endpoint::parse("127.0.0.1:9002")?
+                }
+            }
+        };
 
         Ok(Args {
-            root: Utf8PathBuf::from(root),
-            vx_home: Utf8PathBuf::from(vx_home),
+            root,
+            vx_home,
             bind,
         })
     }
@@ -73,19 +91,19 @@ async fn main() -> Result<()> {
     let cass = CassService::new(args.root, args.vx_home);
     cass.init().await?;
 
-    // Start TCP server
-    let listener = TcpListener::bind(&args.bind).await?;
+    // Start server (TCP or Unix socket)
+    let listener = Listener::bind(&args.bind).await?;
     tracing::info!("cass listening on {}", args.bind);
 
     loop {
-        let (socket, peer_addr) = listener.accept().await?;
+        let (stream, peer_addr) = listener.accept().await?;
         let cass = cass.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
 
-            // Create transport from TCP stream
-            let transport = rapace::Transport::stream(socket);
+            // Create transport from stream
+            let transport = rapace::Transport::stream(stream);
 
             // Serve the oort service
             // Note: CassService implements the CAS trait, which is the only rapace service

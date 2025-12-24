@@ -23,8 +23,8 @@ use camino::Utf8PathBuf;
 use eyre::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
 use vx_cass_proto::{Blake3Hash, CassClient};
+use vx_io::net::{Endpoint, Listener};
 use vx_rhea_proto::RheaServer;
 
 use crate::registry::RegistryMaterializer;
@@ -42,11 +42,11 @@ struct Args {
     /// Registry cache directory
     registry_cache_dir: Utf8PathBuf,
 
-    /// CAS endpoint (host:port)
-    cas_endpoint: String,
+    /// CAS endpoint
+    cas_endpoint: Endpoint,
 
-    /// Bind address (host:port)
-    bind: String,
+    /// Bind endpoint
+    bind: Endpoint,
 }
 
 impl Args {
@@ -55,16 +55,40 @@ impl Args {
             let home = std::env::var("HOME").expect("HOME not set");
             format!("{}/.vx", home)
         });
+        let vx_home = Utf8PathBuf::from(&vx_home);
 
-        let toolchains_dir = Utf8PathBuf::from(&vx_home).join("toolchains");
-        let registry_cache_dir = Utf8PathBuf::from(&vx_home).join("registry");
+        let toolchains_dir = vx_home.join("toolchains");
+        let registry_cache_dir = vx_home.join("registry");
 
-        let cas_endpoint_raw =
-            std::env::var("VX_CASS").unwrap_or_else(|_| "127.0.0.1:9002".to_string());
-        let cas_endpoint = vx_io::net::normalize_tcp_endpoint(&cas_endpoint_raw)?;
+        // Parse CAS endpoint (defaults to Unix socket)
+        let cas_endpoint = match std::env::var("VX_CASS") {
+            Ok(v) => Endpoint::parse(&v)?,
+            Err(_) => {
+                #[cfg(unix)]
+                {
+                    vx_io::net::default_unix_endpoint(&vx_home, "cass")
+                }
+                #[cfg(not(unix))]
+                {
+                    Endpoint::parse("127.0.0.1:9002")?
+                }
+            }
+        };
 
-        let bind_raw = std::env::var("VX_RHEA").unwrap_or_else(|_| "127.0.0.1:9003".to_string());
-        let bind = vx_io::net::normalize_tcp_endpoint(&bind_raw)?;
+        // Parse bind endpoint (defaults to Unix socket)
+        let bind = match std::env::var("VX_RHEA") {
+            Ok(v) => Endpoint::parse(&v)?,
+            Err(_) => {
+                #[cfg(unix)]
+                {
+                    vx_io::net::default_unix_endpoint(&vx_home, "rhea")
+                }
+                #[cfg(not(unix))]
+                {
+                    Endpoint::parse("127.0.0.1:9003")?
+                }
+            }
+        };
 
         Ok(Args {
             toolchains_dir,
@@ -76,8 +100,8 @@ impl Args {
 }
 
 /// Connect to CAS and return a client handle
-async fn connect_to_cas(endpoint: &str) -> Result<vx_cass_proto::CassClient> {
-    let stream = TcpStream::connect(endpoint).await?;
+async fn connect_to_cas(endpoint: &Endpoint) -> Result<vx_cass_proto::CassClient> {
+    let stream = vx_io::net::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 
     // Create RPC session and client
@@ -126,19 +150,19 @@ async fn main() -> Result<()> {
 
     let exec = RheaService::new(Arc::new(cas), args.toolchains_dir, args.registry_cache_dir);
 
-    // Start TCP server
-    let listener = TcpListener::bind(&args.bind).await?;
+    // Start server (TCP or Unix socket)
+    let listener = Listener::bind(&args.bind).await?;
     tracing::info!("Exec listening on {}", args.bind);
 
     loop {
-        let (socket, peer_addr) = listener.accept().await?;
+        let (stream, peer_addr) = listener.accept().await?;
         let exec = exec.clone();
 
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
 
-            // Create transport from TCP stream
-            let transport = rapace::Transport::stream(socket);
+            // Create transport from stream
+            let transport = rapace::Transport::stream(stream);
 
             // Serve the Exec service
             let server = RheaServer::new(exec);

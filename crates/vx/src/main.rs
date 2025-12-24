@@ -223,8 +223,26 @@ fn create_progress_listener_dispatcher(
 
 /// Connect to the aether, spawning it if necessary
 async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
-    let endpoint_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
-    let endpoint = vx_io::net::normalize_tcp_endpoint(&endpoint_raw)?;
+    use vx_io::net::Endpoint;
+
+    let vx_home = std::env::var("VX_HOME")
+        .unwrap_or_else(|_| format!("{}/.vx", std::env::var("HOME").expect("HOME not set")));
+    let vx_home = camino::Utf8PathBuf::from(&vx_home);
+
+    // Parse endpoint (defaults to Unix socket in VX_HOME)
+    let endpoint = match std::env::var("VX_AETHER") {
+        Ok(v) => Endpoint::parse(&v)?,
+        Err(_) => {
+            #[cfg(unix)]
+            {
+                vx_io::net::default_unix_endpoint(&vx_home, "aether")
+            }
+            #[cfg(not(unix))]
+            {
+                Endpoint::parse("127.0.0.1:9001")?
+            }
+        }
+    };
 
     let backoff_ms = [10, 50, 100, 500, 1000];
 
@@ -232,13 +250,12 @@ async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
     match try_connect_daemon(&endpoint).await {
         Ok(result) => Ok(result),
         Err(_) => {
-            if !vx_io::net::is_loopback_endpoint(&endpoint) {
+            if !endpoint.is_local() {
                 eyre::bail!(
-                    "failed to connect to vx-aether at {} (from VX_AETHER={}).\n\
-                    Auto-spawn is only supported for loopback endpoints.\n\
+                    "failed to connect to vx-aether at {}.\n\
+                    Auto-spawn is only supported for local endpoints.\n\
                     Start vx-aether on the remote host, or point VX_AETHER to a local endpoint.",
-                    endpoint,
-                    endpoint_raw
+                    endpoint
                 );
             }
 
@@ -246,9 +263,7 @@ async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
             tracing::info!("Daemon not running, spawning vx-aether on {}", endpoint);
 
             // Redirect aether logs to ~/.vx/aether.log
-            let vx_home = std::env::var("VX_HOME")
-                .unwrap_or_else(|_| format!("{}/.vx", std::env::var("HOME").expect("HOME not set")));
-            let log_path = std::path::Path::new(&vx_home).join("aether.log");
+            let log_path = vx_home.join("aether.log");
 
             // Ensure ~/.vx directory exists
             std::fs::create_dir_all(&vx_home)?;
@@ -259,13 +274,16 @@ async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
                 .open(&log_path)?;
 
             let mut cmd = std::process::Command::new("vx-aether");
+            // Pass the endpoint to the spawned aether
+            cmd.env("VX_HOME", vx_home.as_str());
+            cmd.env("VX_AETHER", endpoint.display());
             cmd.stdout(std::process::Stdio::from(log_file.try_clone()?));
             cmd.stderr(std::process::Stdio::from(log_file));
 
             ur_taking_me_with_you::spawn_dying_with_parent(cmd)
                 .map_err(|e| eyre::eyre!("failed to spawn vx-aether: {}", e))?;
 
-            tracing::info!("vx-aether logs: {}", log_path.display());
+            tracing::info!("vx-aether logs: {}", log_path);
 
             // Retry with backoff
             for (attempt, delay) in backoff_ms.iter().enumerate() {
@@ -282,10 +300,12 @@ async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
     }
 }
 
-async fn try_connect_daemon(endpoint: &str) -> Result<(AetherClient, tui::TuiHandle)> {
+async fn try_connect_daemon(
+    endpoint: &vx_io::net::Endpoint,
+) -> Result<(AetherClient, tui::TuiHandle)> {
     use std::sync::Arc;
 
-    let stream = tokio::net::TcpStream::connect(endpoint).await?;
+    let stream = vx_io::net::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 
     // Create RPC session with odd channel IDs (client uses 1, 3, 5, ...)
@@ -387,8 +407,25 @@ async fn cmd_build(release: bool) -> Result<()> {
 }
 
 async fn cmd_kill() -> Result<()> {
-    let endpoint_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
-    let endpoint = vx_io::net::normalize_tcp_endpoint(&endpoint_raw)?;
+    use vx_io::net::Endpoint;
+
+    let vx_home = std::env::var("VX_HOME")
+        .unwrap_or_else(|_| format!("{}/.vx", std::env::var("HOME").expect("HOME not set")));
+    let vx_home = camino::Utf8PathBuf::from(&vx_home);
+
+    let endpoint = match std::env::var("VX_AETHER") {
+        Ok(v) => Endpoint::parse(&v)?,
+        Err(_) => {
+            #[cfg(unix)]
+            {
+                vx_io::net::default_unix_endpoint(&vx_home, "aether")
+            }
+            #[cfg(not(unix))]
+            {
+                Endpoint::parse("127.0.0.1:9001")?
+            }
+        }
+    };
 
     // Try to connect to daemon
     match try_connect_daemon(&endpoint).await {
@@ -410,13 +447,17 @@ async fn cmd_kill() -> Result<()> {
 }
 
 async fn cmd_clean(nuke: bool) -> Result<()> {
+    use vx_io::net::Endpoint;
+
+    // Determine VX_HOME
+    let vx_home = std::env::var("VX_HOME")
+        .unwrap_or_else(|_| format!("{}/.vx", std::env::var("HOME").expect("HOME not set")));
+    let vx_home = Utf8PathBuf::from(&vx_home);
+
     // Determine which directory to remove
     let vx_dir = if nuke {
         // Remove VX_HOME (~/.vx)
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map_err(|_| eyre::eyre!("Could not determine home directory"))?;
-        Utf8PathBuf::from(home).join(".vx")
+        vx_home.clone()
     } else {
         // Remove project .vx/
         let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
@@ -424,8 +465,21 @@ async fn cmd_clean(nuke: bool) -> Result<()> {
     };
 
     // First, try to kill the daemon (best-effort, ignore errors since daemon may not be running)
-    let endpoint_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
-    if let Ok(endpoint) = vx_io::net::normalize_tcp_endpoint(&endpoint_raw) {
+    let endpoint = match std::env::var("VX_AETHER") {
+        Ok(v) => Endpoint::parse(&v).ok(),
+        Err(_) => {
+            #[cfg(unix)]
+            {
+                Some(vx_io::net::default_unix_endpoint(&vx_home, "aether"))
+            }
+            #[cfg(not(unix))]
+            {
+                Endpoint::parse("127.0.0.1:9001").ok()
+            }
+        }
+    };
+
+    if let Some(endpoint) = endpoint {
         if let Ok((daemon, _tui)) = try_connect_daemon(&endpoint).await {
             tracing::debug!("Killing daemon before clean");
             let _ = daemon.shutdown().await;
