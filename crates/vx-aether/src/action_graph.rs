@@ -62,8 +62,6 @@ pub enum Action {
         target_triple: String,
         /// Build profile
         profile: String,
-        /// Toolchain manifest hash
-        toolchain_manifest: Blake3Hash,
         /// Picante input for this crate (for cache key computation)
         rust_crate: RustCrate,
         /// Toolchain to use (for cache key computation)
@@ -210,7 +208,6 @@ impl ActionGraph {
 
             let target_triple_str = toolchain.target(db).map_err(|e| crate::error::AetherError::Picante(e.to_string()))?;
             let profile_str = config.profile(db).map_err(|e| crate::error::AetherError::Picante(e.to_string()))?;
-            let manifest_hash = toolchain.toolchain_manifest(db).map_err(|e| crate::error::AetherError::Picante(e.to_string()))?;
 
             let action = Action::CompileRustCrate {
                 crate_id: crate_node.id,
@@ -223,7 +220,6 @@ impl ActionGraph {
                 workspace_root: crate_graph.workspace_root.to_string(),
                 target_triple: target_triple_str,
                 profile: profile_str,
-                toolchain_manifest: manifest_hash,
                 rust_crate,
                 toolchain,
                 config,

@@ -288,6 +288,7 @@ impl Executor {
         let target_triple = self.target_triple.clone();
         let profile = self.profile.clone();
         let results = self.results.clone(); // Cloned Arc for execute_action
+        let toolchain_node_idx = self.graph.toolchain_node; // For looking up toolchain result
 
         tokio::spawn(async move {
             info!("SPAWN_ACTION task: started for {:?}", node_idx);
@@ -307,6 +308,7 @@ impl Executor {
                 &workspace_root,
                 &target_triple,
                 &profile,
+                toolchain_node_idx,
             )
             .await;
 
@@ -336,6 +338,7 @@ async fn execute_action(
     workspace_root: &camino::Utf8PathBuf,
     target_triple: &str,
     profile: &str,
+    toolchain_node_idx: Option<NodeIndex>,
 ) -> Result<ActionResult, AetherError> {
     use camino::Utf8PathBuf;
     use vx_rhea_proto::{RustCompileRequest, RustDep};
@@ -453,13 +456,50 @@ async fn execute_action(
             workspace_root: workspace_root_str,
             target_triple,
             profile,
-            toolchain_manifest,
             mut rust_crate,
             toolchain,
             config,
         } => {
             info!("COMPILE: starting compilation for crate {}", crate_name);
             let workspace_root = Utf8PathBuf::from(&workspace_root_str);
+
+            // Look up the toolchain result to get the real manifest hash and toolchain ID
+            let (toolchain_manifest, toolchain_id) = if let Some(toolchain_idx) = toolchain_node_idx {
+                let results_lock = results.read().await;
+                match results_lock.get(&toolchain_idx) {
+                    Some(ActionResult::ToolchainAcquired { toolchain_id, manifest_hash }) => {
+                        info!("COMPILE: using acquired toolchain manifest_hash={} toolchain_id={}",
+                              manifest_hash.short_hex(), toolchain_id.short_hex());
+                        (*manifest_hash, *toolchain_id)
+                    }
+                    _ => {
+                        return Err(AetherError::Compilation {
+                            crate_name: crate_name.clone(),
+                            message: "toolchain not acquired before compilation".to_string(),
+                        });
+                    }
+                }
+            } else {
+                return Err(AetherError::Compilation {
+                    crate_name: crate_name.clone(),
+                    message: "no toolchain node found".to_string(),
+                });
+            };
+
+            // Update the RustToolchainManifest and RustToolchain in the database with real values
+            use crate::inputs::{RustToolchain as RustToolchainInput, RustToolchainManifest};
+            RustToolchainManifest::set(&**db, toolchain_manifest)
+                .map_err(|e| AetherError::Picante(e.to_string()))?;
+
+            // Update the toolchain input with real values for cache key computation
+            let toolchain = RustToolchainInput::new(
+                &**db,
+                toolchain_id,
+                toolchain_manifest,
+                toolchain.host(&**db).map_err(|e| AetherError::Picante(e.to_string()))?,
+                toolchain.target(&**db).map_err(|e| AetherError::Picante(e.to_string()))?,
+            )
+            .map_err(|e| AetherError::Picante(e.to_string()))?;
 
             info!("COMPILE: computing source closure for {}", crate_name);
             // Compute source closure and hash (for path crates)
