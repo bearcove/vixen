@@ -2,6 +2,8 @@
 //!
 //! This is a thin CLI client that talks to the vx daemon.
 
+mod tui;
+
 use camino::Utf8PathBuf;
 use eyre::{Result, bail};
 use facet::Facet;
@@ -10,7 +12,7 @@ use owo_colors::OwoColorize;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
-use vx_aether_proto::{AetherClient, BuildRequest};
+use vx_aether_proto::{AetherClient, BuildRequest, ProgressListener, ActionType};
 use vx_report::{CacheOutcome, ReportStore, RunDiff};
 
 /// vx - Build execution engine with deterministic caching
@@ -145,8 +147,62 @@ fn short_hex(hash: &str, verbose: bool) -> String {
     }
 }
 
+/// Progress listener that drives the TUI
+struct ProgressListenerImpl {
+    tui: tui::TuiHandle,
+}
+
+impl ProgressListenerImpl {
+    fn new(tui: tui::TuiHandle) -> Self {
+        Self { tui }
+    }
+}
+
+impl ProgressListener for ProgressListenerImpl {
+    async fn set_total(&self, total: u64) {
+        self.tui.set_total(total as usize).await;
+    }
+
+    async fn start_action(&self, action_type: ActionType) -> u64 {
+        self.tui.start_action(action_type).await
+    }
+
+    async fn complete_action(&self, action_id: u64) {
+        self.tui.complete_action(action_id).await;
+    }
+
+    async fn log_message(&self, message: String) {
+        self.tui.log_message(message).await;
+    }
+}
+
+/// Create a dispatcher for ProgressListener service
+fn create_progress_listener_dispatcher(
+    progress_listener: std::sync::Arc<ProgressListenerImpl>,
+    buffer_pool: rapace::BufferPool,
+) -> impl Fn(
+    rapace::Frame,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<rapace::Frame, rapace::RpcError>> + Send>,
+> + Send
+       + Sync
+       + 'static {
+    use vx_aether_proto::ProgressListenerServer;
+
+    move |request| {
+        let buffer_pool = buffer_pool.clone();
+        let progress_listener = progress_listener.clone();
+        Box::pin(async move {
+            let server = ProgressListenerServer::new(progress_listener);
+            server
+                .dispatch(request.desc.method_id, &request, &buffer_pool)
+                .await
+        })
+    }
+}
+
 /// Connect to the aether, spawning it if necessary
-async fn get_or_spawn_aether() -> Result<AetherClient> {
+async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
     let endpoint_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
     let endpoint = vx_io::net::normalize_tcp_endpoint(&endpoint_raw)?;
 
@@ -154,7 +210,7 @@ async fn get_or_spawn_aether() -> Result<AetherClient> {
 
     // Try to connect first
     match try_connect_daemon(&endpoint).await {
-        Ok(client) => Ok(client),
+        Ok(result) => Ok(result),
         Err(_) => {
             if !vx_io::net::is_loopback_endpoint(&endpoint) {
                 eyre::bail!(
@@ -175,9 +231,9 @@ async fn get_or_spawn_aether() -> Result<AetherClient> {
             // Retry with backoff
             for (attempt, delay) in backoff_ms.iter().enumerate() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(*delay)).await;
-                if let Ok(client) = try_connect_daemon(&endpoint).await {
+                if let Ok(result) = try_connect_daemon(&endpoint).await {
                     tracing::info!("Connected to daemon after {} attempts", attempt + 1);
-                    return Ok(client);
+                    return Ok(result);
                 }
             }
 
@@ -187,14 +243,26 @@ async fn get_or_spawn_aether() -> Result<AetherClient> {
     }
 }
 
-async fn try_connect_daemon(endpoint: &str) -> Result<AetherClient> {
+async fn try_connect_daemon(endpoint: &str) -> Result<(AetherClient, tui::TuiHandle)> {
     use std::sync::Arc;
 
     let stream = tokio::net::TcpStream::connect(endpoint).await?;
     let transport = rapace::Transport::stream(stream);
 
-    // Create RPC session and client
-    let session = Arc::new(rapace::RpcSession::new(transport));
+    // Create RPC session with odd channel IDs (client uses 1, 3, 5, ...)
+    let session = Arc::new(rapace::RpcSession::with_channel_start(transport, 1));
+
+    // Create TUI and progress listener
+    let tui = tui::TuiHandle::new();
+    let progress_listener = Arc::new(ProgressListenerImpl::new(tui.clone()));
+
+    // Set up bidirectional RPC: vx serves ProgressListener, aether serves Aether
+    session.set_dispatcher(create_progress_listener_dispatcher(
+        progress_listener,
+        session.buffer_pool().clone(),
+    ));
+
+    // Create aether client
     let client = AetherClient::new(session.clone());
 
     // CRITICAL: spawn session.run() in background (rapace requires explicit receive loop)
@@ -204,14 +272,14 @@ async fn try_connect_daemon(endpoint: &str) -> Result<AetherClient> {
         }
     });
 
-    Ok(client)
+    Ok((client, tui))
 }
 
 async fn cmd_build(release: bool) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
 
-    // Connect to daemon (spawning if necessary)
-    let daemon = get_or_spawn_aether().await?;
+    // Connect to daemon (spawning if necessary) and set up TUI
+    let (daemon, _tui) = get_or_spawn_aether().await?;
 
     let request = BuildRequest {
         project_path: cwd.clone(),
@@ -251,7 +319,7 @@ async fn cmd_kill() -> Result<()> {
 
     // Try to connect to daemon
     match try_connect_daemon(&endpoint).await {
-        Ok(daemon) => {
+        Ok((daemon, _tui)) => {
             println!("{} daemon at {}", "Stopping".green().bold(), endpoint);
             if let Err(e) = daemon.shutdown().await {
                 tracing::warn!("Failed to send shutdown to daemon: {e}");
@@ -285,7 +353,7 @@ async fn cmd_clean(nuke: bool) -> Result<()> {
     // First, try to kill the daemon (best-effort, ignore errors since daemon may not be running)
     let endpoint_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
     if let Ok(endpoint) = vx_io::net::normalize_tcp_endpoint(&endpoint_raw) {
-        if let Ok(daemon) = try_connect_daemon(&endpoint).await {
+        if let Ok((daemon, _tui)) = try_connect_daemon(&endpoint).await {
             tracing::debug!("Killing daemon before clean");
             let _ = daemon.shutdown().await;
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

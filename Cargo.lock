@@ -2676,6 +2676,7 @@ dependencies = [
  "eyre",
  "facet",
  "facet-args",
+ "indicatif",
  "miette",
  "miette-arborium",
  "owo-colors",
