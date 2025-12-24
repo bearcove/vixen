@@ -815,3 +815,42 @@ impl TreeManifest {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rapace::facet_format_postcard::{from_slice, to_vec};
+
+    #[test]
+    fn test_blake3hash_roundtrip() {
+        let hash = Blake3Hash::from_bytes(b"hello world");
+
+        let bytes = to_vec(&hash).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: Blake3Hash = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded, hash);
+    }
+
+    #[test]
+    fn test_option_blake3hash_roundtrip() {
+        let hash = Some(Blake3Hash::from_bytes(b"hello world"));
+
+        let bytes = to_vec(&hash).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: Option<Blake3Hash> = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded, hash);
+    }
+
+    #[test]
+    fn test_raw_array_roundtrip() {
+        let arr: [u8; 32] = [42u8; 32];
+
+        let bytes = to_vec(&arr).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: [u8; 32] = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded, arr);
+    }
+}

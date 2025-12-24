@@ -103,3 +103,139 @@ pub trait ProgressListener {
     /// Add a log message
     async fn log_message(&self, message: String);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rapace::facet_format_postcard::{from_slice, to_vec};
+
+    #[test]
+    fn test_build_result_roundtrip() {
+        let result = BuildResult {
+            success: true,
+            message: "done".to_string(),
+            cached: false,
+            duration_ms: 100,
+            output_path: Some(Utf8PathBuf::from("/output/binary")),
+            error: None,
+            total_actions: 5,
+            cache_hits: 2,
+            rebuilt: 3,
+        };
+
+        let bytes = to_vec(&result).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: BuildResult = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded.success, result.success);
+        assert_eq!(decoded.message, result.message);
+        assert_eq!(decoded.output_path, result.output_path);
+    }
+
+    #[test]
+    fn test_build_request_roundtrip() {
+        let request = BuildRequest {
+            project_path: Utf8PathBuf::from("/home/user/project"),
+            release: true,
+        };
+
+        let bytes = to_vec(&request).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: BuildRequest = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded.project_path, request.project_path);
+        assert_eq!(decoded.release, request.release);
+    }
+
+    #[test]
+    fn test_option_utf8pathbuf_some() {
+        let value: Option<Utf8PathBuf> = Some(Utf8PathBuf::from("/path"));
+
+        let bytes = to_vec(&value).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: Option<Utf8PathBuf> = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_option_utf8pathbuf_none() {
+        let value: Option<Utf8PathBuf> = None;
+
+        let bytes = to_vec(&value).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: Option<Utf8PathBuf> = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded, value);
+    }
+
+    // Minimal struct to reproduce the issue
+    #[derive(Debug, Clone, PartialEq, Facet)]
+    struct SimpleWithOptionalPath {
+        value: u32,
+        path: Option<Utf8PathBuf>,
+    }
+
+    #[test]
+    fn test_simple_struct_with_optional_path() {
+        let value = SimpleWithOptionalPath {
+            value: 42,
+            path: Some(Utf8PathBuf::from("/path")),
+        };
+
+        let bytes = to_vec(&value).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: SimpleWithOptionalPath = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded, value);
+    }
+
+    // Mirror BuildResult structure but with u64 instead of usize
+    #[derive(Debug, Clone, PartialEq, Facet)]
+    struct MirrorBuildResultU64 {
+        success: bool,
+        message: String,
+        cached: bool,
+        duration_ms: u64,
+        output_path: Option<Utf8PathBuf>,  // Field 5 of 9
+        error: Option<String>,
+        total_actions: u64,
+        cache_hits: u64,
+        rebuilt: u64,
+    }
+
+    // With usize
+    #[derive(Debug, Clone, PartialEq, Facet)]
+    struct MirrorBuildResult {
+        success: bool,
+        message: String,
+        cached: bool,
+        duration_ms: u64,
+        output_path: Option<Utf8PathBuf>,  // Field 5 of 9
+        error: Option<String>,
+        total_actions: usize,
+        cache_hits: usize,
+        rebuilt: usize,
+    }
+
+    #[test]
+    fn test_mirror_build_result() {
+        let value = MirrorBuildResult {
+            success: true,
+            message: "done".to_string(),
+            cached: false,
+            duration_ms: 100,
+            output_path: Some(Utf8PathBuf::from("/output/binary")),
+            error: None,
+            total_actions: 5,
+            cache_hits: 2,
+            rebuilt: 3,
+        };
+
+        let bytes = to_vec(&value).expect("serialize");
+        println!("Serialized {} bytes: {:?}", bytes.len(), bytes);
+
+        let decoded: MirrorBuildResult = from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded, value);
+    }
+}
