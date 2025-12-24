@@ -111,13 +111,17 @@ Download from https://ziglang.org/download/
 
 ## Implementation Phases
 
-### Phase 1: vx.kdl + Pure C (MVP)
-- [ ] Add `knuffel` or `kdl` crate for parsing
-- [ ] Create `vx_project` crate with `VxManifest` type
-- [ ] Modify `vx build` to check for vx.kdl first
-- [ ] Add `AcquireZigToolchain` action
-- [ ] Add `CompileCObject` action
-- [ ] Add `LinkCBinary` action
+### Phase 1: vx.kdl + Pure C (MVP) ✅ COMPLETE
+- [x] Add `facet-kdl` crate for parsing
+- [x] Create `vx_project` crate with `VxManifest` type
+- [x] Modify `vx build` to check for vx.kdl first
+- [x] Add `AcquireZigToolchain` action (executor + RPC)
+- [x] Add `CompileCObject` action (executor + RPC)
+- [x] Add `LinkCBinary` action (executor + RPC)
+- [x] Add `CcCompileRequest`/`CcCompileResult` to vx-rhea-proto
+- [x] Add `CcLinkRequest`/`CcLinkResult` to vx-rhea-proto
+- [x] Wire up action graph building for C projects
+- [ ] Implement vx-rhea handlers for `compile_cc` and `link_cc`
 - [ ] Test with hello world C program
 
 ### Phase 2: Rust via vx.kdl

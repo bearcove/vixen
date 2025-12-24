@@ -62,6 +62,34 @@ pub enum ActionResult {
         /// Whether this was a cache hit
         was_cached: bool,
     },
+
+    /// Zig toolchain acquired successfully
+    ZigToolchainAcquired {
+        /// Toolchain ID
+        toolchain_id: Blake3Hash,
+        /// Toolchain manifest hash
+        manifest_hash: Blake3Hash,
+        /// Whether this was a cache hit
+        was_cached: bool,
+    },
+
+    /// C object file compiled successfully
+    CObjectCompiled {
+        /// Output object file hash
+        object_hash: Blake3Hash,
+        /// Whether this was a cache hit
+        was_cached: bool,
+    },
+
+    /// C binary linked successfully
+    CBinaryLinked {
+        /// Output binary hash
+        binary_hash: Blake3Hash,
+        /// Path to materialized binary
+        binary_path: camino::Utf8PathBuf,
+        /// Whether this was a cache hit
+        was_cached: bool,
+    },
 }
 
 /// Statistics from build execution
@@ -422,6 +450,110 @@ impl Executor {
                             manifest: Some(output_manifest.to_hex()),
                             blob: None,
                             path: bin_path.as_ref().map(|p| p.to_string()),
+                        }],
+                        invocation: None,
+                        diagnostics: vx_report::DiagnosticsRecord::default(),
+                    });
+                }
+                ActionResult::ZigToolchainAcquired { toolchain_id, manifest_hash: _, was_cached } => {
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+
+                    // Generate node report for Zig toolchain acquisition
+                    node_reports.push(vx_report::NodeReport {
+                        node_id: action.display_name(),
+                        kind: "zig.toolchain.acquire".to_string(),
+                        cache_key: toolchain_id.to_hex(),
+                        cache: if *was_cached {
+                            vx_report::CacheOutcome::Hit {
+                                manifest: toolchain_id.to_hex(),
+                            }
+                        } else {
+                            vx_report::CacheOutcome::Miss {
+                                reason: vx_report::MissReason::FirstBuild,
+                            }
+                        },
+                        timing: vx_report::NodeTiming::default(),
+                        inputs: vec![],
+                        deps: vec![],
+                        outputs: vec![vx_report::OutputRecord {
+                            logical: "zig_toolchain".to_string(),
+                            manifest: Some(toolchain_id.to_hex()),
+                            blob: None,
+                            path: None,
+                        }],
+                        invocation: None,
+                        diagnostics: vx_report::DiagnosticsRecord::default(),
+                    });
+                }
+                ActionResult::CObjectCompiled { object_hash, was_cached } => {
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+
+                    // Generate node report for C object compilation
+                    node_reports.push(vx_report::NodeReport {
+                        node_id: action.display_name(),
+                        kind: "c.compile_obj".to_string(),
+                        cache_key: object_hash.to_hex(),
+                        cache: if *was_cached {
+                            vx_report::CacheOutcome::Hit {
+                                manifest: object_hash.to_hex(),
+                            }
+                        } else {
+                            vx_report::CacheOutcome::Miss {
+                                reason: vx_report::MissReason::KeyNotFound,
+                            }
+                        },
+                        timing: vx_report::NodeTiming::default(),
+                        inputs: vec![],
+                        deps: vec![],
+                        outputs: vec![vx_report::OutputRecord {
+                            logical: "object".to_string(),
+                            manifest: Some(object_hash.to_hex()),
+                            blob: None,
+                            path: None,
+                        }],
+                        invocation: None,
+                        diagnostics: vx_report::DiagnosticsRecord::default(),
+                    });
+                }
+                ActionResult::CBinaryLinked { binary_hash, binary_path, was_cached } => {
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+                    // Track the bin output
+                    bin_output = Some(binary_path.clone());
+
+                    // Generate node report for C binary linking
+                    node_reports.push(vx_report::NodeReport {
+                        node_id: action.display_name(),
+                        kind: "c.link_bin".to_string(),
+                        cache_key: binary_hash.to_hex(),
+                        cache: if *was_cached {
+                            vx_report::CacheOutcome::Hit {
+                                manifest: binary_hash.to_hex(),
+                            }
+                        } else {
+                            vx_report::CacheOutcome::Miss {
+                                reason: vx_report::MissReason::KeyNotFound,
+                            }
+                        },
+                        timing: vx_report::NodeTiming::default(),
+                        inputs: vec![],
+                        deps: vec![],
+                        outputs: vec![vx_report::OutputRecord {
+                            logical: "binary".to_string(),
+                            manifest: Some(binary_hash.to_hex()),
+                            blob: None,
+                            path: Some(binary_path.to_string()),
                         }],
                         invocation: None,
                         diagnostics: vx_report::DiagnosticsRecord::default(),
@@ -1006,53 +1138,272 @@ async fn execute_action(
         }
 
         Action::AcquireZigToolchain { version } => {
-            // TODO: Implement Zig toolchain acquisition
-            // - Download from ziglang.org
-            // - Extract and hash
-            // - Ingest to CAS
-            // - Return toolchain ID
-            warn!(version = %version, "Zig toolchain acquisition not yet implemented");
-            Err(AetherError::ToolchainAcquisition(
-                format!("Zig toolchain {} acquisition not yet implemented", version)
-            ))
+            use vx_cass_proto::{ZigToolchainSpec, EnsureStatus};
+            use vx_toolchain::zig::HostPlatform;
+
+            let host = HostPlatform::detect()
+                .map_err(|e| AetherError::ToolchainAcquisition(e.to_string()))?;
+
+            let spec = ZigToolchainSpec {
+                version: version.clone(),
+                host_platform: host.to_string(),
+            };
+
+            let result = cas
+                .ensure_zig_toolchain(spec)
+                .await
+                .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?;
+
+            if result.status == EnsureStatus::Failed {
+                return Err(AetherError::ToolchainAcquisition(
+                    result.error.unwrap_or_else(|| "unknown error".to_string()),
+                ));
+            }
+
+            let manifest_hash = result.manifest_hash.ok_or(AetherError::Compilation {
+                crate_name: format!("zig-{}", version),
+                message: "No manifest hash returned from CAS".to_string(),
+            })?;
+
+            // Get toolchain_id from result if available (download case),
+            // otherwise fetch from manifest (cache hit case)
+            let toolchain_id = if let Some(id) = result.toolchain_id {
+                id
+            } else {
+                // Cache hit - fetch toolchain_id from manifest
+                let manifest = cas.get_toolchain_manifest(manifest_hash).await.map_err(|e| {
+                    AetherError::Compilation {
+                        crate_name: format!("zig-{}", version),
+                        message: format!("Failed to fetch toolchain manifest: {}", e),
+                    }
+                })?.ok_or(AetherError::ToolchainManifestNotFound(manifest_hash))?;
+                manifest.toolchain_id
+            };
+
+            info!(
+                toolchain_id = %toolchain_id.short_hex(),
+                manifest_hash = %manifest_hash.short_hex(),
+                version = %version,
+                host = %host,
+                "Zig toolchain acquired"
+            );
+
+            Ok(ActionResult::ZigToolchainAcquired {
+                toolchain_id,
+                manifest_hash,
+                was_cached: result.status == EnsureStatus::Hit,
+            })
         }
 
-        Action::CompileCObject { source, output, target_triple, profile } => {
-            // TODO: Implement C object compilation
-            // - Materialize Zig toolchain from CAS
-            // - Run `zig cc -c source -o output -target target_triple`
-            // - Ingest output to CAS
-            // - Return output hash
-            warn!(
+        Action::CompileCObject { source, output, source_manifest, target_triple, profile } => {
+            use vx_rhea_proto::CcCompileRequest;
+
+            // Find Zig toolchain from results (must be acquired first)
+            let zig_toolchain_manifest = {
+                let results_lock = results.read().await;
+                results_lock
+                    .values()
+                    .find_map(|result| match result {
+                        ActionResult::ZigToolchainAcquired { manifest_hash, .. } => Some(*manifest_hash),
+                        _ => None,
+                    })
+                    .ok_or_else(|| AetherError::Compilation {
+                        crate_name: source.clone(),
+                        message: "Zig toolchain not acquired before C compilation".to_string(),
+                    })?
+            };
+
+            let request = CcCompileRequest {
+                toolchain_manifest: zig_toolchain_manifest,
+                source_manifest,
+                source_path: source.clone(),
+                target_triple: target_triple.clone(),
+                profile: profile.clone(),
+                include_paths: vec![],
+                defines: vec![],
+            };
+
+            let result = exec
+                .compile_cc(request)
+                .await
+                .map_err(|e| AetherError::ExecRpc(std::sync::Arc::new(e)))?;
+
+            if !result.success {
+                return Err(AetherError::Compilation {
+                    crate_name: source.clone(),
+                    message: format!("C compilation failed:\nstdout: {}\nstderr: {}",
+                        result.stdout, result.stderr),
+                });
+            }
+
+            let object_hash = result.output_manifest.ok_or_else(|| AetherError::NoOutputManifest {
+                crate_name: source.clone(),
+            })?;
+
+            info!(
                 source = %source,
                 output = %output,
-                target = %target_triple,
-                profile = %profile,
-                "C object compilation not yet implemented"
+                object_hash = %object_hash.short_hex(),
+                "C object compiled"
             );
-            Err(AetherError::Compilation {
-                crate_name: source.clone(),
-                message: "C compilation not yet implemented".to_string(),
+
+            Ok(ActionResult::CObjectCompiled {
+                object_hash,
+                was_cached: false, // TODO: Check cache
             })
         }
 
         Action::LinkCBinary { name, objects, output, target_triple } => {
-            // TODO: Implement C binary linking
-            // - Materialize Zig toolchain from CAS
-            // - Materialize object files from CAS
-            // - Run `zig cc objects... -o output -target target_triple`
-            // - Ingest output to CAS
-            // - Return output hash and path
-            warn!(
-                name = %name,
-                objects = ?objects,
-                output = %output,
-                target = %target_triple,
-                "C binary linking not yet implemented"
-            );
-            Err(AetherError::Compilation {
+            use vx_rhea_proto::CcLinkRequest;
+
+            // Find Zig toolchain and all compiled object files from results
+            let (zig_toolchain_manifest, object_manifests) = {
+                let results_lock = results.read().await;
+
+                let zig_toolchain_manifest = results_lock
+                    .values()
+                    .find_map(|result| match result {
+                        ActionResult::ZigToolchainAcquired { manifest_hash, .. } => Some(*manifest_hash),
+                        _ => None,
+                    })
+                    .ok_or_else(|| AetherError::Compilation {
+                        crate_name: name.clone(),
+                        message: "Zig toolchain not acquired before C linking".to_string(),
+                    })?;
+
+                // Collect all compiled object files
+                let object_manifests: Vec<_> = results_lock
+                    .values()
+                    .filter_map(|result| match result {
+                        ActionResult::CObjectCompiled { object_hash, .. } => Some(*object_hash),
+                        _ => None,
+                    })
+                    .collect();
+
+                if object_manifests.is_empty() {
+                    return Err(AetherError::Compilation {
+                        crate_name: name.clone(),
+                        message: "no object files compiled before linking".to_string(),
+                    });
+                }
+
+                (zig_toolchain_manifest, object_manifests)
+            };
+
+            let request = CcLinkRequest {
+                toolchain_manifest: zig_toolchain_manifest,
+                object_manifests,
+                binary_name: name.clone(),
+                target_triple: target_triple.clone(),
+                libs: vec![], // Zig automatically links libc when using printf etc.
+            };
+
+            let result = exec
+                .link_cc(request)
+                .await
+                .map_err(|e| AetherError::ExecRpc(std::sync::Arc::new(e)))?;
+
+            if !result.success {
+                return Err(AetherError::Compilation {
+                    crate_name: name.clone(),
+                    message: format!("C linking failed:\nstdout: {}\nstderr: {}",
+                        result.stdout, result.stderr),
+                });
+            }
+
+            let binary_hash = result.output_manifest.ok_or_else(|| AetherError::NoOutputManifest {
                 crate_name: name.clone(),
-                message: "C linking not yet implemented".to_string(),
+            })?;
+
+            info!(
+                name = %name,
+                output = %output,
+                binary_hash = %binary_hash.short_hex(),
+                "C binary linked"
+            );
+
+            // Materialize binary to workspace
+            let binary_path = workspace_root.join(output);
+            let binary_parent = binary_path.parent().ok_or_else(|| AetherError::Compilation {
+                crate_name: name.clone(),
+                message: format!("Invalid binary output path: {}", binary_path),
+            })?;
+
+            // Create output directory
+            tokio::fs::create_dir_all(binary_parent).await.map_err(|e| {
+                AetherError::Compilation {
+                    crate_name: name.clone(),
+                    message: format!("Failed to create binary output directory: {}", e),
+                }
+            })?;
+
+            // Fetch manifest to get the binary blob hash
+            let manifest = cas.get_manifest(binary_hash).await.map_err(|e| {
+                AetherError::Compilation {
+                    crate_name: name.clone(),
+                    message: format!("Failed to fetch binary manifest from CAS: {}", e),
+                }
+            })?.ok_or_else(|| AetherError::Compilation {
+                crate_name: name.clone(),
+                message: format!("Binary manifest not found in CAS: {}", binary_hash.to_hex()),
+            })?;
+
+            // Find the binary output entry
+            let binary_entry = manifest
+                .outputs
+                .iter()
+                .find(|o| o.logical == "binary")
+                .ok_or_else(|| AetherError::Compilation {
+                    crate_name: name.clone(),
+                    message: format!("Binary output not found in manifest"),
+                })?;
+
+            // Fetch binary blob from CAS and write to file
+            let binary_data = cas.get_blob(binary_entry.blob).await.map_err(|e| {
+                AetherError::Compilation {
+                    crate_name: name.clone(),
+                    message: format!("Failed to fetch binary blob from CAS: {}", e),
+                }
+            })?.ok_or_else(|| AetherError::Compilation {
+                crate_name: name.clone(),
+                message: format!("Binary blob not found in CAS: {}", binary_entry.blob.to_hex()),
+            })?;
+
+            tokio::fs::write(&binary_path, &binary_data).await.map_err(|e| {
+                AetherError::Compilation {
+                    crate_name: name.clone(),
+                    message: format!("Failed to write binary to {}: {}", binary_path, e),
+                }
+            })?;
+
+            // Make binary executable
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = tokio::fs::metadata(&binary_path).await.map_err(|e| {
+                    AetherError::Compilation {
+                        crate_name: name.clone(),
+                        message: format!("Failed to get binary metadata: {}", e),
+                    }
+                })?.permissions();
+                perms.set_mode(0o755);
+                tokio::fs::set_permissions(&binary_path, perms).await.map_err(|e| {
+                    AetherError::Compilation {
+                        crate_name: name.clone(),
+                        message: format!("Failed to set binary permissions: {}", e),
+                    }
+                })?;
+            }
+
+            info!(
+                path = %binary_path,
+                "C binary materialized to workspace"
+            );
+
+            Ok(ActionResult::CBinaryLinked {
+                binary_hash,
+                binary_path,
+                was_cached: false, // TODO: Check cache
             })
         }
     }

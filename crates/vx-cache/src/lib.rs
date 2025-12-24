@@ -6,7 +6,7 @@
 //! Cache keys are blake3 hashes of all inputs that affect the build output.
 
 use vx_cass_proto::Blake3Hash;
-use vx_rhea_proto::RustCompileRequest;
+use vx_rhea_proto::{CcCompileRequest, CcLinkRequest, RustCompileRequest};
 
 /// Current cache key schema version for Rust compilation.
 /// Bump this when the cache key format changes.
@@ -71,6 +71,115 @@ pub fn rust_compile_cache_key(request: &RustCompileRequest) -> Blake3Hash {
         hasher.update(dep.extern_name.as_bytes());
         hasher.update(b":");
         hasher.update(&dep.manifest_hash.0);
+        hasher.update(b"\n");
+    }
+
+    Blake3Hash(*hasher.finalize().as_bytes())
+}
+
+/// Compute a cache key for a C/C++ compile request.
+///
+/// The cache key includes all inputs that affect the build output:
+/// - Toolchain manifest (Zig version)
+/// - Source tree manifest
+/// - Source file path
+/// - Target triple and profile
+/// - Include paths (sorted for determinism)
+/// - Defines (sorted for determinism)
+pub fn cc_compile_cache_key(request: &CcCompileRequest) -> Blake3Hash {
+    let mut hasher = blake3::Hasher::new();
+
+    hasher.update(b"cc-compile-v");
+    hasher.update(&CC_CACHE_KEY_VERSION.to_le_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"toolchain:");
+    hasher.update(&request.toolchain_manifest.0);
+    hasher.update(b"\n");
+
+    hasher.update(b"source:");
+    hasher.update(&request.source_manifest.0);
+    hasher.update(b"\n");
+
+    hasher.update(b"source_path:");
+    hasher.update(request.source_path.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"target:");
+    hasher.update(request.target_triple.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"profile:");
+    hasher.update(request.profile.as_bytes());
+    hasher.update(b"\n");
+
+    // Hash include paths (sorted for determinism)
+    let mut includes: Vec<_> = request.include_paths.iter().collect();
+    includes.sort();
+    for include in includes {
+        hasher.update(b"include:");
+        hasher.update(include.as_bytes());
+        hasher.update(b"\n");
+    }
+
+    // Hash defines (sorted for determinism)
+    let mut defines: Vec<_> = request.defines.iter().collect();
+    defines.sort_by(|a, b| a.0.cmp(&b.0));
+    for (key, value) in defines {
+        hasher.update(b"define:");
+        hasher.update(key.as_bytes());
+        if let Some(v) = value {
+            hasher.update(b"=");
+            hasher.update(v.as_bytes());
+        }
+        hasher.update(b"\n");
+    }
+
+    Blake3Hash(*hasher.finalize().as_bytes())
+}
+
+/// Compute a cache key for a C/C++ link request.
+///
+/// The cache key includes all inputs that affect the build output:
+/// - Toolchain manifest (Zig version)
+/// - Object file manifests (sorted for determinism)
+/// - Binary name
+/// - Target triple
+/// - Libraries (sorted for determinism)
+pub fn cc_link_cache_key(request: &CcLinkRequest) -> Blake3Hash {
+    let mut hasher = blake3::Hasher::new();
+
+    hasher.update(b"cc-link-v");
+    hasher.update(&CC_CACHE_KEY_VERSION.to_le_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"toolchain:");
+    hasher.update(&request.toolchain_manifest.0);
+    hasher.update(b"\n");
+
+    hasher.update(b"binary:");
+    hasher.update(request.binary_name.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"target:");
+    hasher.update(request.target_triple.as_bytes());
+    hasher.update(b"\n");
+
+    // Hash object manifests (sorted for determinism)
+    let mut objects: Vec<_> = request.object_manifests.iter().collect();
+    objects.sort_by_key(|h| h.0);
+    for obj in objects {
+        hasher.update(b"object:");
+        hasher.update(&obj.0);
+        hasher.update(b"\n");
+    }
+
+    // Hash libraries (sorted for determinism)
+    let mut libs: Vec<_> = request.libs.iter().collect();
+    libs.sort();
+    for lib in libs {
+        hasher.update(b"lib:");
+        hasher.update(lib.as_bytes());
         hasher.update(b"\n");
     }
 

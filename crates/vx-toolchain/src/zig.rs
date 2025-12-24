@@ -110,7 +110,8 @@ impl HostPlatform {
 
     /// Get the Zig download filename component for this platform
     pub fn zig_platform_name(&self) -> String {
-        format!("{}-{}", self.arch, self.os)
+        // Zig uses OS-ARCH format (e.g., "macos-aarch64", "linux-x86_64")
+        format!("{}-{}", self.os, self.arch)
     }
 }
 
@@ -163,14 +164,41 @@ pub fn zig_download_url(version: &ZigVersion, platform: &HostPlatform) -> String
         "tar.xz"
     };
 
+    // Determine platform naming format based on version
+    // Zig changed from OS-ARCH to ARCH-OS between 0.14.0 and 0.15.0
+    let platform_name = if version_uses_new_format(&version.version) {
+        // 0.15.0+ uses ARCH-OS format (e.g., "aarch64-macos")
+        format!("{}-{}", platform.arch, platform.os)
+    } else {
+        // 0.14.0 and earlier use OS-ARCH format (e.g., "macos-aarch64")
+        format!("{}-{}", platform.os, platform.arch)
+    };
+
     // Official Zig releases are at ziglang.org/download/{version}/
     format!(
         "https://ziglang.org/download/{}/zig-{}-{}.{}",
         version.version,
-        platform.zig_platform_name(),
+        platform_name,
         version.version,
         ext
     )
+}
+
+/// Check if a version uses the new ARCH-OS naming format (>= 0.15.0)
+fn version_uses_new_format(version_str: &str) -> bool {
+    // Parse major.minor from version string
+    // Examples: "0.15.2", "0.14.0", "0.16.0-dev.1234+abcdef"
+    let parts: Vec<&str> = version_str.split(|c| c == '.' || c == '-').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+
+    if let (Ok(major), Ok(minor)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+        // Version >= 0.15.0 uses new format
+        major > 0 || minor >= 15
+    } else {
+        false
+    }
 }
 
 /// Extract a Zig tarball and return paths to the zig executable and lib directory
@@ -467,6 +495,65 @@ impl MaterializedToolchain {
     }
 }
 
+/// Acquire a Zig toolchain by downloading and extracting it
+///
+/// Downloads the tarball from ziglang.org, extracts it to a temp directory,
+/// hashes the contents, and returns an AcquiredToolchain ready for CAS storage.
+pub async fn acquire_zig_toolchain(
+    version: ZigVersion,
+    platform: HostPlatform,
+) -> Result<AcquiredToolchain, ZigError> {
+    let url = zig_download_url(&version, &platform);
+
+    // Download the tarball
+    let response = reqwest::get(&url).await.map_err(|e| ZigError::FetchError {
+        url: url.clone(),
+        source: Box::new(e),
+    })?;
+
+    if !response.status().is_success() {
+        return Err(ZigError::FetchError {
+            url: url.clone(),
+            source: format!("HTTP {}", response.status()).into(),
+        });
+    }
+
+    let tarball = response.bytes().await.map_err(|e| ZigError::FetchError {
+        url: url.clone(),
+        source: Box::new(e),
+    })?;
+
+    // Create a temp directory for extraction
+    let extract_dir = camino::Utf8PathBuf::from(format!(
+        "/tmp/zig-acquire-{}",
+        uuid::Uuid::new_v4()
+    ));
+
+    // Extract tarball
+    let (zig_exe_path, lib_dir_path) = extract_zig_tarball(&tarball, &extract_dir)?;
+
+    // Hash the zig executable
+    let zig_exe_contents = std::fs::read(&zig_exe_path)?;
+    let zig_exe_hash = Blake3Hash::from_bytes(&zig_exe_contents);
+
+    // Hash the lib directory as tarball
+    let (lib_tarball, lib_hash) = hash_directory_as_tar(&lib_dir_path)?;
+
+    // Create toolchain ID
+    let id = ToolchainId::from_parts(&zig_exe_hash, &lib_hash);
+
+    Ok(AcquiredToolchain {
+        id,
+        version,
+        host: platform,
+        zig_exe_hash,
+        zig_exe_contents,
+        lib_hash,
+        lib_tarball,
+        extract_dir,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,7 +578,7 @@ mod tests {
 
         assert_eq!(
             zig_download_url(&v, &p),
-            "https://ziglang.org/download/0.13.0/zig-x86_64-linux-0.13.0.tar.xz"
+            "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz"
         );
     }
 
@@ -505,7 +592,37 @@ mod tests {
 
         assert_eq!(
             zig_download_url(&v, &p),
-            "https://ziglang.org/download/0.13.0/zig-aarch64-macos-0.13.0.tar.xz"
+            "https://ziglang.org/download/0.13.0/zig-macos-aarch64-0.13.0.tar.xz"
+        );
+    }
+
+    #[test]
+    fn zig_download_url_new_format_macos() {
+        // 0.15.0+ uses ARCH-OS format
+        let v = ZigVersion::new("0.15.2");
+        let p = HostPlatform {
+            os: "macos".into(),
+            arch: "aarch64".into(),
+        };
+
+        assert_eq!(
+            zig_download_url(&v, &p),
+            "https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz"
+        );
+    }
+
+    #[test]
+    fn zig_download_url_new_format_linux() {
+        // 0.15.0+ uses ARCH-OS format
+        let v = ZigVersion::new("0.15.2");
+        let p = HostPlatform {
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        };
+
+        assert_eq!(
+            zig_download_url(&v, &p),
+            "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz"
         );
     }
 

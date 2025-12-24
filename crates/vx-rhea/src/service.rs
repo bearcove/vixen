@@ -6,8 +6,8 @@ use tracing::{debug, info, warn};
 use vx_cass_proto::ServiceVersion;
 use vx_cass_proto::{NodeId, NodeManifest, OutputEntry};
 use vx_rhea_proto::{
-    CcCompileRequest, CcCompileResult, RHEA_PROTOCOL_VERSION, Rhea, RustCompileRequest,
-    RustCompileResult,
+    CcCompileRequest, CcCompileResult, CcLinkRequest, CcLinkResult, RHEA_PROTOCOL_VERSION, Rhea,
+    RustCompileRequest, RustCompileResult,
 };
 
 use crate::{RheaResult, RheaService};
@@ -510,7 +510,7 @@ impl Rhea for RheaService {
         let manifest = NodeManifest {
             node_id,
             cache_key,
-            produced_at: Zoned::now().datetime(),
+            produced_at: Zoned::now().to_string(),
             outputs: vec![OutputEntry {
                 logical: logical.to_string(),
                 filename: output_filename,
@@ -562,20 +562,663 @@ impl Rhea for RheaService {
         }
     }
 
-    async fn compile_cc(&self, _request: CcCompileRequest) -> CcCompileResult {
+    async fn compile_cc(&self, request: CcCompileRequest) -> CcCompileResult {
         let start = Instant::now();
 
-        // TODO: Implement C/C++ compilation with the new API
-        // For now, return an error indicating not implemented
+        info!(
+            source = %request.source_path,
+            target = %request.target_triple,
+            profile = %request.profile,
+            "compiling C source file"
+        );
+
+        // 1. Materialize Zig toolchain
+        let toolchain_dir = match self.ensure_materialized(request.toolchain_manifest).await {
+            Ok(dir) => dir,
+            Err(e) => {
+                return CcCompileResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    output_manifest: None,
+                    discovered_deps: vec![],
+                    error: Some(format!("failed to materialize Zig toolchain: {}", e)),
+                };
+            }
+        };
+
+        // 2. Materialize source tree to scratch directory
+        let scratch_dir = match self.create_scratch_dir().await {
+            Ok(dir) => dir,
+            Err(e) => {
+                return CcCompileResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    output_manifest: None,
+                    discovered_deps: vec![],
+                    error: Some(format!("failed to create scratch directory: {}", e)),
+                };
+            }
+        };
+
+        if let Err(e) = self
+            .materialize_tree_from_cas(request.source_manifest, &scratch_dir)
+            .await
+        {
+            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                warn!("failed to remove scratch directory after source tree materialization failure: {cleanup_err}");
+            }
+            return CcCompileResult {
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                output_manifest: None,
+                discovered_deps: vec![],
+                error: Some(format!("failed to materialize source tree: {}", e)),
+            };
+        }
+
+        // 3. Create output directory
+        let output_dir = scratch_dir.join(".vx/obj");
+        if let Err(e) = tokio::fs::create_dir_all(&output_dir).await {
+            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                warn!("failed to remove scratch directory after output directory creation failure: {cleanup_err}");
+            }
+            return CcCompileResult {
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                output_manifest: None,
+                discovered_deps: vec![],
+                error: Some(format!("failed to create output directory: {}", e)),
+            };
+        }
+
+        // 4. Determine output filename (source.c -> source.o)
+        let source_filename = Utf8Path::new(&request.source_path)
+            .file_name()
+            .unwrap_or("output");
+        let object_filename = format!("{}.o", source_filename.strip_suffix(".c").unwrap_or(source_filename));
+        let output_path = output_dir.join(&object_filename);
+
+        // 5. Build zig cc command
+        let zig_path = toolchain_dir.join("zig");
+        let source_abs = scratch_dir.join(&request.source_path);
+
+        let mut cmd = Command::new(&zig_path);
+        cmd.arg("cc");
+        cmd.arg("-c");
+        cmd.arg(&source_abs);
+        cmd.arg("-o").arg(&output_path);
+        // Skip -target for native builds to avoid compiler_rt rebuild issues
+        // cmd.arg("-target").arg(&request.target_triple);
+
+        // Profile-specific flags
+        if request.profile == "release" {
+            cmd.arg("-O3");
+        } else {
+            cmd.arg("-O0");
+            cmd.arg("-g");
+        }
+
+        // Add include paths
+        for include_path in &request.include_paths {
+            cmd.arg("-I").arg(scratch_dir.join(include_path));
+        }
+
+        // Add defines
+        for (key, value) in &request.defines {
+            if let Some(v) = value {
+                cmd.arg(format!("-D{}={}", key, v));
+            } else {
+                cmd.arg(format!("-D{}", key));
+            }
+        }
+
+        // Generate dependency file for incremental builds
+        let depfile_path = output_path.with_extension("d");
+        cmd.arg("-MD");
+        cmd.arg("-MF").arg(&depfile_path);
+
+        cmd.current_dir(&scratch_dir);
+
+        // Clean environment but preserve necessary variables
+        cmd.env_clear();
+        if let Ok(path) = std::env::var("PATH") {
+            cmd.env("PATH", path);
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            cmd.env("HOME", home);
+        }
+
+        // Tell Zig where to find its standard library
+        let lib_dir = toolchain_dir.join("lib");
+        cmd.env("ZIG_LIB_DIR", &lib_dir);
+
+        debug!(
+            zig = %zig_path,
+            source = %request.source_path,
+            output = %output_path,
+            "executing zig cc"
+        );
+
+        // 6. Run zig cc
+        let output = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after zig cc execution failure: {cleanup_err}");
+                }
+                return CcCompileResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    output_manifest: None,
+                    discovered_deps: vec![],
+                    error: Some(format!("failed to execute zig cc: {}", e)),
+                };
+            }
+        };
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                warn!("failed to remove scratch directory after zig cc compilation failure: {e}");
+            }
+            return CcCompileResult {
+                success: false,
+                exit_code,
+                stdout,
+                stderr,
+                duration_ms,
+                output_manifest: None,
+                discovered_deps: vec![],
+                error: None,
+            };
+        }
+
+        // 7. Parse dependency file to discover includes (for future incremental builds)
+        let discovered_deps = match tokio::fs::read_to_string(&depfile_path).await {
+            Ok(contents) => parse_depfile(&contents),
+            Err(_) => vec![], // Depfile is optional
+        };
+
+        // 8. Ingest object file to CAS
+        let object_data = match tokio::fs::read(&output_path).await {
+            Ok(d) => d,
+            Err(e) => {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after object file read failure: {cleanup_err}");
+                }
+                return CcCompileResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                    output_manifest: None,
+                    discovered_deps: vec![],
+                    error: Some(format!("failed to read object file: {}", e)),
+                };
+            }
+        };
+
+        let blob_hash = match self.cas.put_blob(object_data).await {
+            Ok(h) => h,
+            Err(e) => {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after CAS blob storage failure: {cleanup_err}");
+                }
+                return CcCompileResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                    output_manifest: None,
+                    discovered_deps: vec![],
+                    error: Some(format!("failed to store object file in CAS: {:?}", e)),
+                };
+            }
+        };
+
+        // 9. Create and store output manifest
+        let node_id = NodeId(format!(
+            "compile-c:{}:{}:{}",
+            request.source_path, request.target_triple, request.profile
+        ));
+
+        let cache_key = vx_cache::cc_compile_cache_key(&request);
+
+        let manifest = NodeManifest {
+            node_id,
+            cache_key,
+            produced_at: Zoned::now().to_string(),
+            outputs: vec![OutputEntry {
+                logical: "object".to_string(),
+                filename: object_filename,
+                blob: blob_hash,
+                executable: false,
+            }],
+        };
+
+        let manifest_hash = match self.cas.put_manifest(manifest).await {
+            Ok(h) => h,
+            Err(e) => {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after CAS manifest storage failure: {cleanup_err}");
+                }
+                return CcCompileResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                    output_manifest: None,
+                    discovered_deps: vec![],
+                    error: Some(format!("failed to store manifest in CAS: {:?}", e)),
+                };
+            }
+        };
+
+        // Cleanup scratch directory
+        if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
+            warn!("failed to remove scratch directory after successful compilation: {e}");
+        }
+
+        info!(
+            source = %request.source_path,
+            manifest_hash = %manifest_hash,
+            duration_ms,
+            "C compilation complete"
+        );
+
         CcCompileResult {
-            success: false,
-            exit_code: -1,
-            stdout: String::new(),
-            stderr: String::new(),
-            duration_ms: start.elapsed().as_millis() as u64,
-            output_manifest: None,
-            discovered_deps: vec![],
-            error: Some("C/C++ compilation not yet implemented with new API".to_string()),
+            success: true,
+            exit_code,
+            stdout,
+            stderr,
+            duration_ms,
+            output_manifest: Some(manifest_hash),
+            discovered_deps,
+            error: None,
+        }
+    }
+
+    async fn link_cc(&self, request: CcLinkRequest) -> CcLinkResult {
+        let start = Instant::now();
+
+        info!(
+            binary_name = %request.binary_name,
+            object_count = request.object_manifests.len(),
+            target = %request.target_triple,
+            "linking C binary"
+        );
+
+        // 1. Materialize Zig toolchain
+        let toolchain_dir = match self.ensure_materialized(request.toolchain_manifest).await {
+            Ok(dir) => dir,
+            Err(e) => {
+                return CcLinkResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    output_manifest: None,
+                    error: Some(format!("failed to materialize Zig toolchain: {}", e)),
+                };
+            }
+        };
+
+        // 2. Create scratch directory
+        let scratch_dir = match self.create_scratch_dir().await {
+            Ok(dir) => dir,
+            Err(e) => {
+                return CcLinkResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    output_manifest: None,
+                    error: Some(format!("failed to create scratch directory: {}", e)),
+                };
+            }
+        };
+
+        // 3. Materialize object files from CAS
+        let obj_dir = scratch_dir.join(".vx/obj");
+        if let Err(e) = tokio::fs::create_dir_all(&obj_dir).await {
+            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                warn!("failed to remove scratch directory after obj directory creation failure: {cleanup_err}");
+            }
+            return CcLinkResult {
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                output_manifest: None,
+                error: Some(format!("failed to create obj directory: {}", e)),
+            };
+        }
+
+        let mut object_paths = Vec::new();
+        for (idx, obj_manifest_hash) in request.object_manifests.iter().enumerate() {
+            // Fetch the manifest to get the blob hash
+            let obj_manifest = match self.cas.get_manifest(*obj_manifest_hash).await {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                        warn!("failed to remove scratch directory after object manifest not found: {e}");
+                    }
+                    return CcLinkResult {
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        output_manifest: None,
+                        error: Some(format!("object manifest {} not found in CAS", obj_manifest_hash)),
+                    };
+                }
+                Err(e) => {
+                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                        warn!("failed to remove scratch directory after object manifest fetch failure: {cleanup_err}");
+                    }
+                    return CcLinkResult {
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        output_manifest: None,
+                        error: Some(format!("failed to fetch object manifest: {:?}", e)),
+                    };
+                }
+            };
+
+            // Find the object output in the manifest
+            let obj_entry = obj_manifest
+                .outputs
+                .iter()
+                .find(|o| o.logical == "object")
+                .ok_or_else(|| format!("no object output in manifest {}", idx));
+
+            let obj_entry = match obj_entry {
+                Ok(e) => e,
+                Err(e) => {
+                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                        warn!("failed to remove scratch directory after object entry not found: {cleanup_err}");
+                    }
+                    return CcLinkResult {
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        output_manifest: None,
+                        error: Some(e),
+                    };
+                }
+            };
+
+            // Fetch the object blob and write it
+            let obj_data = match self.cas.get_blob(obj_entry.blob).await {
+                Ok(Some(data)) => data,
+                Ok(None) => {
+                    if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                        warn!("failed to remove scratch directory after object blob not found: {e}");
+                    }
+                    return CcLinkResult {
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        output_manifest: None,
+                        error: Some(format!("object blob {} not found in CAS", obj_entry.blob)),
+                    };
+                }
+                Err(e) => {
+                    if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                        warn!("failed to remove scratch directory after object blob fetch failure: {cleanup_err}");
+                    }
+                    return CcLinkResult {
+                        success: false,
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        output_manifest: None,
+                        error: Some(format!("failed to fetch object blob: {:?}", e)),
+                    };
+                }
+            };
+
+            let obj_path = obj_dir.join(format!("obj{}.o", idx));
+            if let Err(e) = tokio::fs::write(&obj_path, &obj_data).await {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after object write failure: {cleanup_err}");
+                }
+                return CcLinkResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    output_manifest: None,
+                    error: Some(format!("failed to write object file: {}", e)),
+                };
+            }
+
+            object_paths.push(obj_path);
+        }
+
+        // 4. Create output directory
+        let output_dir = scratch_dir.join(".vx/bin");
+        if let Err(e) = tokio::fs::create_dir_all(&output_dir).await {
+            if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                warn!("failed to remove scratch directory after output directory creation failure: {cleanup_err}");
+            }
+            return CcLinkResult {
+                success: false,
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: start.elapsed().as_millis() as u64,
+                output_manifest: None,
+                error: Some(format!("failed to create output directory: {}", e)),
+            };
+        }
+
+        let binary_filename = request.binary_name.clone();
+        let output_path = output_dir.join(&binary_filename);
+
+        // 5. Build linker command
+        // NOTE: Using system cc for linking because Zig requires test files
+        // from source tree when building compiler_rt, which aren't in binary distribution
+        let mut cmd = Command::new("cc");
+
+        // Add all object files
+        for obj_path in &object_paths {
+            cmd.arg(obj_path);
+        }
+
+        cmd.arg("-o").arg(&output_path);
+
+        // Add libraries
+        for lib in &request.libs {
+            cmd.arg(format!("-l{}", lib));
+        }
+
+        cmd.current_dir(&scratch_dir);
+
+        // Clean environment but preserve necessary variables
+        cmd.env_clear();
+        if let Ok(path) = std::env::var("PATH") {
+            cmd.env("PATH", path);
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            cmd.env("HOME", home);
+        }
+
+        debug!(
+            binary = %request.binary_name,
+            objects = object_paths.len(),
+            "executing system cc for linking"
+        );
+
+        // 6. Run linker
+        let output = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after zig cc execution failure: {cleanup_err}");
+                }
+                return CcLinkResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    output_manifest: None,
+                    error: Some(format!("failed to execute zig cc: {}", e)),
+                };
+            }
+        };
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                warn!("failed to remove scratch directory after zig cc linking failure: {e}");
+            }
+            return CcLinkResult {
+                success: false,
+                exit_code,
+                stdout,
+                stderr,
+                duration_ms,
+                output_manifest: None,
+                error: None,
+            };
+        }
+
+        // 7. Ingest binary to CAS
+        let binary_data = match tokio::fs::read(&output_path).await {
+            Ok(d) => d,
+            Err(e) => {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after binary read failure: {cleanup_err}");
+                }
+                return CcLinkResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                    output_manifest: None,
+                    error: Some(format!("failed to read binary: {}", e)),
+                };
+            }
+        };
+
+        let blob_hash = match self.cas.put_blob(binary_data).await {
+            Ok(h) => h,
+            Err(e) => {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after CAS blob storage failure: {cleanup_err}");
+                }
+                return CcLinkResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                    output_manifest: None,
+                    error: Some(format!("failed to store binary in CAS: {:?}", e)),
+                };
+            }
+        };
+
+        // 8. Create and store output manifest
+        let node_id = NodeId(format!(
+            "link-c:{}:{}",
+            request.binary_name, request.target_triple
+        ));
+
+        let cache_key = vx_cache::cc_link_cache_key(&request);
+
+        let manifest = NodeManifest {
+            node_id,
+            cache_key,
+            produced_at: Zoned::now().to_string(),
+            outputs: vec![OutputEntry {
+                logical: "binary".to_string(),
+                filename: binary_filename.clone(),
+                blob: blob_hash,
+                executable: true,
+            }],
+        };
+
+        let manifest_hash = match self.cas.put_manifest(manifest).await {
+            Ok(h) => h,
+            Err(e) => {
+                if let Err(cleanup_err) = tokio::fs::remove_dir_all(&scratch_dir).await {
+                    warn!("failed to remove scratch directory after CAS manifest storage failure: {cleanup_err}");
+                }
+                return CcLinkResult {
+                    success: false,
+                    exit_code: -1,
+                    stdout,
+                    stderr,
+                    duration_ms,
+                    output_manifest: None,
+                    error: Some(format!("failed to store manifest in CAS: {:?}", e)),
+                };
+            }
+        };
+
+        // Cleanup scratch directory
+        if let Err(e) = tokio::fs::remove_dir_all(&scratch_dir).await {
+            warn!("failed to remove scratch directory after successful linking: {e}");
+        }
+
+        info!(
+            binary = %request.binary_name,
+            manifest_hash = %manifest_hash,
+            duration_ms,
+            "C linking complete"
+        );
+
+        CcLinkResult {
+            success: true,
+            exit_code,
+            stdout,
+            stderr,
+            duration_ms,
+            output_manifest: Some(manifest_hash),
+            error: None,
         }
     }
 }
@@ -633,4 +1276,20 @@ async fn parse_crate_info(crate_dir: &Utf8Path) -> Result<CrateInfo, String> {
     };
 
     Ok(CrateInfo { lib_path, edition })
+}
+
+/// Parse a dependency file (.d) generated by -MD flag
+///
+/// Depfile format: "output.o: dep1.h dep2.h dep3.h"
+/// We extract the dependency paths (relative to scratch dir)
+fn parse_depfile(contents: &str) -> Vec<String> {
+    // Simple parser: split by ':', take RHS, split by whitespace
+    if let Some((_lhs, rhs)) = contents.split_once(':') {
+        rhs.split_whitespace()
+            .filter(|s| !s.is_empty() && !s.ends_with('\\'))
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        vec![]
+    }
 }

@@ -8,7 +8,6 @@
 //! - lookup/publish cache keys (mapping inputs → outputs)
 
 use facet::Facet;
-use jiff::civil::DateTime;
 
 /// Current cache key schema version.
 /// Bump this when the cache key canonicalization changes.
@@ -93,7 +92,7 @@ pub struct OutputEntry {
 pub struct NodeManifest {
     pub node_id: NodeId,
     pub cache_key: CacheKey,
-    pub produced_at: DateTime,
+    pub produced_at: String,
     pub outputs: Vec<OutputEntry>,
 }
 
@@ -413,8 +412,8 @@ pub struct ToolchainManifest {
     pub spec_key: ToolchainSpecKey,
     /// Content-derived toolchain identity
     pub toolchain_id: ToolchainId,
-    /// When acquired
-    pub created_at: DateTime,
+    /// When acquired (ISO 8601 string)
+    pub created_at: String,
 
     // === Rust-specific fields ===
     /// Resolved manifest date (for stable/beta this captures the actual version)
@@ -626,8 +625,8 @@ pub struct RegistryCrateManifest {
     /// Blake3 hash of the .crate tarball bytes in CAS
     pub crate_tarball_blob: Blake3Hash,
 
-    /// When acquired
-    pub created_at: DateTime,
+    /// When acquired (ISO 8601 string)
+    pub created_at: String,
 }
 
 // Registry RPC Types

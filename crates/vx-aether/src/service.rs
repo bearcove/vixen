@@ -315,21 +315,151 @@ impl AetherService {
                     "C project detected"
                 );
 
-                // TODO: Implement C project building
-                // - Create action graph with AcquireZigToolchain, CompileCObject, LinkCBinary
-                // - Execute action graph
-                // - Return build result
+                // Get target triple from request or use default
+                let rust_target_triple = self.exec_host_triple.clone();
+
+                // Convert Rust target triple to Zig target format
+                let target_triple = rust_target_triple
+                    .replace("apple-darwin", "macos")
+                    .replace("unknown-linux-gnu", "linux-gnu")
+                    .replace("pc-windows-msvc", "windows");
+                let profile = if _request.release { "release" } else { "debug" };
+
+                // Ingest source tree to CAS
+                // For C projects, we need to collect all source files and ingest them
+                let project_dir = vx_kdl_path.parent().unwrap();
+
+                // Collect all .c and .h files (simple approach for MVP)
+                let mut files = Vec::new();
+                for bin in &manifest.bins {
+                    let source_path = project_dir.join(&bin.sources);
+                    if source_path.exists() {
+                        let contents = tokio::fs::read(&source_path)
+                            .await
+                            .map_err(|e| AetherError::FileRead {
+                                path: source_path.clone(),
+                                message: e.to_string(),
+                            })?;
+                        files.push(TreeFile {
+                            path: bin.sources.clone(),
+                            contents,
+                            executable: false,
+                        });
+                    }
+                }
+
+                let source_manifest = self.cas
+                    .ingest_tree(vx_cass_proto::IngestTreeRequest { files })
+                    .await
+                    .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
+                    .manifest_hash
+                    .ok_or_else(|| AetherError::TreeIngestion("no manifest hash returned".to_string()))?;
+
+                info!(
+                    source_manifest = %source_manifest.short_hex(),
+                    "Source tree ingested"
+                );
+
+                // Create action graph for C project
+                use crate::action_graph::{ActionGraph, Action};
+                let mut graph = ActionGraph::new();
+
+                // Add AcquireZigToolchain action (root node)
+                let zig_version = "0.15.2".to_string();
+                let zig_node = graph.add_action(Action::AcquireZigToolchain {
+                    version: zig_version.clone(),
+                });
+
+                // Process each binary target
+                for bin in &manifest.bins {
+                    // Parse source files (simple glob for now - just one file)
+                    let sources = vec![bin.sources.clone()];
+
+                    // Add CompileCObject actions for each source file
+                    let mut object_nodes = Vec::new();
+                    for source in &sources {
+                        let output = format!(".vx/obj/{}.o", source.replace('/', "_").replace(".c", ""));
+                        let compile_node = graph.add_action(Action::CompileCObject {
+                            source: source.clone(),
+                            output: output.clone(),
+                            source_manifest,
+                            target_triple: target_triple.clone(),
+                            profile: profile.to_string(),
+                        });
+
+                        // CompileCObject depends on Zig toolchain
+                        graph.add_edge(zig_node, compile_node);
+                        object_nodes.push(compile_node);
+                    }
+
+                    // Add LinkCBinary action
+                    let binary_output = format!("bin/{}", bin.name);
+                    let link_node = graph.add_action(Action::LinkCBinary {
+                        name: bin.name.clone(),
+                        objects: sources.iter()
+                            .map(|s| format!(".vx/obj/{}.o", s.replace('/', "_").replace(".c", "")))
+                            .collect(),
+                        output: binary_output.clone(),
+                        target_triple: target_triple.clone(),
+                    });
+
+                    // LinkCBinary depends on all object files and Zig toolchain
+                    graph.add_edge(zig_node, link_node);
+                    for obj_node in object_nodes {
+                        graph.add_edge(obj_node, link_node);
+                    }
+                }
+
+                // Dump graph for debugging
+                graph.dump_graph();
+
+                // Set total number of actions for progress tracking
+                let total_actions = graph.node_count();
+                self.report_set_total(total_actions as u64).await;
+
+                // Execute action graph
+                let max_concurrency = std::thread::available_parallelism()
+                    .map(|n| n.get() * 2)
+                    .unwrap_or(16);
+
+                let progress_listener = self.progress_listener.read().await.clone();
+
+                let mut executor = crate::executor::Executor::new(
+                    graph,
+                    progress_listener,
+                    self.cas.clone(),
+                    self.exec.clone(),
+                    self.db.clone(),
+                    project_dir.to_path_buf(),
+                    target_triple.clone(),
+                    profile.to_string(),
+                    max_concurrency,
+                );
+
+                let build_start = std::time::Instant::now();
+                executor.execute().await?;
+                let duration = build_start.elapsed();
+
+                // Get execution statistics
+                let exec_stats = executor.get_stats();
+
+                info!(
+                    duration_ms = duration.as_millis(),
+                    cache_hits = exec_stats.cache_hits,
+                    rebuilt = exec_stats.rebuilt,
+                    "C build completed successfully"
+                );
 
                 Ok(BuildResult {
-                    success: false,
-                    message: "C compilation not yet implemented".to_string(),
-                    cached: false,
-                    duration_ms: 0,
-                    output_path: None,
-                    error: Some("C compilation support is coming soon - action types are defined but execution is not yet implemented".to_string()),
-                    total_actions: 0,
-                    cache_hits: 0,
-                    rebuilt: 0,
+                    success: true,
+                    message: format!("Built {} C binary targets", manifest.bins.len()),
+                    cached: exec_stats.cache_hits == total_actions,
+                    duration_ms: duration.as_millis() as u64,
+                    output_path: exec_stats.bin_output,
+                    error: None,
+                    total_actions,
+                    cache_hits: exec_stats.cache_hits,
+                    rebuilt: exec_stats.rebuilt,
                 })
             }
             Language::Rust => {

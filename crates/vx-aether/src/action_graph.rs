@@ -82,6 +82,8 @@ pub enum Action {
         source: String,
         /// Output object file path (workspace-relative, usually .vx/obj/...)
         output: String,
+        /// Source tree manifest hash in CAS
+        source_manifest: Blake3Hash,
         /// Target triple
         target_triple: String,
         /// Build profile (debug/release)
@@ -175,6 +177,27 @@ pub struct ActionGraph {
 }
 
 impl ActionGraph {
+    /// Create an empty action graph (for manual construction, e.g., C projects)
+    pub fn new() -> Self {
+        Self {
+            graph: DiGraph::new(),
+            crate_to_node: HashMap::new(),
+            toolchain_node: None,
+            registry_nodes: HashMap::new(),
+        }
+    }
+
+    /// Add an action to the graph and return its node index
+    pub fn add_action(&mut self, action: Action) -> NodeIndex {
+        self.graph.add_node(ActionNode { action })
+    }
+
+    /// Add a dependency edge from dependent to dependency
+    /// (i.e., dependent depends on dependency, so dependency must execute first)
+    pub fn add_edge(&mut self, dependency: NodeIndex, dependent: NodeIndex) {
+        self.graph.add_edge(dependent, dependency, ());
+    }
+
     /// Build action graph from a CrateGraph
     ///
     /// This creates AcquireToolchain, AcquireRegistryCrate, and CompileRustCrate

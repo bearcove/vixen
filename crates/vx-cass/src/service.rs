@@ -156,7 +156,7 @@ impl Cass for CassService {
                         schema_version: REGISTRY_MANIFEST_SCHEMA_VERSION,
                         spec: spec.clone(),
                         crate_tarball_blob: tarball_blob,
-                        created_at: Timestamp::now().in_tz("UTC").unwrap().datetime(),
+                        created_at: Timestamp::now().in_tz("UTC").unwrap().to_string(),
                     };
 
                     // Store manifest

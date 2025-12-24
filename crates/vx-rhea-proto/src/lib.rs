@@ -168,6 +168,50 @@ pub struct CcCompileResult {
     pub error: Option<String>,
 }
 
+/// Request to link C/C++ objects into a binary
+#[derive(Debug, Clone, Facet)]
+pub struct CcLinkRequest {
+    /// Zig toolchain manifest hash
+    pub toolchain_manifest: ManifestHash,
+
+    /// Object file manifest hashes (from CAS)
+    pub object_manifests: Vec<ManifestHash>,
+
+    /// Binary name (without extension)
+    pub binary_name: String,
+
+    /// Target triple
+    pub target_triple: String,
+
+    /// Libraries to link against (e.g., "c", "m")
+    pub libs: Vec<String>,
+}
+
+/// Result of linking C/C++ objects
+#[derive(Debug, Clone, Facet)]
+pub struct CcLinkResult {
+    /// Whether linking succeeded
+    pub success: bool,
+
+    /// Exit code
+    pub exit_code: i32,
+
+    /// Captured stdout
+    pub stdout: String,
+
+    /// Captured stderr
+    pub stderr: String,
+
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+
+    /// Manifest hash of the binary in CAS
+    pub output_manifest: Option<ManifestHash>,
+
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
 // =============================================================================
 // Rhea Service Trait
 // =============================================================================
@@ -197,4 +241,14 @@ pub trait Rhea {
     /// Similar to compile_rust but for C/C++ via zig cc.
     /// Returns discovered dependencies for incremental builds.
     async fn compile_cc(&self, request: CcCompileRequest) -> CcCompileResult;
+
+    /// Link C/C++ object files into a binary
+    ///
+    /// Rhea will:
+    /// 1. Materialize the Zig toolchain from CAS
+    /// 2. Materialize all object files from CAS
+    /// 3. Run zig cc to link them
+    /// 4. Ingest the binary to CAS
+    /// 5. Return the binary manifest hash
+    async fn link_cc(&self, request: CcLinkRequest) -> CcLinkResult;
 }
