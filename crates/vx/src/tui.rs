@@ -211,31 +211,19 @@ impl TuiHandle {
                 }
             }
 
-            // If we're done, show completion stats then exit
+            // If we're done, clean up TUI and exit
             if completed == total && state_snapshot.active.is_empty() && total > 0 {
-                // Update progress bar to show 100%
-                progress_bar.set_position(total as u64);
-                progress_bar.set_message(format!(
-                    "completed: {}, active: 0, pending: 0",
-                    completed
-                ));
-
-                // Give the progress bar a moment to render the 100% state
-                tokio::time::sleep(Duration::from_millis(100)).await;
-
-                // Clear action and log bars
-                for bar in &action_bars {
-                    bar.finish_and_clear();
-                }
+                // Clear all bars
                 for bar in &log_bars {
                     bar.finish_and_clear();
                 }
+                for bar in &action_bars {
+                    bar.finish_and_clear();
+                }
+                progress_bar.finish_and_clear();
 
-                // Show final completion message
-                progress_bar.finish_with_message(format!(
-                    "✓ Build complete: {} actions",
-                    total
-                ));
+                // Clear the MultiProgress completely
+                multi.clear().ok();
 
                 break;
             }

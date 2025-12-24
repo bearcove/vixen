@@ -331,21 +331,38 @@ async fn cmd_build(release: bool) -> Result<()> {
     // Print building message
     println!("{} ({})", "Building".green().bold(), cwd);
 
-    // Test log to verify TUI layer is working
-    tracing::info!("starting build request");
-
     let result = daemon.build(request).await?;
 
     if result.success {
+        // Print nice summary box
+        println!("┌─────────────────────────────────────────────────────────────");
+        println!("│ {} Build Complete", "✓".green().bold());
+        println!("├─────────────────────────────────────────────────────────────");
+
         if result.cached {
-            println!("{} (cached)", "Finished".green().bold());
+            println!("│ {} {}", "Status:".dimmed(), "Cached (no rebuild needed)".cyan());
         } else {
-            println!("{}", "Finished".green().bold());
+            println!("│ {} {}", "Status:".dimmed(), "Success".green());
         }
 
+        println!("│ {} {} ({:.2}s)",
+            "Duration:".dimmed(),
+            format!("{}ms", result.duration_ms).yellow(),
+            result.duration_ms as f64 / 1000.0
+        );
+
         if let Some(output_path) = &result.output_path {
-            println!("  {} {}", "Binary:".dimmed(), output_path);
+            // Make path relative to cwd if possible
+            let display_path = if let Ok(rel) = output_path.strip_prefix(&cwd) {
+                rel.to_string()
+            } else {
+                output_path.to_string()
+            };
+            println!("│ {} {}", "Binary:".dimmed(), display_path.cyan());
         }
+
+        println!("│ {} {}", "Project:".dimmed(), cwd.to_string().dimmed());
+        println!("└─────────────────────────────────────────────────────────────");
 
         Ok(())
     } else {
