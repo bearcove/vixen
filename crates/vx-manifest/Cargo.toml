@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 facet = { workspace = true }
 facet-cargo-toml = { workspace = true }
-thiserror = { workspace = true }
 camino = { workspace = true }
 miette = { version = "7.6.0", default-features = false, features = ["derive", "fancy-no-backtrace"] }
 

@@ -28,22 +28,18 @@ use vx_manifest::{Edition, Manifest, ManifestError};
 use vx_cass_proto::Blake3Hash;
 
 /// Errors during crate graph construction
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error)]
 pub enum CrateGraphError {
     #[error("failed to parse manifest")]
-    #[diagnostic(transparent)]
     ManifestError(#[from] ManifestError),
 
     #[error("failed to parse lockfile: {0}")]
-    #[diagnostic(code(vx_rs::lockfile_error))]
     LockfileError(#[from] LockfileError),
 
     #[error("failed to read lockfile: {0}")]
-    #[diagnostic(code(vx_rs::lockfile_read_error))]
     LockfileReadError(#[from] facet_cargo_toml::Error),
 
     #[error("failed to canonicalize path {path}: {source}")]
-    #[diagnostic(code(vx_rs::canonicalization_error))]
     CanonicalizationError {
         path: Utf8PathBuf,
         #[source]
@@ -51,19 +47,15 @@ pub enum CrateGraphError {
     },
 
     #[error("dependency cycle detected: {0}")]
-    #[diagnostic(code(vx_rs::cycle_detected))]
     CycleDetected(String),
 
     #[error("dependency not found: {name} at path {path}")]
-    #[diagnostic(code(vx_rs::dependency_not_found))]
     DependencyNotFound { name: String, path: Utf8PathBuf },
 
     #[error("crate has no lib target but is used as dependency: {name}")]
-    #[diagnostic(code(vx_rs::not_a_library))]
     NotALibrary { name: String },
 
     #[error("path {path} is not under workspace root {workspace_root}")]
-    #[diagnostic(code(vx_rs::path_outside_workspace))]
     PathOutsideWorkspace {
         path: Utf8PathBuf,
         workspace_root: Utf8PathBuf,
@@ -72,23 +64,18 @@ pub enum CrateGraphError {
     #[error(
         "registry dependencies require Cargo.lock (found '{dep_name}' with version in [dependencies])"
     )]
-    #[diagnostic(code(vx_rs::missing_lockfile))]
     MissingLockfile { dep_name: String },
 
     #[error("registry dependency '{name}' version '{version}' not found in Cargo.lock")]
-    #[diagnostic(code(vx_rs::registry_dep_not_in_lockfile))]
     RegistryDepNotInLockfile { name: String, version: String },
 
     #[error("registry crate '{name}' {version} has build.rs, which is not supported yet")]
-    #[diagnostic(code(vx_rs::registry_build_script))]
     RegistryBuildScript { name: String, version: String },
 
     #[error("registry crate '{name}' {version} is a proc-macro, which is not supported yet")]
-    #[diagnostic(code(vx_rs::registry_proc_macro))]
     RegistryProcMacro { name: String, version: String },
 
     #[error("registry crate '{name}' {version} has unsupported features: {details}")]
-    #[diagnostic(code(vx_rs::registry_unsupported))]
     RegistryUnsupported {
         name: String,
         version: String,
@@ -96,18 +83,39 @@ pub enum CrateGraphError {
     },
 
     #[error("registry crate not materialized: {name} {version}")]
-    #[diagnostic(code(vx_rs::registry_not_materialized))]
     RegistryNotMaterialized { name: String, version: String },
 
     #[error(
         "registry crate '{name}' {version} depends on path crate '{dep_name}', which is not supported"
     )]
-    #[diagnostic(code(vx_rs::registry_depends_on_path))]
     RegistryDependsOnPath {
         name: String,
         version: String,
         dep_name: String,
     },
+}
+
+impl Diagnostic for CrateGraphError {
+    fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        let code = match self {
+            Self::ManifestError(_) => return None, // Transparent - use inner error's code
+            Self::LockfileError(_) => "vx_rs::lockfile_error",
+            Self::LockfileReadError(_) => "vx_rs::lockfile_read_error",
+            Self::CanonicalizationError { .. } => "vx_rs::canonicalization_error",
+            Self::CycleDetected(_) => "vx_rs::cycle_detected",
+            Self::DependencyNotFound { .. } => "vx_rs::dependency_not_found",
+            Self::NotALibrary { .. } => "vx_rs::not_a_library",
+            Self::PathOutsideWorkspace { .. } => "vx_rs::path_outside_workspace",
+            Self::MissingLockfile { .. } => "vx_rs::missing_lockfile",
+            Self::RegistryDepNotInLockfile { .. } => "vx_rs::registry_dep_not_in_lockfile",
+            Self::RegistryBuildScript { .. } => "vx_rs::registry_build_script",
+            Self::RegistryProcMacro { .. } => "vx_rs::registry_proc_macro",
+            Self::RegistryUnsupported { .. } => "vx_rs::registry_unsupported",
+            Self::RegistryNotMaterialized { .. } => "vx_rs::registry_not_materialized",
+            Self::RegistryDependsOnPath { .. } => "vx_rs::registry_depends_on_path",
+        };
+        Some(Box::new(code))
+    }
 }
 
 /// Type of crate target

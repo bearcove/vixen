@@ -24,18 +24,15 @@ use thiserror::Error;
 use crate::crate_graph::BuildScriptOutput;
 
 /// Errors that can occur when running build scripts
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Debug, Error)]
 pub enum BuildScriptError {
     #[error("failed to compile build script for {crate_name}: {message}")]
-    #[diagnostic(code(vx_rs::build_script_compile_error))]
     CompileError { crate_name: String, message: String },
 
     #[error("failed to run build script for {crate_name}: {message}")]
-    #[diagnostic(code(vx_rs::build_script_run_error))]
     RunError { crate_name: String, message: String },
 
     #[error("build script for {crate_name} exited with code {code}:\n{stderr}")]
-    #[diagnostic(code(vx_rs::build_script_failed))]
     ExitError {
         crate_name: String,
         code: i32,
@@ -43,8 +40,19 @@ pub enum BuildScriptError {
     },
 
     #[error("I/O error: {0}")]
-    #[diagnostic(code(vx_rs::build_script_io_error))]
     IoError(#[from] std::io::Error),
+}
+
+impl Diagnostic for BuildScriptError {
+    fn code<'a>(&'a self) -> Option<Box<dyn std::fmt::Display + 'a>> {
+        let code = match self {
+            Self::CompileError { .. } => "vx_rs::build_script_compile_error",
+            Self::RunError { .. } => "vx_rs::build_script_run_error",
+            Self::ExitError { .. } => "vx_rs::build_script_failed",
+            Self::IoError(_) => "vx_rs::build_script_io_error",
+        };
+        Some(Box::new(code))
+    }
 }
 
 /// Context for running a build script

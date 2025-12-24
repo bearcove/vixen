@@ -10,19 +10,38 @@
 //! ```
 
 use camino::{Utf8Path, Utf8PathBuf};
-use thiserror::Error;
 
 /// Errors during depfile parsing
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum DepfileError {
-    #[error("failed to read depfile: {0}")]
-    IoError(#[from] std::io::Error),
-
-    #[error("invalid depfile format: {0}")]
+    IoError(std::io::Error),
     ParseError(String),
-
-    #[error("dependency escapes workspace: {path}")]
     EscapesWorkspace { path: String },
+}
+
+impl std::fmt::Display for DepfileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IoError(e) => write!(f, "failed to read depfile: {e}"),
+            Self::ParseError(msg) => write!(f, "invalid depfile format: {msg}"),
+            Self::EscapesWorkspace { path } => write!(f, "dependency escapes workspace: {path}"),
+        }
+    }
+}
+
+impl std::error::Error for DepfileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::IoError(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for DepfileError {
+    fn from(e: std::io::Error) -> Self {
+        Self::IoError(e)
+    }
 }
 
 /// Parsed depfile contents

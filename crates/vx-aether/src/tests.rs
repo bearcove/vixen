@@ -1,5 +1,6 @@
 use super::*;
-use vx_test_macros::vx_test;
+use tokio_test_lite::test as vx_test;
+use vx_cass_proto::Blake3Hash;
 
 /// Create a fresh database for testing
 fn test_db() -> Database {

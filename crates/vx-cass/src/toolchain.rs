@@ -1,6 +1,6 @@
 //! Toolchain Manager (Inflight Deduplication)
 
-use futures_util::StreamExt;
+use futures_util::{future::join, StreamExt};
 use jiff::Timestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -255,7 +255,7 @@ impl CassService {
         let rust_std_hash = rust_std_target.hash.clone();
         let sem = self.download_semaphore.clone();
 
-        let (rustc_result, rust_std_result) = tokio::join!(
+        let (rustc_result, rust_std_result) = join(
             async {
                 let _permit = sem.acquire().await.unwrap();
                 download_component(&rustc_url, &rustc_hash).await
@@ -264,7 +264,7 @@ impl CassService {
                 let _permit = sem.acquire().await.unwrap();
                 download_component(&rust_std_url, &rust_std_hash).await
             }
-        );
+        ).await;
 
         let rustc_tarball = match rustc_result {
             Ok(bytes) => bytes,
