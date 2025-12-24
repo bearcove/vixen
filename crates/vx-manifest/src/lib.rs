@@ -17,6 +17,7 @@ pub mod lockfile;
 use std::sync::Arc;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use facet_cargo_toml::Spanned;
 
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use thiserror::Error;
@@ -107,51 +108,59 @@ impl From<facet_cargo_toml::Edition> for Edition {
 /// A binary target
 #[derive(Debug, Clone)]
 pub struct BinTarget {
-    pub name: String,
+    /// Binary name (with source span for error reporting)
+    pub name: Spanned<String>,
+    /// Path to binary source (computed from manifest, no span)
     pub path: Utf8PathBuf,
 }
 
 /// A library target
 #[derive(Debug, Clone)]
 pub struct LibTarget {
-    pub name: String,
+    /// Library name (with source span for error reporting)
+    pub name: Spanned<String>,
+    /// Path to library source (computed from manifest, no span)
     pub path: Utf8PathBuf,
 }
 
 /// A path dependency
 #[derive(Debug, Clone)]
 pub struct PathDependency {
-    /// Dependency name (used as extern crate name)
-    pub name: String,
-    /// Path to the dependency (relative to manifest directory)
-    pub path: Utf8PathBuf,
-    /// Features to enable
-    pub features: Vec<String>,
+    /// Dependency name (used as extern crate name, with source span)
+    pub name: Spanned<String>,
+    /// Path to the dependency (with source span for "not found" errors)
+    pub path: Spanned<String>,
+    /// Features to enable (with source spans)
+    pub features: Vec<Spanned<String>>,
 }
 
 /// A versioned (registry) dependency
 #[derive(Debug, Clone)]
 pub struct VersionDependency {
-    /// Dependency name (used as extern crate name)
-    pub name: String,
-    /// Version requirement string (e.g., "1.0", "^1.2.3")
-    pub version: String,
-    /// Features to enable
-    pub features: Vec<String>,
+    /// Dependency name (used as extern crate name, with source span)
+    pub name: Spanned<String>,
+    /// Version requirement string (with source span for version resolution errors)
+    pub version: Spanned<String>,
+    /// Features to enable (with source spans)
+    pub features: Vec<Spanned<String>>,
 }
 
 /// Parsed and validated manifest
 #[derive(Debug, Clone)]
 pub struct Manifest {
-    pub name: String,
+    /// Source file (for pixel-perfect error reporting)
+    pub source: Arc<NamedSource<String>>,
+    /// Package name (with source span)
+    pub name: Spanned<String>,
+    /// Rust edition
     pub edition: Edition,
     /// Library target (if this crate has a lib.rs)
     pub lib: Option<LibTarget>,
     /// Binary target (if this crate has a main.rs or [[bin]])
     pub bin: Option<BinTarget>,
-    /// Path dependencies
+    /// Path dependencies (with source spans)
     pub deps: Vec<PathDependency>,
-    /// Versioned (registry) dependencies - require Cargo.lock
+    /// Versioned (registry) dependencies (with source spans)
     pub version_deps: Vec<VersionDependency>,
 }
 
@@ -184,11 +193,15 @@ impl Manifest {
             source: e,
         })?;
 
-        Self::parse(&contents, path.parent())
+        // Create a NamedSource for error reporting
+        let source = Arc::new(NamedSource::new(path.as_str(), contents.clone()));
+
+        Self::parse(source, path.parent())
     }
 
     /// Parse Cargo.toml content with a base directory for resolving paths
-    pub fn parse(contents: &str, base_dir: Option<&Utf8Path>) -> Result<Self, ManifestError> {
+    pub fn parse(source: Arc<NamedSource<String>>, base_dir: Option<&Utf8Path>) -> Result<Self, ManifestError> {
+        let contents = source.inner();
         let cargo = facet_cargo_toml::CargoToml::parse(contents)
             .map_err(|e| ManifestError::ParseError(e.to_string()))?;
 
@@ -232,7 +245,7 @@ impl Manifest {
 
         // Check for proc-macro crates
         if let Some(ref lib) = cargo.lib
-            && lib.proc_macro == Some(true)
+            && lib.proc_macro.as_ref().map(|s| **s) == Some(true)
         {
             return Err(ManifestError::Unsupported {
                 feature: "proc-macro crates",
@@ -280,7 +293,7 @@ impl Manifest {
         if let Some(ref build) = package.build {
             let has_build = match build {
                 facet_cargo_toml::StringOrBool::String(_) => true,
-                facet_cargo_toml::StringOrBool::Bool(b) => *b,
+                facet_cargo_toml::StringOrBool::Bool(b) => **b,
             };
             if has_build {
                 return Err(ManifestError::Unsupported {
@@ -296,7 +309,7 @@ impl Manifest {
             .ok_or(ManifestError::MissingField("name"))?;
 
         let edition = match &package.edition {
-            Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => Edition::from(*e),
+            Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => Edition::from(**e),
             _ => Edition::default(),
         };
 
@@ -317,6 +330,7 @@ impl Manifest {
         }
 
         Ok(Manifest {
+            source,
             name,
             edition,
             lib,
@@ -356,9 +370,9 @@ fn parse_dependencies(
             facet_cargo_toml::Dependency::Version(version) => {
                 // Simple version string: `foo = "1.0"`
                 version_deps.push(VersionDependency {
-                    name: name.clone(),
+                    name: Spanned::new(name.clone(), version.span()),
                     version: version.clone(),
-                    features: Vec::new(),
+                    features: Vec::<Spanned<String>>::new(),
                 });
             }
             facet_cargo_toml::Dependency::Workspace(_) => {
@@ -429,11 +443,17 @@ fn parse_dependencies(
                     });
                 }
 
-                // Extract features if present
+                // Extract features if present (keep spans)
+                // Note: Each feature string uses the span of the features array
                 let features = detail
                     .features
                     .as_ref()
-                    .map(|f| f.value().clone())
+                    .map(|f_list| {
+                        let span = f_list.span();
+                        f_list.value.iter()
+                            .map(|s| Spanned::new(s.clone(), span.clone()))
+                            .collect()
+                    })
                     .unwrap_or_default();
 
                 // Determine dependency type: path or version
@@ -443,15 +463,15 @@ fn parse_dependencies(
                     (Some(path), _) => {
                         // Path dependency (possibly with version for crates.io publishing)
                         path_deps.push(PathDependency {
-                            name: name.clone(),
-                            path: Utf8PathBuf::from(path),
+                            name: Spanned::new(name.clone(), path.span()),
+                            path: path.clone(),
                             features,
                         });
                     }
                     (None, Some(version)) => {
                         // Version dependency: `foo = { version = "1.0" }`
                         version_deps.push(VersionDependency {
-                            name: name.clone(),
+                            name: Spanned::new(name.clone(), version.span()),
                             version: version.clone(),
                             features,
                         });
@@ -477,7 +497,7 @@ fn parse_dependencies(
 
 /// Determine the library target from parsed manifest data
 fn determine_lib_target(
-    package_name: &str,
+    package_name: &Spanned<String>,
     lib: Option<&facet_cargo_toml::LibTarget>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<LibTarget> {
@@ -485,9 +505,9 @@ fn determine_lib_target(
         // Explicit [lib] section - always trust it
         let path = if let Some(ref p) = lib.path {
             if let Some(base) = base_dir {
-                base.join(p)
+                base.join(&**p)
             } else {
-                Utf8PathBuf::from(p)
+                Utf8PathBuf::from(&**p)
             }
         } else if let Some(base) = base_dir {
             base.join("src/lib.rs")
@@ -498,14 +518,17 @@ fn determine_lib_target(
         let name = lib
             .name
             .clone()
-            .unwrap_or_else(|| package_name.replace('-', "_"));
+            .unwrap_or_else(|| {
+                // Use package name with replaced hyphens, keep package name's span
+                Spanned::new(package_name.value.replace('-', "_"), package_name.span())
+            });
         Some(LibTarget { name, path })
     } else if let Some(base) = base_dir {
         // Auto-detect src/lib.rs only when we have a known base directory
         let lib_path = base.join("src/lib.rs");
         if lib_path.exists() {
             Some(LibTarget {
-                name: package_name.replace('-', "_"),
+                name: Spanned::new(package_name.value.replace('-', "_"), package_name.span()),
                 path: lib_path,
             })
         } else {
@@ -519,7 +542,7 @@ fn determine_lib_target(
 
 /// Determine the binary target from parsed manifest data
 fn determine_bin_target(
-    package_name: &str,
+    package_name: &Spanned<String>,
     bins: Option<&Vec<facet_cargo_toml::BinTarget>>,
     base_dir: Option<&Utf8Path>,
 ) -> Option<BinTarget> {
@@ -528,9 +551,9 @@ fn determine_bin_target(
         if let Some(bin) = bins.first() {
             let path = if let Some(ref p) = bin.path {
                 if let Some(base) = base_dir {
-                    base.join(p)
+                    base.join(&**p)
                 } else {
-                    Utf8PathBuf::from(p)
+                    Utf8PathBuf::from(&**p)
                 }
             } else if let Some(base) = base_dir {
                 base.join("src/main.rs")
@@ -538,7 +561,7 @@ fn determine_bin_target(
                 Utf8PathBuf::from("src/main.rs")
             };
 
-            let name = bin.name.clone().unwrap_or_else(|| package_name.to_string());
+            let name = bin.name.clone().unwrap_or_else(|| package_name.clone());
             return Some(BinTarget { name, path });
         }
     }
@@ -548,7 +571,7 @@ fn determine_bin_target(
         let main_path = base.join("src/main.rs");
         if main_path.exists() {
             Some(BinTarget {
-                name: package_name.to_string(),
+                name: package_name.clone(),
                 path: main_path,
             })
         } else {

@@ -609,7 +609,7 @@ async fn parse_crate_info(crate_dir: &Utf8Path) -> Result<CrateInfo, String> {
     // Determine lib_path
     let lib_path = if let Some(ref lib) = manifest.lib {
         if let Some(ref path) = lib.path {
-            Utf8PathBuf::from(path)
+            Utf8PathBuf::from(&**path)
         } else {
             Utf8PathBuf::from("src/lib.rs")
         }
@@ -620,7 +620,7 @@ async fn parse_crate_info(crate_dir: &Utf8Path) -> Result<CrateInfo, String> {
     // Determine edition
     let edition = if let Some(ref package) = manifest.package {
         match &package.edition {
-            Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => match e {
+            Some(facet_cargo_toml::EditionOrWorkspace::Edition(e)) => match **e {
                 facet_cargo_toml::Edition::E2015 => "2015".to_string(),
                 facet_cargo_toml::Edition::E2018 => "2018".to_string(),
                 facet_cargo_toml::Edition::E2021 => "2021".to_string(),
