@@ -4,22 +4,26 @@
 //! the source closure of a crate. Uses rustc_lexer for accurate tokenization
 //! that correctly handles comments, strings, and raw strings.
 //!
-//! ## Supported syntax (v0.2)
+//! ## Supported syntax (v0.3)
 //!
 //! - `mod foo;` at module scope
 //! - `pub mod foo;` at module scope
+//! - `#[cfg(test)] mod foo;` - cfg attributes (pessimistically included)
+//! - `#[cfg(...)] mod foo;` - any cfg attributes (pessimistically included)
+//! - Other attributes on `mod` items (all included in source closure)
 //!
-//! ## Rejected syntax (with clear errors)
+//! ## Pessimistic inclusion strategy
 //!
-//! - `#[path = "..."] mod foo;` - custom paths
-//! - `#[cfg(...)] mod foo;` - conditional compilation
-//! - Any other attributes on mod items
+//! We include ALL modules in the source closure, even those with `#[cfg(test)]`
+//! or other conditional compilation attributes. This is conservative: better to
+//! include too much than too little. It matches cargo's behavior (source tarballs
+//! include test code).
 //!
 //! ## Tolerated syntax
 //!
 //! - `mod foo { ... }` - inline modules (don't affect file discovery)
 //!
-//! ## Known limitations (v0.2)
+//! ## Known limitations (v0.3)
 //!
 //! - **Visibility modifiers ignored**: `pub(crate) mod foo;` is parsed as plain
 //!   `mod foo;`. This is fine for file discovery but means we don't track
@@ -400,24 +404,17 @@ pub fn scan_mod_decls(source: &str) -> Vec<ModDecl> {
 
 /// Validate mod declarations according to vx policy.
 ///
-/// This rejects:
-/// - Any attributes on mod items (including #[cfg], #[path], etc.)
+/// This function currently accepts all mod declarations and doesn't reject anything.
+/// We take a pessimistic approach: include all modules with cfg attributes in the
+/// source closure, regardless of the cfg conditions. This is conservative and
+/// matches cargo's behavior (source tarballs include all files).
 ///
 /// Inline modules (`mod foo { ... }`) are allowed - they don't affect file discovery.
 pub fn validate_mod_decls(mods: &[ModDecl], file: &Utf8Path) -> Result<(), ModuleError> {
-    for m in mods {
-        // Inline modules are fine - they don't add extra files
-        if m.is_inline {
-            continue;
-        }
-        if m.has_attrs {
-            return Err(ModuleError::AttributeOnMod {
-                name: m.name.clone(),
-                file: file.to_owned(),
-                line: m.line,
-            });
-        }
-    }
+    // Pessimistic strategy: accept all modules, including those with cfg attributes.
+    // Better to include too much in the source closure than too little.
+    // Future: We could reject #[path = "..."] attributes if needed.
+    let _ = (mods, file);
     Ok(())
 }
 
@@ -838,7 +835,8 @@ mod complex;
     }
 
     #[test]
-    fn test_validate_rejects_attrs() {
+    fn test_validate_accepts_attrs() {
+        // v0.3: We now accept attributes (pessimistic inclusion strategy)
         let mods = vec![ModDecl {
             name: "configured".to_string(),
             span_lo: 0,
@@ -849,8 +847,7 @@ mod complex;
             is_inline: false,
         }];
 
-        let err = validate_mod_decls(&mods, Utf8Path::new("src/lib.rs")).unwrap_err();
-        assert!(matches!(err, ModuleError::AttributeOnMod { .. }));
+        validate_mod_decls(&mods, Utf8Path::new("src/lib.rs")).unwrap();
     }
 
     #[test]
@@ -1013,14 +1010,19 @@ mod bar; // line 6
     }
 
     #[test]
-    fn test_source_closure_rejects_attributed_module() {
+    fn test_source_closure_includes_attributed_module() {
+        // v0.3: We now include modules with cfg attributes (pessimistic strategy)
         let (_dir, base) = setup_test_crate(&[
             ("src/lib.rs", "#[cfg(test)]\nmod tests;"),
-            ("src/tests.rs", ""),
+            ("src/tests.rs", "#[test]\nfn it_works() {}"),
         ]);
 
-        let err = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap_err();
-        assert!(matches!(err, ModuleError::AttributeOnMod { name, .. } if name == "tests"));
+        let closure = rust_source_closure(&base.join("src/lib.rs"), &base).unwrap();
+
+        // Both lib.rs and tests.rs should be included
+        assert_eq!(closure.len(), 2);
+        assert!(closure.contains(&Utf8PathBuf::from("src/lib.rs")));
+        assert!(closure.contains(&Utf8PathBuf::from("src/tests.rs")));
     }
 
     #[test]
