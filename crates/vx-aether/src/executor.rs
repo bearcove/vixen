@@ -53,6 +53,8 @@ pub enum ActionResult {
         crate_id: CrateId,
         /// Output manifest hash from CAS
         output_manifest: Blake3Hash,
+        /// Path to materialized bin (if this was a bin crate)
+        bin_output: Option<camino::Utf8PathBuf>,
     },
 }
 
@@ -270,6 +272,35 @@ impl Executor {
                 }
             }
         }
+
+        // Compute stats from results
+        let results_lock = self.results.read().await;
+        let mut cache_hits = 0;
+        let mut rebuilt = 0;
+        let mut bin_output = None;
+
+        for (_, result) in results_lock.iter() {
+            match result {
+                ActionResult::CrateCompiled {
+                    bin_output: Some(path),
+                    ..
+                } => {
+                    rebuilt += 1;
+                    // Track the last bin output (in single-bin projects, there's only one)
+                    bin_output = Some(path.clone());
+                }
+                ActionResult::CrateCompiled { bin_output: None, .. } => {
+                    // Check if this was a cache hit or rebuild
+                    // For now, we'll count all as rebuilds unless we have better tracking
+                    rebuilt += 1;
+                }
+                _ => {}
+            }
+        }
+
+        self.stats.cache_hits = cache_hits;
+        self.stats.rebuilt = rebuilt;
+        self.stats.bin_output = bin_output;
 
         Ok(())
     }
@@ -555,6 +586,7 @@ async fn execute_action(
                             ActionResult::CrateCompiled {
                                 crate_id,
                                 output_manifest,
+                                ..
                             } => Some((*crate_id, *output_manifest)),
                             _ => None,
                         }
@@ -762,7 +794,7 @@ async fn execute_action(
             };
 
             // Materialize bin outputs
-            if crate_type == vx_rs::crate_graph::CrateType::Bin && !was_cached {
+            let bin_output = if crate_type == vx_rs::crate_graph::CrateType::Bin && !was_cached {
                 let output_dir = workspace_root
                     .join(".vx/build")
                     .join(target_triple)
@@ -784,6 +816,7 @@ async fn execute_action(
                     .map_err(|e| AetherError::CasRpc(std::sync::Arc::new(e)))?
                     .ok_or(AetherError::OutputManifestNotFound(output_manifest))?;
 
+                let mut materialized = false;
                 for output in &manifest.outputs {
                     if output.logical == "bin" {
                         let blob_data = cas
@@ -798,15 +831,24 @@ async fn execute_action(
                                 message: e.to_string(),
                             })?;
 
-                        // Update stats with bin output path
+                        materialized = true;
                         break;
                     }
                 }
-            }
+
+                if materialized {
+                    Some(output_path)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             Ok(ActionResult::CrateCompiled {
                 crate_id,
                 output_manifest,
+                bin_output,
             })
         }
     }
