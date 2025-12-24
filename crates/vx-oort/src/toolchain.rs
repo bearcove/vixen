@@ -297,7 +297,7 @@ impl OortService {
         let rustc_tree = match vx_tarball::extract_to_tree(
             std::io::Cursor::new(rustc_tarball),
             Compression::Xz,
-            1, // strip first component
+            2, // strip rustc-VERSION/ and rustc/ components
             async move |data| {
                 let hash = this.put_blob(data).await;
                 Ok(hash)
@@ -334,7 +334,7 @@ impl OortService {
         let rust_std_tree = match vx_tarball::extract_to_tree(
             std::io::Cursor::new(rust_std_tarball),
             Compression::Xz,
-            1, // strip first component
+            2, // strip rust-std-VERSION/ and rust-std-TARGET/ components
             async move |data| {
                 let hash = this.put_blob(data).await;
                 Ok(hash)
