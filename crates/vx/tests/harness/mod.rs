@@ -5,13 +5,18 @@
 //!
 //! Each test uses Unix sockets in its unique VX_HOME directory, avoiding any port
 //! conflicts when tests run in parallel.
+//!
+//! The daemon (vx-aether) is spawned by the test harness and lives for the duration
+//! of the test. Multiple `vx` invocations share the same daemon.
 
 // Each integration test file compiles this module separately, so functions
 // used by one test file appear "unused" when compiling another.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
+use std::thread;
+use std::time::Duration;
 use tempfile::TempDir;
 
 /// A test environment with isolated CAS, project directories, and Unix sockets
@@ -20,29 +25,80 @@ pub struct TestEnv {
     pub vx_home: TempDir,
     /// Temp dir for the test project
     pub project: TempDir,
+    /// The daemon process - lives as long as TestEnv
+    /// When TestEnv drops, daemon dies (via dying_with_parent)
+    #[allow(dead_code)]
+    daemon: Child,
 }
 
 impl TestEnv {
     /// Create a new isolated test environment
     ///
-    /// Each test gets its own unique VX_HOME with Unix sockets for IPC.
-    /// No ports are used, so tests can run in parallel without conflicts.
+    /// Spawns vx-aether daemon which lives for the duration of the test.
+    /// Multiple `vx` commands will share this daemon.
     pub fn new() -> Self {
+        let vx_home = TempDir::new().expect("failed to create vx_home temp dir");
+        let project = TempDir::new().expect("failed to create project temp dir");
+
+        // Spawn the daemon
+        let daemon = Self::spawn_daemon(vx_home.path());
+
         Self {
-            vx_home: TempDir::new().expect("failed to create vx_home temp dir"),
-            project: TempDir::new().expect("failed to create project temp dir"),
+            vx_home,
+            project,
+            daemon,
         }
+    }
+
+    /// Spawn vx-aether daemon for a given VX_HOME directory
+    ///
+    /// This is public so tests can spawn a daemon at a custom path (e.g., shared_home).
+    pub fn spawn_daemon(vx_home: &Path) -> Child {
+        let log_path = vx_home.join("aether.log");
+
+        // Ensure VX_HOME directory exists
+        std::fs::create_dir_all(vx_home).expect("failed to create VX_HOME");
+
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .expect("failed to open aether.log");
+
+        let mut cmd = Command::new(Self::aether_binary());
+        cmd.env("VX_HOME", vx_home);
+        cmd.stdout(Stdio::from(log_file.try_clone().unwrap()));
+        cmd.stderr(Stdio::from(log_file));
+
+        let child = ur_taking_me_with_you::spawn_dying_with_parent(cmd)
+            .expect("failed to spawn vx-aether");
+
+        // Give daemon time to start listening
+        // The daemon needs to initialize picante DB, spawn cass/rhea, etc.
+        thread::sleep(Duration::from_millis(500));
+
+        child
     }
 
     /// Path to the vx binary (built by cargo)
     fn vx_binary() -> PathBuf {
-        // Find the binary in target/debug or target/release
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.pop(); // crates/
         path.pop(); // vx/
         path.push("target");
         path.push("debug");
         path.push("vx");
+        path
+    }
+
+    /// Path to the vx-aether binary (built by cargo)
+    fn aether_binary() -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop(); // crates/
+        path.pop(); // vx/
+        path.push("target");
+        path.push("debug");
+        path.push("vx-aether");
         path
     }
 
@@ -76,6 +132,7 @@ impl TestEnv {
         cmd.current_dir(self.project.path().join(subdir));
         self.setup_env(&mut cmd, vx_home);
         cmd.arg("build");
+        cmd.arg("--no-spawn"); // Test harness spawns daemon, vx shouldn't
         if release {
             cmd.arg("--release");
         }
@@ -103,6 +160,7 @@ impl TestEnv {
             cmd.env(key, value);
         }
         cmd.arg("build");
+        cmd.arg("--no-spawn"); // Test harness spawns daemon, vx shouldn't
         if release {
             cmd.arg("--release");
         }
@@ -203,7 +261,8 @@ pub struct VxOutput {
 impl VxOutput {
     /// Check if the build was a cache hit
     pub fn was_cached(&self) -> bool {
-        self.stdout.contains("(cached)")
+        // Check for "Cached (no rebuild needed)" in build output
+        self.stdout.contains("Cached (no rebuild needed)")
     }
 
     /// Check if output contains a specific string

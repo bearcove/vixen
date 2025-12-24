@@ -130,8 +130,9 @@ fn multi_crate_path_independence() {
     let env1 = TestEnv::new();
     let env2 = TestEnv::new();
 
-    // Shared VX_HOME for both
+    // Shared VX_HOME for both, with its own daemon
     let shared_home = tempfile::TempDir::new().unwrap();
+    let _shared_daemon = TestEnv::spawn_daemon(shared_home.path());
 
     create_multi_crate_project(&env1);
     create_multi_crate_project(&env2);

@@ -26,17 +26,28 @@ struct Cli {
     command: CliCommand,
 }
 
-/// Options for displaying the explain report
-#[derive(Debug, Clone, Copy)]
-struct ReportDisplayOptions {
-    /// Show all nodes including cache hits
-    show_all: bool,
+/// Arguments for the `build` subcommand
+#[derive(Facet, Debug)]
+struct BuildArgs {
+    /// Build in release mode
+    #[facet(args::named, args::short = 'r')]
+    release: bool,
 
-    /// Show verbose output (full hashes, unchanged deps)
-    verbose: bool,
+    /// Don't auto-spawn daemon if not running (for tests)
+    #[facet(args::named)]
+    no_spawn: bool,
+}
 
-    /// Show only fanout analysis
-    fanout_only: bool,
+/// Arguments for the `kill` subcommand
+#[derive(Facet, Debug)]
+struct KillArgs {}
+
+/// Arguments for the `clean` subcommand
+#[derive(Facet, Debug)]
+struct CleanArgs {
+    /// Remove ~/.vx (VX_HOME) instead of project .vx/
+    #[facet(args::named)]
+    nuke: bool,
 }
 
 /// Arguments for the `explain` subcommand
@@ -71,25 +82,30 @@ struct ExplainArgs {
     last_miss: bool,
 }
 
+/// Options for displaying the explain report (internal)
+#[derive(Debug, Clone, Copy)]
+struct ReportDisplayOptions {
+    /// Show all nodes including cache hits
+    show_all: bool,
+
+    /// Show verbose output (full hashes, unchanged deps)
+    verbose: bool,
+
+    /// Show only fanout analysis
+    fanout_only: bool,
+}
+
 #[derive(Facet, Debug)]
 #[repr(u8)]
 enum CliCommand {
     /// Execute a build
-    Build {
-        /// Build in release mode
-        #[facet(args::named, args::short = 'r')]
-        release: bool,
-    },
+    Build(BuildArgs),
 
     /// Stop the aether process
-    Kill,
+    Kill(KillArgs),
 
     /// Stop the aether and remove .vx/ directory
-    Clean {
-        /// Remove ~/.vx (VX_HOME) instead of project .vx/
-        #[facet(args::named)]
-        nuke: bool,
-    },
+    Clean(CleanArgs),
 
     /// Explain the last build
     Explain(ExplainArgs),
@@ -141,15 +157,15 @@ async fn main() -> Result<()> {
 
     match cli.command {
         // Build command gets TUI-based tracing (initialized in cmd_build)
-        CliCommand::Build { release } => cmd_build(release).await,
+        CliCommand::Build(args) => cmd_build(args).await,
         // Other commands use stderr tracing
-        CliCommand::Kill => {
+        CliCommand::Kill(args) => {
             init_tracing_stderr();
-            cmd_kill().await
+            cmd_kill(args).await
         }
-        CliCommand::Clean { nuke } => {
+        CliCommand::Clean(args) => {
             init_tracing_stderr();
-            cmd_clean(nuke).await
+            cmd_clean(args).await
         }
         CliCommand::Explain(args) => {
             init_tracing_stderr();
@@ -222,7 +238,7 @@ fn create_progress_listener_dispatcher(
 }
 
 /// Connect to the aether, spawning it if necessary
-async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
+async fn get_or_spawn_aether(no_spawn: bool) -> Result<(AetherClient, tui::TuiHandle)> {
     use vx_io::net::Endpoint;
 
     let vx_home = std::env::var("VX_HOME")
@@ -249,7 +265,16 @@ async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
     // Try to connect first
     match try_connect_daemon(&endpoint).await {
         Ok(result) => Ok(result),
-        Err(_) => {
+        Err(e) => {
+            // If no_spawn is set, don't try to spawn - just fail
+            if no_spawn {
+                eyre::bail!(
+                    "failed to connect to vx-aether at {} (--no-spawn prevents auto-spawning): {}",
+                    endpoint,
+                    e
+                );
+            }
+
             if !endpoint.is_local() {
                 eyre::bail!(
                     "failed to connect to vx-aether at {}.\n\
@@ -334,18 +359,18 @@ async fn try_connect_daemon(
     Ok((client, tui))
 }
 
-async fn cmd_build(release: bool) -> Result<()> {
+async fn cmd_build(args: BuildArgs) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
 
     // Connect to daemon (spawning if necessary) and set up TUI
-    let (daemon, tui) = get_or_spawn_aether().await?;
+    let (daemon, tui) = get_or_spawn_aether(args.no_spawn).await?;
 
     // Initialize tracing with TUI layer
     init_tracing_with_tui(tui.clone());
 
     let request = BuildRequest {
         project_path: cwd.clone(),
-        release,
+        release: args.release,
     };
 
     let result = daemon.build(request).await?;
@@ -406,7 +431,7 @@ async fn cmd_build(release: bool) -> Result<()> {
     }
 }
 
-async fn cmd_kill() -> Result<()> {
+async fn cmd_kill(_args: KillArgs) -> Result<()> {
     use vx_io::net::Endpoint;
 
     let vx_home = std::env::var("VX_HOME")
@@ -446,7 +471,7 @@ async fn cmd_kill() -> Result<()> {
     }
 }
 
-async fn cmd_clean(nuke: bool) -> Result<()> {
+async fn cmd_clean(args: CleanArgs) -> Result<()> {
     use vx_io::net::Endpoint;
 
     // Determine VX_HOME
@@ -455,7 +480,7 @@ async fn cmd_clean(nuke: bool) -> Result<()> {
     let vx_home = Utf8PathBuf::from(&vx_home);
 
     // Determine which directory to remove
-    let vx_dir = if nuke {
+    let vx_dir = if args.nuke {
         // Remove VX_HOME (~/.vx)
         vx_home.clone()
     } else {

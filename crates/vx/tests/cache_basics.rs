@@ -253,8 +253,9 @@ fn different_checkout_path_is_cache_hit() {
     let env1 = TestEnv::new();
     let env2 = TestEnv::new();
 
-    // Use a shared VX_HOME for both
+    // Use a shared VX_HOME for both, with its own daemon
     let shared_home = tempfile::TempDir::new().unwrap();
+    let _shared_daemon = TestEnv::spawn_daemon(shared_home.path());
 
     create_hello_world(&env1);
     create_hello_world(&env2);

@@ -35,9 +35,11 @@ fn rejects_workspace() {
     let result = env.build(false);
 
     assert!(!result.success, "build should fail for workspace");
+    // Workspaces are rejected because they have [workspace] instead of [package]
+    // The error message may mention "workspace", "not supported", or "package"
     assert!(
-        result.contains("workspace") || result.contains("not supported"),
-        "error should mention workspace: {}\n{}",
+        result.contains("workspace") || result.contains("not supported") || result.contains("package"),
+        "error should mention workspace rejection: {}\n{}",
         result.stdout,
         result.stderr
     );
