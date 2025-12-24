@@ -55,6 +55,8 @@ pub enum ActionResult {
         output_manifest: Blake3Hash,
         /// Path to materialized bin (if this was a bin crate)
         bin_output: Option<camino::Utf8PathBuf>,
+        /// Whether this was a cache hit
+        was_cached: bool,
     },
 }
 
@@ -282,17 +284,19 @@ impl Executor {
         for (_, result) in results_lock.iter() {
             match result {
                 ActionResult::CrateCompiled {
-                    bin_output: Some(path),
+                    bin_output: bin_path,
+                    was_cached,
                     ..
                 } => {
-                    rebuilt += 1;
-                    // Track the last bin output (in single-bin projects, there's only one)
-                    bin_output = Some(path.clone());
-                }
-                ActionResult::CrateCompiled { bin_output: None, .. } => {
-                    // Check if this was a cache hit or rebuild
-                    // For now, we'll count all as rebuilds unless we have better tracking
-                    rebuilt += 1;
+                    if *was_cached {
+                        cache_hits += 1;
+                    } else {
+                        rebuilt += 1;
+                    }
+                    // Track the bin output (if any)
+                    if let Some(path) = bin_path {
+                        bin_output = Some(path.clone());
+                    }
                 }
                 _ => {}
             }
@@ -793,8 +797,8 @@ async fn execute_action(
                 (output_manifest, false)
             };
 
-            // Materialize bin outputs
-            let bin_output = if crate_type == vx_rs::crate_graph::CrateType::Bin && !was_cached {
+            // Materialize bin outputs (always materialize, even on cache hit)
+            let bin_output = if crate_type == vx_rs::crate_graph::CrateType::Bin {
                 let output_dir = workspace_root
                     .join(".vx/build")
                     .join(target_triple)
@@ -849,6 +853,7 @@ async fn execute_action(
                 crate_id,
                 output_manifest,
                 bin_output,
+                was_cached,
             })
         }
     }

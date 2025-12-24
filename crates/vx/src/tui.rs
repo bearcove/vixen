@@ -211,22 +211,23 @@ impl TuiHandle {
                 }
             }
 
-            // If we're done, show completion state briefly then exit
+            // If we're done, show completion stats then exit
             if completed == total && state_snapshot.active.is_empty() && total > 0 {
-                // Update final state
-                progress_bar.set_position(total as u64);
-                progress_bar.set_message(format!("completed: {}", completed));
-
-                // Show completion state for 500ms so user can see it
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
-                progress_bar.finish_with_message("build complete");
+                // Clear action and log bars
                 for bar in &action_bars {
                     bar.finish_and_clear();
                 }
                 for bar in &log_bars {
                     bar.finish_and_clear();
                 }
+
+                // Show final completion state with stats
+                progress_bar.set_position(total as u64);
+                progress_bar.finish_with_message(format!(
+                    "✓ Build complete: {} actions ({} completed, {} active, {} pending)",
+                    total, completed, active, pending
+                ));
+
                 break;
             }
         }
