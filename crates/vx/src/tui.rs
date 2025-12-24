@@ -8,6 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use tracing_subscriber::Layer;
 use vx_aether_proto::ActionType;
 
 /// Tracks a single action
@@ -222,5 +223,71 @@ impl TuiHandle {
                 break;
             }
         }
+    }
+}
+
+/// Custom tracing layer that sends logs to the TUI
+pub struct TuiLayer {
+    tui: TuiHandle,
+}
+
+impl TuiLayer {
+    pub fn new(tui: TuiHandle) -> Self {
+        Self { tui }
+    }
+}
+
+impl<S> Layer<S> for TuiLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        use std::fmt::Write;
+        use tracing::field::Visit;
+
+        // Visitor to extract the log message
+        struct MessageVisitor {
+            message: String,
+        }
+
+        impl Visit for MessageVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    let _ = write!(self.message, "{:?}", value);
+                } else {
+                    let _ = write!(self.message, " {}={:?}", field.name(), value);
+                }
+            }
+
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "message" {
+                    self.message = value.to_string();
+                } else {
+                    let _ = write!(self.message, " {}={}", field.name(), value);
+                }
+            }
+        }
+
+        let mut visitor = MessageVisitor {
+            message: String::new(),
+        };
+        event.record(&mut visitor);
+
+        // Format with level and target
+        let metadata = event.metadata();
+        let level = metadata.level();
+        let target = metadata.target();
+
+        let formatted = format!("[{:<5}] {}: {}", level, target, visitor.message);
+
+        // Send to TUI (spawn to avoid blocking)
+        let tui = self.tui.clone();
+        tokio::spawn(async move {
+            tui.log_message(formatted).await;
+        });
     }
 }

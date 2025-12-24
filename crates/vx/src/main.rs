@@ -10,7 +10,6 @@ use facet::Facet;
 use facet_args as args;
 use owo_colors::OwoColorize;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::format::FmtSpan;
 
 use vx_aether_proto::{AetherClient, BuildRequest, ProgressListener, ActionType};
 use vx_report::{CacheOutcome, ReportStore, RunDiff};
@@ -96,9 +95,24 @@ enum CliCommand {
     Explain(ExplainArgs),
 }
 
-fn init_tracing() {
+/// Initialize tracing with TUI layer
+fn init_tracing_with_tui(tui: tui::TuiHandle) {
+    use tracing_subscriber::prelude::*;
+
     // Default to info for vx crates, warn for everything else
     // Can be overridden with RUST_LOG env var
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("warn,vx=info,vx_aether=info,vx_oort=info,vx_toolchain=info,vx_rhea=info")
+    });
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tui::TuiLayer::new(tui))
+        .init();
+}
+
+/// Initialize basic tracing to stderr (for non-build commands)
+fn init_tracing_stderr() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new("warn,vx=info,vx_aether=info,vx_oort=info,vx_toolchain=info,vx_rhea=info")
     });
@@ -108,16 +122,11 @@ fn init_tracing() {
         .with_writer(std::io::stderr)
         .with_target(true)
         .with_thread_ids(false)
-        // Show span close events with duration - critical for toolchain downloads
-        .with_span_events(FmtSpan::CLOSE)
         .init();
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing with sensible defaults and span events for performance monitoring
-    init_tracing();
-
     let _ = miette_arborium::install_global();
 
     let cli: Cli = args::from_std_args().unwrap_or_else(|e| {
@@ -131,10 +140,21 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
+        // Build command gets TUI-based tracing (initialized in cmd_build)
         CliCommand::Build { release } => cmd_build(release).await,
-        CliCommand::Kill => cmd_kill().await,
-        CliCommand::Clean { nuke } => cmd_clean(nuke).await,
-        CliCommand::Explain(args) => cmd_explain(args),
+        // Other commands use stderr tracing
+        CliCommand::Kill => {
+            init_tracing_stderr();
+            cmd_kill().await
+        }
+        CliCommand::Clean { nuke } => {
+            init_tracing_stderr();
+            cmd_clean(nuke).await
+        }
+        CliCommand::Explain(args) => {
+            init_tracing_stderr();
+            cmd_explain(args)
+        }
     }
 }
 
@@ -225,8 +245,27 @@ async fn get_or_spawn_aether() -> Result<(AetherClient, tui::TuiHandle)> {
             // Spawn daemon (local-only)
             tracing::info!("Daemon not running, spawning vx-aether on {}", endpoint);
 
-            ur_taking_me_with_you::spawn_dying_with_parent(std::process::Command::new("vx-aether"))
+            // Redirect aether logs to ~/.vx/aether.log
+            let vx_home = std::env::var("VX_HOME")
+                .unwrap_or_else(|_| format!("{}/.vx", std::env::var("HOME").expect("HOME not set")));
+            let log_path = std::path::Path::new(&vx_home).join("aether.log");
+
+            // Ensure ~/.vx directory exists
+            std::fs::create_dir_all(&vx_home)?;
+
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)?;
+
+            let mut cmd = std::process::Command::new("vx-aether");
+            cmd.stdout(std::process::Stdio::from(log_file.try_clone()?));
+            cmd.stderr(std::process::Stdio::from(log_file));
+
+            ur_taking_me_with_you::spawn_dying_with_parent(cmd)
                 .map_err(|e| eyre::eyre!("failed to spawn vx-aether: {}", e))?;
+
+            tracing::info!("vx-aether logs: {}", log_path.display());
 
             // Retry with backoff
             for (attempt, delay) in backoff_ms.iter().enumerate() {
@@ -279,7 +318,10 @@ async fn cmd_build(release: bool) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
 
     // Connect to daemon (spawning if necessary) and set up TUI
-    let (daemon, _tui) = get_or_spawn_aether().await?;
+    let (daemon, tui) = get_or_spawn_aether().await?;
+
+    // Initialize tracing with TUI layer
+    init_tracing_with_tui(tui.clone());
 
     let request = BuildRequest {
         project_path: cwd.clone(),
@@ -288,6 +330,9 @@ async fn cmd_build(release: bool) -> Result<()> {
 
     // Print building message
     println!("{} ({})", "Building".green().bold(), cwd);
+
+    // Test log to verify TUI layer is working
+    tracing::info!("starting build request");
 
     let result = daemon.build(request).await?;
 
