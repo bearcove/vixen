@@ -17,7 +17,6 @@ mod executor;
 mod inputs;
 mod queries;
 mod service;
-mod tui;
 
 use camino::Utf8PathBuf;
 use eyre::Result;
@@ -33,7 +32,6 @@ pub use db::Database;
 pub use inputs::*;
 pub use queries::*;
 pub use service::AetherService;
-pub use tui::{ActionType, TuiHandle};
 
 // No longer needed! The #[rapace::service] macro on the Aether trait
 // generates a blanket impl for Arc<T>, solving the orphan rule issue.
