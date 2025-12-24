@@ -94,7 +94,7 @@ impl AetherService {
     }
 
     async fn report_complete_action(&self, action_id: Option<u64>) {
-        if let (Some(ref listener), Some(id)) = (&self.progress_listener, action_id) {
+        if let (Some(listener), Some(id)) = (&self.progress_listener, action_id) {
             let _ = listener.complete_action(id).await;
         }
     }

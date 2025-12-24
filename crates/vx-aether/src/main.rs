@@ -227,21 +227,15 @@ async fn ensure_services(args: &Args, spawn_tracker: &Arc<Mutex<SpawnTracker>>) 
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // FIRST THING: Create TUI and install tracing layer
-    // This MUST happen before ANY other code that might log
-    let tui = crate::tui::TuiHandle::new();
-    let tui_layer = tui.tracing_layer();
-
+    // Install tracing to stderr (logs will go to ~/.vx/aether.log via spawn_service redirection)
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::fmt;
 
-    // Install TUI tracing layer
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("vx_aether=debug")),
         )
-        .with(tui_layer)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
     // Now safe to call things that might log
@@ -308,7 +302,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Initialize aether service
+    // Initialize aether service (no session for standalone daemon mode)
     tracing::info!("Initializing aether service");
     let aether = Arc::new(
         AetherService::new(
@@ -317,7 +311,7 @@ async fn main() -> Result<()> {
             args.vx_home,
             exec_host_triple,
             spawn_tracker,
-            tui,
+            None, // No progress listener when running as standalone daemon
         )
         .await,
     );

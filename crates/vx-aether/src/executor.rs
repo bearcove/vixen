@@ -12,7 +12,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::action_graph::{Action, ActionGraph};
 use crate::error::AetherError;
-use crate::tui::TuiHandle;
+use vx_aether_proto::{ProgressListenerClient, ActionType};
 use vx_oort_proto::{Blake3Hash, OortClient};
 use vx_rhea_proto::RheaClient;
 use vx_rs::CrateId;
@@ -99,8 +99,8 @@ pub struct Executor {
     message_tx: tokio::sync::mpsc::UnboundedSender<ExecutorMessage>,
     message_rx: tokio::sync::mpsc::UnboundedReceiver<ExecutorMessage>,
 
-    /// TUI handle for progress tracking
-    tui: TuiHandle,
+    /// Progress listener client (for reporting progress to vx CLI)
+    progress_listener: Option<Arc<ProgressListenerClient>>,
 
     /// Oort client (CAS)
     cas: Arc<OortClient>,
@@ -131,7 +131,7 @@ impl Executor {
     /// Create a new executor
     pub fn new(
         graph: ActionGraph,
-        tui: TuiHandle,
+        progress_listener: Option<Arc<ProgressListenerClient>>,
         cas: Arc<OortClient>,
         exec: Arc<RheaClient>,
         db: Arc<crate::db::Database>,
@@ -194,7 +194,7 @@ impl Executor {
             concurrency_limit: Arc::new(Semaphore::new(max_concurrency)),
             message_tx,
             message_rx,
-            tui,
+            progress_listener,
             cas,
             exec,
             db,
@@ -283,7 +283,7 @@ impl Executor {
         let cas = self.cas.clone();
         let exec = self.exec.clone();
         let db = self.db.clone();
-        let tui = self.tui.clone();
+        let progress_listener = self.progress_listener.clone();
         let workspace_root = self.workspace_root.clone();
         let target_triple = self.target_triple.clone();
         let profile = self.profile.clone();
@@ -293,9 +293,13 @@ impl Executor {
         tokio::spawn(async move {
             info!("SPAWN_ACTION task: started for {:?}", node_idx);
 
-            // Start TUI tracking
-            let action_type = action.to_tui_action_type();
-            let action_id = tui.start_action(action_type).await;
+            // Start progress tracking
+            let action_type = action.to_progress_action_type();
+            let action_id = if let Some(ref listener) = progress_listener {
+                listener.start_action(action_type).await.ok()
+            } else {
+                None
+            };
 
             info!("SPAWN_ACTION task: calling execute_action for {:?}", node_idx);
             // Execute action - pass results as immutable ref
@@ -314,8 +318,10 @@ impl Executor {
 
             info!("SPAWN_ACTION task: execute_action returned for {:?}: {:?}", node_idx, result.is_ok());
 
-            // Complete TUI tracking
-            tui.complete_action(action_id).await;
+            // Complete progress tracking
+            if let (Some(listener), Some(id)) = (&progress_listener, action_id) {
+                let _ = listener.complete_action(id).await;
+            }
 
             info!("SPAWN_ACTION task: sending completion message for {:?}", node_idx);
             // Send result back to executor
