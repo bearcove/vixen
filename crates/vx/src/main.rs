@@ -84,7 +84,11 @@ enum CliCommand {
     Kill,
 
     /// Stop the aether and remove .vx/ directory
-    Clean,
+    Clean {
+        /// Remove ~/.vx (VX_HOME) instead of project .vx/
+        #[facet(args::named)]
+        nuke: bool,
+    },
 
     /// Explain the last build
     Explain(ExplainArgs),
@@ -127,7 +131,7 @@ async fn main() -> Result<()> {
     match cli.command {
         CliCommand::Build { release } => cmd_build(release).await,
         CliCommand::Kill => cmd_kill().await,
-        CliCommand::Clean => cmd_clean().await,
+        CliCommand::Clean { nuke } => cmd_clean(nuke).await,
         CliCommand::Explain(args) => cmd_explain(args),
     }
 }
@@ -264,16 +268,33 @@ async fn cmd_kill() -> Result<()> {
     }
 }
 
-async fn cmd_clean() -> Result<()> {
-    let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
-    let vx_dir = cwd.join(".vx");
+async fn cmd_clean(nuke: bool) -> Result<()> {
+    // Determine which directory to remove
+    let vx_dir = if nuke {
+        // Remove VX_HOME (~/.vx)
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map_err(|_| eyre::eyre!("Could not determine home directory"))?;
+        Utf8PathBuf::from(home).join(".vx")
+    } else {
+        // Remove project .vx/
+        let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
+        cwd.join(".vx")
+    };
 
     // First, try to kill the daemon (best-effort, ignore errors since daemon may not be running)
-    if let Err(e) = cmd_kill().await {
-        tracing::debug!("Failed to kill daemon during clean (may not be running): {e}");
+    let endpoint_raw = std::env::var("VX_AETHER").unwrap_or_else(|_| "127.0.0.1:9001".to_string());
+    if let Ok(endpoint) = vx_io::net::normalize_tcp_endpoint(&endpoint_raw) {
+        if let Ok(daemon) = try_connect_daemon(&endpoint).await {
+            tracing::debug!("Killing daemon before clean");
+            let _ = daemon.shutdown().await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        } else {
+            tracing::debug!("Daemon not running, skipping shutdown");
+        }
     }
 
-    // Then remove .vx/ if it exists
+    // Then remove the directory if it exists
     if vx_dir.exists() {
         std::fs::remove_dir_all(&vx_dir)?;
         println!("{} {}", "Removed".green().bold(), vx_dir);
