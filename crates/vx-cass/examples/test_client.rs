@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
     tracing::info!("Connected!");
 
     // Create rapace transport and session
-    let session = Arc::new(rapace::RpcSession::new(rapace::Transport::stream(stream)));
+    let session = Arc::new(rapace::RpcSession::new(rapace::AnyTransport::stream(stream)));
 
     // Spawn session runner to handle incoming frames
     let session_runner = session.clone();

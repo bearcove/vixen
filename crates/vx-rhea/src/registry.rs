@@ -20,7 +20,7 @@ use crate::error::{Result, RheaError};
 ///
 /// Handles global cache extraction and workspace-local copying.
 pub struct RegistryMaterializer {
-    cas: Arc<CassClient>,
+    cas: Arc<CassClient<rapace::AnyTransport>>,
 
     /// Global cache directory (~/.vx/registry)
     global_cache_dir: Utf8PathBuf,
@@ -30,7 +30,7 @@ pub struct RegistryMaterializer {
 }
 
 impl RegistryMaterializer {
-    pub fn new(cas: Arc<CassClient>, global_cache_dir: Utf8PathBuf) -> Self {
+    pub fn new(cas: Arc<CassClient<rapace::AnyTransport>>, global_cache_dir: Utf8PathBuf) -> Self {
         Self {
             cas,
             global_cache_dir,
@@ -267,7 +267,7 @@ impl RegistryMaterializer {
 /// Uses strip_components=1 to remove the top-level <name>-<version>/ directory.
 #[allow(dead_code)]
 async fn extract_crate_tarball(
-    cas: &CassClient,
+    cas: &CassClient<rapace::AnyTransport>,
     blob_hash: Blake3Hash,
     dest: &Utf8Path,
 ) -> Result<()> {

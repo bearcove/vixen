@@ -11,4 +11,5 @@ command = 'cargo build --bin vx-aether --bin vx-cass --bin vx-rhea'
 
 # Run the setup script for all tests
 [[profile.default.scripts]]
+filter = 'all()'
 setup = 'build-daemons'

@@ -783,7 +783,7 @@ dependencies = [
 [[package]]
 name = "facet"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "autocfg",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -794,7 +794,7 @@ dependencies = [
 [[package]]
 name = "facet"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "autocfg",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet)",
@@ -805,7 +805,7 @@ dependencies = [
 [[package]]
 name = "facet-args"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -833,7 +833,7 @@ dependencies = [
 [[package]]
 name = "facet-core"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "autocfg",
  "camino",
@@ -844,7 +844,7 @@ dependencies = [
 [[package]]
 name = "facet-core"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "autocfg",
  "impls",
@@ -853,7 +853,7 @@ dependencies = [
 [[package]]
 name = "facet-format"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "cranelift",
  "cranelift-jit",
@@ -870,7 +870,7 @@ dependencies = [
 [[package]]
 name = "facet-format"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet)",
  "facet-reflect 0.34.0 (git+https://github.com/facet-rs/facet)",
@@ -880,7 +880,7 @@ dependencies = [
 [[package]]
 name = "facet-format-postcard"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "camino",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -892,7 +892,7 @@ dependencies = [
 [[package]]
 name = "facet-format-toml"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet)",
  "facet-format 0.34.0 (git+https://github.com/facet-rs/facet)",
@@ -904,7 +904,7 @@ dependencies = [
 [[package]]
 name = "facet-json"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -922,7 +922,7 @@ dependencies = [
 [[package]]
 name = "facet-kdl"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -937,7 +937,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-parse"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-macro-types 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "proc-macro2",
@@ -947,7 +947,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-parse"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-macro-types 0.34.0 (git+https://github.com/facet-rs/facet)",
  "proc-macro2",
@@ -957,7 +957,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-types"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -967,7 +967,7 @@ dependencies = [
 [[package]]
 name = "facet-macro-types"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -977,7 +977,7 @@ dependencies = [
 [[package]]
 name = "facet-macros"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-macros-impl 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
 ]
@@ -985,7 +985,7 @@ dependencies = [
 [[package]]
 name = "facet-macros"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-macros-impl 0.34.0 (git+https://github.com/facet-rs/facet)",
 ]
@@ -993,7 +993,7 @@ dependencies = [
 [[package]]
 name = "facet-macros-impl"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-macro-parse 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-macro-types 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -1006,7 +1006,7 @@ dependencies = [
 [[package]]
 name = "facet-macros-impl"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-macro-parse 0.34.0 (git+https://github.com/facet-rs/facet)",
  "facet-macro-types 0.34.0 (git+https://github.com/facet-rs/facet)",
@@ -1019,7 +1019,7 @@ dependencies = [
 [[package]]
 name = "facet-path"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "arborium",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -1031,7 +1031,7 @@ dependencies = [
 [[package]]
 name = "facet-postcard"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "camino",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -1045,7 +1045,7 @@ dependencies = [
 [[package]]
 name = "facet-pretty"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-reflect 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -1055,7 +1055,7 @@ dependencies = [
 [[package]]
 name = "facet-reflect"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "miette",
@@ -1064,7 +1064,7 @@ dependencies = [
 [[package]]
 name = "facet-reflect"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet)",
  "miette",
@@ -1073,12 +1073,12 @@ dependencies = [
 [[package]]
 name = "facet-singularize"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 
 [[package]]
 name = "facet-solver"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-reflect 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -1088,7 +1088,7 @@ dependencies = [
 [[package]]
 name = "facet-solver"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet)",
  "facet-reflect 0.34.0 (git+https://github.com/facet-rs/facet)",
@@ -1098,7 +1098,7 @@ dependencies = [
 [[package]]
 name = "facet-toml"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "ariadne",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -1114,7 +1114,7 @@ dependencies = [
 [[package]]
 name = "facet-value"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet?branch=main#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet?branch=main#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-reflect 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -1125,7 +1125,7 @@ dependencies = [
 [[package]]
 name = "facet-value"
 version = "0.34.0"
-source = "git+https://github.com/facet-rs/facet#6cf2d188bad45e3d8a21bef0f72012c367a12d98"
+source = "git+https://github.com/facet-rs/facet#5e5c6a23cb90686a724e072eabec295b309a5f6e"
 dependencies = [
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet)",
  "facet-reflect 0.34.0 (git+https://github.com/facet-rs/facet)",
@@ -2454,7 +2454,7 @@ dependencies = [
 [[package]]
 name = "rapace"
 version = "0.5.0"
-source = "git+https://github.com/bearcove/rapace#b932040aa2c2bfb41be8a8440194cdaeb17d657c"
+source = "git+https://github.com/bearcove/rapace#90e57aa55dfd8d8440515e4c12cae336b085973c"
 dependencies = [
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -2472,7 +2472,7 @@ dependencies = [
 [[package]]
 name = "rapace-core"
 version = "0.5.0"
-source = "git+https://github.com/bearcove/rapace#b932040aa2c2bfb41be8a8440194cdaeb17d657c"
+source = "git+https://github.com/bearcove/rapace#90e57aa55dfd8d8440515e4c12cae336b085973c"
 dependencies = [
  "allocator-api2",
  "bitflags 2.10.0",
@@ -2497,7 +2497,7 @@ dependencies = [
 [[package]]
 name = "rapace-macros"
 version = "0.5.0"
-source = "git+https://github.com/bearcove/rapace#b932040aa2c2bfb41be8a8440194cdaeb17d657c"
+source = "git+https://github.com/bearcove/rapace#90e57aa55dfd8d8440515e4c12cae336b085973c"
 dependencies = [
  "facet-cargo-toml",
  "heck 0.4.1",
@@ -2509,7 +2509,7 @@ dependencies = [
 [[package]]
 name = "rapace-registry"
 version = "0.5.0"
-source = "git+https://github.com/bearcove/rapace#b932040aa2c2bfb41be8a8440194cdaeb17d657c"
+source = "git+https://github.com/bearcove/rapace#90e57aa55dfd8d8440515e4c12cae336b085973c"
 dependencies = [
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-core 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
@@ -2888,7 +2888,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "shm-primitives"
 version = "0.5.0"
-source = "git+https://github.com/bearcove/rapace#b932040aa2c2bfb41be8a8440194cdaeb17d657c"
+source = "git+https://github.com/bearcove/rapace#90e57aa55dfd8d8440515e4c12cae336b085973c"
 dependencies = [
  "loom",
 ]
@@ -3438,7 +3438,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 [[package]]
 name = "ur-taking-me-with-you"
 version = "0.5.0"
-source = "git+https://github.com/bearcove/rapace#b932040aa2c2bfb41be8a8440194cdaeb17d657c"
+source = "git+https://github.com/bearcove/rapace#90e57aa55dfd8d8440515e4c12cae336b085973c"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",

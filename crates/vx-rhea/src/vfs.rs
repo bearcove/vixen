@@ -81,7 +81,7 @@ pub struct PrefixEntry {
 /// CAS-backed VFS implementation
 pub struct CasVfs {
     /// CAS client for fetching blobs
-    cas: Arc<CassClient>,
+    cas: Arc<CassClient<rapace::AnyTransport>>,
     /// All items in the VFS (keyed by ItemId)
     items: RwLock<HashMap<ItemId, VfsItem>>,
     /// Active action prefixes (keyed by prefix ID like "build-01JFX...")
@@ -92,7 +92,7 @@ pub struct CasVfs {
 
 impl CasVfs {
     /// Create a new CAS-backed VFS
-    pub fn new(cas: Arc<CassClient>) -> Self {
+    pub fn new(cas: Arc<CassClient<rapace::AnyTransport>>) -> Self {
         let mut items = HashMap::new();
 
         // Create root directory (ID 1)
@@ -175,13 +175,22 @@ impl CasVfs {
         size: u64,
         executable: bool,
     ) -> Option<ItemId> {
+        tracing::info!(
+            prefix_id = %prefix_id,
+            path = %path,
+            hash = %cas_hash,
+            size,
+            executable,
+            "VFS add_file_to_prefix"
+        );
+
         let file_mode = if executable {
             mode::FILE_EXECUTABLE
         } else {
             mode::FILE_REGULAR
         };
 
-        self.add_entry_to_prefix(
+        let result = self.add_entry_to_prefix(
             prefix_id,
             path,
             PrefixEntry {
@@ -191,7 +200,16 @@ impl CasVfs {
                 mode: file_mode,
             },
         )
-        .await
+        .await;
+
+        tracing::info!(
+            prefix_id = %prefix_id,
+            path = %path,
+            item_id = ?result,
+            "VFS add_file_to_prefix -> result"
+        );
+
+        result
     }
 
     /// Add a directory to a prefix
@@ -350,12 +368,12 @@ impl CasVfs {
 
 impl Vfs for CasVfs {
     async fn lookup(&self, parent_id: ItemId, name: String) -> LookupResult {
-        tracing::trace!(parent_id, name = %name, "lookup");
+        tracing::info!(parent_id, name = %name, "VFS lookup");
 
         let items = self.items.read().await;
         for item in items.values() {
             if item.parent_id == parent_id && item.name == name {
-                tracing::trace!(item_id = item.id, "lookup found");
+                tracing::info!(parent_id, name = %name, item_id = item.id, item_type = ?item.item_type, "VFS lookup -> found");
                 return LookupResult {
                     item_id: item.id,
                     item_type: item.item_type,
@@ -364,7 +382,12 @@ impl Vfs for CasVfs {
             }
         }
 
-        tracing::trace!("lookup: not found");
+        // Log what items ARE children of this parent to help debug
+        let children: Vec<_> = items.values()
+            .filter(|i| i.parent_id == parent_id)
+            .map(|i| i.name.as_str())
+            .collect();
+        tracing::info!(parent_id, name = %name, ?children, "VFS lookup -> NOT FOUND");
         LookupResult {
             item_id: 0,
             item_type: ItemType::File,
@@ -373,7 +396,7 @@ impl Vfs for CasVfs {
     }
 
     async fn get_attributes(&self, item_id: ItemId) -> GetAttributesResult {
-        tracing::trace!(item_id, "get_attributes");
+        tracing::info!(item_id, "VFS get_attributes");
 
         let items = self.items.read().await;
         match items.get(&item_id) {
@@ -403,7 +426,7 @@ impl Vfs for CasVfs {
     }
 
     async fn read_dir(&self, item_id: ItemId, cursor: u64) -> ReadDirResult {
-        tracing::trace!(item_id, cursor, "read_dir");
+        tracing::info!(item_id, cursor, "VFS read_dir");
 
         let items = self.items.read().await;
         match items.get(&item_id) {
@@ -451,7 +474,7 @@ impl Vfs for CasVfs {
     }
 
     async fn read(&self, item_id: ItemId, offset: u64, len: u64) -> ReadResult {
-        tracing::trace!(item_id, offset, len, "read");
+        tracing::info!(item_id, offset, len, "VFS read");
 
         // Get item info
         let (item_type, cas_hash) = {
@@ -780,6 +803,56 @@ impl CasVfs {
         }
 
         results
+    }
+
+    /// Dump VFS state for debugging
+    pub async fn dump_state(&self, prefix_id: &str) {
+        let items = self.items.read().await;
+        let prefixes = self.prefixes.read().await;
+
+        tracing::info!("=== VFS STATE DUMP ===");
+        tracing::info!("Total items: {}", items.len());
+        tracing::info!("Total prefixes: {}", prefixes.len());
+
+        // Show root children
+        let root_children: Vec<_> = items.values()
+            .filter(|i| i.parent_id == 1)
+            .map(|i| format!("{} (id={})", i.name, i.id))
+            .collect();
+        tracing::info!("Root children: {:?}", root_children);
+
+        // Show prefix info
+        if let Some(prefix) = prefixes.get(prefix_id) {
+            tracing::info!("Prefix '{}' root_item_id={}", prefix_id, prefix.root_item_id);
+
+            // Show first-level children of prefix
+            let prefix_children: Vec<_> = items.values()
+                .filter(|i| i.parent_id == prefix.root_item_id)
+                .map(|i| format!("{} (id={}, type={:?})", i.name, i.id, i.item_type))
+                .collect();
+            tracing::info!("Prefix children: {:?}", prefix_children);
+
+            // Find toolchain directory and show its children
+            if let Some(toolchain) = items.values().find(|i| i.parent_id == prefix.root_item_id && i.name == "toolchain") {
+                let tc_children: Vec<_> = items.values()
+                    .filter(|i| i.parent_id == toolchain.id)
+                    .map(|i| format!("{} (id={})", i.name, i.id))
+                    .collect();
+                tracing::info!("toolchain/ children: {:?}", tc_children);
+
+                // Find bin directory
+                if let Some(bin) = items.values().find(|i| i.parent_id == toolchain.id && i.name == "bin") {
+                    let bin_children: Vec<_> = items.values()
+                        .filter(|i| i.parent_id == bin.id)
+                        .map(|i| format!("{} (id={})", i.name, i.id))
+                        .collect();
+                    tracing::info!("toolchain/bin/ children: {:?}", bin_children);
+                }
+            }
+        } else {
+            tracing::info!("Prefix '{}' NOT FOUND in prefixes map!", prefix_id);
+        }
+        tracing::info!("=== END VFS STATE DUMP ===");
     }
 
     /// Build the path from an item up to (but not including) a root

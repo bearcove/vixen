@@ -54,10 +54,10 @@ pub struct AcquiredToolchains {
 #[derive(Clone)]
 pub struct AetherService {
     /// CAS client for content-addressed storage
-    cas: Arc<CassClient>,
+    cas: Arc<CassClient<rapace::AnyTransport>>,
 
     /// Exec client for compilation
-    exec: Arc<RheaClient>,
+    exec: Arc<RheaClient<rapace::AnyTransport>>,
 
     /// The host triple of the execd machine (used for toolchain selection + cache keys).
     exec_host_triple: String,
@@ -82,7 +82,7 @@ pub struct AetherService {
 
     /// Progress listener client (for reporting progress to vx CLI)
     /// Uses RwLock for interior mutability so it can be updated per-connection
-    progress_listener: Arc<RwLock<Option<Arc<ProgressListenerClient>>>>,
+    progress_listener: Arc<RwLock<Option<Arc<ProgressListenerClient<rapace::AnyTransport>>>>>,
 }
 
 impl AetherService {
@@ -112,8 +112,8 @@ impl AetherService {
 
     /// Create a new daemon service
     pub async fn new(
-        cas: Arc<CassClient>,
-        exec: Arc<RheaClient>,
+        cas: Arc<CassClient<rapace::AnyTransport>>,
+        exec: Arc<RheaClient<rapace::AnyTransport>>,
         vx_home: Utf8PathBuf,
         exec_host_triple: String,
         spawn_tracker: Arc<Mutex<SpawnTracker>>,
@@ -185,7 +185,7 @@ impl AetherService {
     }
 
     /// Update the progress listener for the current connection
-    pub async fn set_progress_listener(&self, listener: Option<Arc<ProgressListenerClient>>) {
+    pub async fn set_progress_listener(&self, listener: Option<Arc<ProgressListenerClient<rapace::AnyTransport>>>) {
         *self.progress_listener.write().await = listener;
     }
 

@@ -138,13 +138,13 @@ pub struct Executor {
     message_rx: tokio::sync::mpsc::UnboundedReceiver<ExecutorMessage>,
 
     /// Progress listener client (for reporting progress to vx CLI)
-    progress_listener: Option<Arc<ProgressListenerClient>>,
+    progress_listener: Option<Arc<ProgressListenerClient<rapace::AnyTransport>>>,
 
     /// CAS client (CAS)
-    cas: Arc<CassClient>,
+    cas: Arc<CassClient<rapace::AnyTransport>>,
 
     /// Rhea client for execution
-    exec: Arc<RheaClient>,
+    exec: Arc<RheaClient<rapace::AnyTransport>>,
 
     /// Picante database (Arc-shareable with internal synchronization)
     db: Arc<crate::db::Database>,
@@ -169,9 +169,9 @@ impl Executor {
     /// Create a new executor
     pub fn new(
         graph: ActionGraph,
-        progress_listener: Option<Arc<ProgressListenerClient>>,
-        cas: Arc<CassClient>,
-        exec: Arc<RheaClient>,
+        progress_listener: Option<Arc<ProgressListenerClient<rapace::AnyTransport>>>,
+        cas: Arc<CassClient<rapace::AnyTransport>>,
+        exec: Arc<RheaClient<rapace::AnyTransport>>,
         db: Arc<crate::db::Database>,
         workspace_root: camino::Utf8PathBuf,
         target_triple: String,
@@ -633,8 +633,8 @@ impl Executor {
 /// Execute a single action
 async fn execute_action(
     action: Action,
-    cas: &Arc<CassClient>,
-    exec: &Arc<RheaClient>,
+    cas: &Arc<CassClient<rapace::AnyTransport>>,
+    exec: &Arc<RheaClient<rapace::AnyTransport>>,
     db: &Arc<crate::db::Database>,
     results: &Arc<RwLock<HashMap<NodeIndex, ActionResult>>>,
     workspace_root: &camino::Utf8PathBuf,

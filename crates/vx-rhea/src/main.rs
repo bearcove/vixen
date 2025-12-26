@@ -130,9 +130,9 @@ impl Args {
 }
 
 /// Connect to CAS and return a client handle
-async fn connect_to_cas(endpoint: &Endpoint) -> Result<vx_cass_proto::CassClient> {
+async fn connect_to_cas(endpoint: &Endpoint) -> Result<vx_cass_proto::CassClient<rapace::AnyTransport>> {
     let stream = vx_io::net::connect(endpoint).await?;
-    let transport = rapace::Transport::stream(stream);
+    let transport = rapace::AnyTransport::stream(stream);
 
     // Create RPC session and client
     let session = Arc::new(rapace::RpcSession::new(transport));
@@ -229,12 +229,36 @@ fn mount_fskitty(mount_point: &Utf8Path, host: &str, port: u16) -> Result<(), St
         .output()
         .map_err(|e| format!("Failed to execute mount: {}", e))?;
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    tracing::info!(
+        exit_code = ?output.status.code(),
+        stdout = %stdout.trim(),
+        stderr = %stderr.trim(),
+        "mount command completed"
+    );
+
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("Mount failed: {}", stderr.trim()));
     }
 
-    tracing::info!("VFS mounted at {}", mount_point);
+    // Verify mount actually exists
+    let mount_output = Command::new("mount").output();
+    if let Ok(mo) = mount_output {
+        let mount_list = String::from_utf8_lossy(&mo.stdout);
+        if mount_list.contains(mount_point.as_str()) {
+            tracing::info!("✅ VFS mounted at {} (verified)", mount_point);
+        } else {
+            tracing::warn!("⚠️ Mount command succeeded but {} not in mount list!", mount_point);
+            tracing::info!("Current mounts with fskitty:");
+            for line in mount_list.lines() {
+                if line.contains("fskitty") {
+                    tracing::info!("  {}", line);
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -346,7 +370,7 @@ async fn main() -> Result<()> {
     // Create Rhea service (will use VFS for action execution)
     let exec = RheaService::new(cas.clone(), args.toolchains_dir, args.registry_cache_dir, vfs.clone());
 
-    // Start Rhea RPC server
+    // Bind Rhea RPC socket (but don't start accepting yet - wait for VFS mount)
     let rhea_listener = match Listener::bind(&args.bind).await {
         Ok(l) => l,
         Err(e) => {
@@ -357,30 +381,7 @@ async fn main() -> Result<()> {
             ));
         }
     };
-    tracing::info!("Rhea RPC listening on {}", args.bind);
-
-    let exec_for_rhea = exec.clone();
-    tokio::spawn(async move {
-        loop {
-            match rhea_listener.accept().await {
-                Ok((stream, peer_addr)) => {
-                    let exec = exec_for_rhea.clone();
-                    tokio::spawn(async move {
-                        tracing::debug!("Rhea connection from {}", peer_addr);
-                        let transport = rapace::Transport::stream(stream);
-                        let server = RheaServer::new(exec);
-                        if let Err(e) = server.serve(transport).await {
-                            tracing::warn!("Rhea connection error from {}: {}", peer_addr, e);
-                        }
-                        tracing::debug!("Rhea connection from {} closed", peer_addr);
-                    });
-                }
-                Err(e) => {
-                    tracing::error!("Rhea accept error: {}", e);
-                }
-            }
-        }
-    });
+    tracing::info!("Rhea RPC bound on {} (will accept after VFS mount)", args.bind);
 
     // Start VFS server (fs-kitty)
     let vfs_listener = match Listener::bind(&args.vfs_bind).await {
@@ -398,7 +399,43 @@ async fn main() -> Result<()> {
     let vfs_local_addr = vfs_listener.local_addr()?;
     tracing::info!("VFS (fs-kitty) listening on {}", vfs_local_addr);
 
-    // Mount the VFS on macOS
+    // IMPORTANT: Start accepting VFS connections BEFORE mounting!
+    // The mount command triggers fs-kitty to connect to our VFS server.
+    // If we're not accepting yet, fs-kitty times out and the mount fails.
+    let vfs_for_server = vfs.clone();
+    tokio::spawn(async move {
+        loop {
+            match vfs_listener.accept().await {
+                Ok((stream, peer_addr)) => {
+                    let vfs = Arc::clone(&vfs_for_server);
+                    tokio::spawn(async move {
+                        tracing::info!("🔌 VFS connection from {} - fs-kitty connected!", peer_addr);
+
+                        let transport = rapace::AnyTransport::stream(stream);
+                        let session = Arc::new(rapace::RpcSession::new(transport.clone()));
+                        let vfs_server = VfsServer::new(vfs);
+                        session.set_dispatcher(vfs_server.into_session_dispatcher(transport));
+
+                        tracing::info!("🔌 VFS session starting for {}", peer_addr);
+                        if let Err(e) = session.run().await {
+                            tracing::warn!("VFS connection error from {}: {}", peer_addr, e);
+                        }
+
+                        tracing::info!("🔌 VFS connection from {} closed", peer_addr);
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("VFS accept error: {}", e);
+                }
+            }
+        }
+    });
+
+    // Small delay to ensure the accept loop is running
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+    // NOW mount the VFS (fs-kitty will connect to our already-running server)
+    // Use spawn_blocking since mount is a blocking operation
     #[cfg(target_os = "macos")]
     let mount_point: Option<Utf8PathBuf> = {
         tracing::info!("🗂️  Attempting to mount VFS...");
@@ -414,11 +451,32 @@ async fn main() -> Result<()> {
                 // Mount at ~/.rhea (user's home directory)
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
                 let mount_path = Utf8PathBuf::from(format!("{}/.rhea", home));
-                match mount_fskitty(&mount_path, host, port) {
-                    Ok(()) => Some(mount_path),
-                    Err(e) => {
+
+                // Unmount any stale mount first (blocking)
+                let mp_clone = mount_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    unmount_fskitty(&mp_clone);
+                }).await.ok();
+
+                // Mount (blocking) - use spawn_blocking to not block the executor
+                let mp_clone = mount_path.clone();
+                let host = host.to_string();
+                let mount_result = tokio::task::spawn_blocking(move || {
+                    mount_fskitty(&mp_clone, &host, port)
+                }).await;
+
+                match mount_result {
+                    Ok(Ok(())) => {
+                        tracing::info!("🎉 VFS mount completed, ready to serve files");
+                        Some(mount_path)
+                    }
+                    Ok(Err(e)) => {
                         tracing::error!("❌ Failed to mount VFS: {}", e);
                         tracing::error!("Cannot start rhea without VFS");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ Mount task panicked: {}", e);
                         std::process::exit(1);
                     }
                 }
@@ -431,6 +489,31 @@ async fn main() -> Result<()> {
             None
         }
     };
+
+    // NOW start accepting Rhea RPC connections (VFS is ready)
+    tracing::info!("Starting Rhea RPC server (VFS is ready)");
+    let exec_for_rhea = exec.clone();
+    tokio::spawn(async move {
+        loop {
+            match rhea_listener.accept().await {
+                Ok((stream, peer_addr)) => {
+                    let exec = exec_for_rhea.clone();
+                    tokio::spawn(async move {
+                        tracing::debug!("Rhea connection from {}", peer_addr);
+                        let transport = rapace::AnyTransport::stream(stream);
+                        let server = RheaServer::new(exec);
+                        if let Err(e) = server.serve(transport).await {
+                            tracing::warn!("Rhea connection error from {}: {}", peer_addr, e);
+                        }
+                        tracing::debug!("Rhea connection from {} closed", peer_addr);
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("Rhea accept error: {}", e);
+                }
+            }
+        }
+    });
 
     // Set up shutdown handler to unmount
     #[cfg(target_os = "macos")]
@@ -447,31 +530,16 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Keep the main task alive
     loop {
-        let (stream, peer_addr) = vfs_listener.accept().await?;
-        let vfs = Arc::clone(&vfs);
-
-        tokio::spawn(async move {
-            tracing::debug!("VFS connection from {}", peer_addr);
-
-            let transport = rapace::Transport::stream(stream);
-            let session = Arc::new(rapace::RpcSession::new(transport.clone()));
-            let vfs_server = VfsServer::new(vfs);
-            session.set_dispatcher(vfs_server.into_session_dispatcher(transport));
-
-            if let Err(e) = session.run().await {
-                tracing::warn!("VFS connection error from {}: {}", peer_addr, e);
-            }
-
-            tracing::debug!("VFS connection from {} closed", peer_addr);
-        });
+        tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
     }
 }
 
 /// Inner Exec service implementation
 pub struct RheaServiceInner {
     /// CAS client for storing outputs and fetching toolchains
-    pub(crate) cas: Arc<CassClient>,
+    pub(crate) cas: Arc<CassClient<rapace::AnyTransport>>,
 
     /// Toolchain materialization directory
     pub(crate) toolchains_dir: Utf8PathBuf,
@@ -502,7 +570,7 @@ impl std::ops::Deref for RheaService {
 
 impl RheaService {
     pub fn new(
-        cas: Arc<CassClient>,
+        cas: Arc<CassClient<rapace::AnyTransport>>,
         toolchains_dir: Utf8PathBuf,
         registry_cache_dir: Utf8PathBuf,
         vfs: Arc<CasVfs>,
@@ -568,6 +636,11 @@ impl RheaService {
         prefix_id: &str,
         toolchain_manifest_hash: Blake3Hash,
     ) -> RheaResult<()> {
+        tracing::info!(
+            toolchain_manifest = %toolchain_manifest_hash,
+            "add_toolchain_to_prefix: starting"
+        );
+
         // Get the toolchain manifest from CAS
         let toolchain_manifest = self
             .cas
@@ -581,20 +654,50 @@ impl RheaService {
                 ))
             })?;
 
+        tracing::info!(
+            component_count = toolchain_manifest.components.len(),
+            "add_toolchain_to_prefix: got toolchain manifest"
+        );
+
         // Add each component's tree to the VFS prefix under toolchain/
         for component in &toolchain_manifest.components {
+            tracing::info!(
+                component_name = %component.name,
+                tree_manifest = %component.tree_manifest,
+                "add_toolchain_to_prefix: fetching component tree manifest"
+            );
+
             // Fetch the tree manifest for this component
             let tree_manifest = self
                 .cas
                 .get_tree_manifest(component.tree_manifest)
                 .await
-                .map_err(|e| RheaError::CasFetch(format!("{:?}", e)))?
+                .map_err(|e| {
+                    tracing::error!(
+                        component_name = %component.name,
+                        tree_manifest = %component.tree_manifest,
+                        error = ?e,
+                        "add_toolchain_to_prefix: get_tree_manifest RPC error"
+                    );
+                    RheaError::CasFetch(format!("{:?}", e))
+                })?
                 .ok_or_else(|| {
+                    tracing::error!(
+                        component_name = %component.name,
+                        tree_manifest = %component.tree_manifest,
+                        "add_toolchain_to_prefix: get_tree_manifest returned None"
+                    );
                     RheaError::CasFetch(format!(
                         "tree manifest {} not found for component {}",
                         component.tree_manifest, component.name
                     ))
                 })?;
+
+            tracing::info!(
+                component_name = %component.name,
+                entry_count = tree_manifest.entries.len(),
+                "add_toolchain_to_prefix: got tree manifest, adding files"
+            );
 
             // Add all files from the tree
             for entry in &tree_manifest.entries {
@@ -637,25 +740,56 @@ impl RheaService {
         prefix_id: &str,
         source_manifest_hash: Blake3Hash,
     ) -> RheaResult<()> {
-        // Get the source manifest from CAS
+        use vx_cass_proto::TreeEntryKind;
+
+        tracing::info!(
+            source_manifest = %source_manifest_hash,
+            "add_source_tree_to_prefix: calling get_tree_manifest"
+        );
+
+        // Get the source tree manifest from CAS (source trees are stored via ingest_tree)
         let manifest = self
             .cas
-            .get_manifest(source_manifest_hash)
+            .get_tree_manifest(source_manifest_hash)
             .await
-            .map_err(|e| RheaError::CasFetch(format!("{:?}", e)))?
+            .map_err(|e| {
+                tracing::error!(
+                    source_manifest = %source_manifest_hash,
+                    error = ?e,
+                    "add_source_tree_to_prefix: RPC error from get_tree_manifest"
+                );
+                RheaError::CasFetch(format!("{:?}", e))
+            })?
             .ok_or_else(|| {
+                tracing::error!(
+                    source_manifest = %source_manifest_hash,
+                    "add_source_tree_to_prefix: get_tree_manifest returned None"
+                );
                 RheaError::CasFetch(format!(
                     "source manifest {} not found",
                     source_manifest_hash
                 ))
             })?;
 
+        tracing::info!(
+            source_manifest = %source_manifest_hash,
+            entry_count = manifest.entries.len(),
+            "add_source_tree_to_prefix: got manifest, adding files"
+        );
+
         // Add each file to the VFS prefix under src/
-        for output in &manifest.outputs {
-            let path = format!("src/{}", output.filename);
-            self.vfs
-                .add_file_to_prefix(prefix_id, &path, output.blob, 0, output.executable)
-                .await;
+        for entry in &manifest.entries {
+            if let TreeEntryKind::File {
+                blob,
+                size,
+                executable,
+            } = &entry.kind
+            {
+                let path = format!("src/{}", entry.path);
+                self.vfs
+                    .add_file_to_prefix(prefix_id, &path, *blob, *size, *executable)
+                    .await;
+            }
         }
 
         Ok(())

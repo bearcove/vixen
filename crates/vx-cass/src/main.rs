@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
             tracing::debug!("New connection from {}", peer_addr);
 
             // Create transport from stream
-            let transport = rapace::Transport::stream(stream);
+            let transport = rapace::AnyTransport::stream(stream);
 
             // Serve the oort service
             // Note: CassService implements the CAS trait, which is the only rapace service

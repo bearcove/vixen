@@ -314,13 +314,13 @@ async fn main() -> Result<()> {
     // Create rapace clients for CAS and Exec
     tracing::info!("Connecting to CAS at {}", args.cas_endpoint);
     let cas_stream = vx_io::net::connect(&args.cas_endpoint).await?;
-    let cas_transport = rapace::Transport::stream(cas_stream);
+    let cas_transport = rapace::AnyTransport::stream(cas_stream);
     let cas_session = Arc::new(rapace::RpcSession::new(cas_transport));
     let cas_client = Arc::new(CassClient::new(cas_session.clone()));
 
     tracing::info!("Connecting to Exec at {}", args.exec_endpoint);
     let exec_stream = vx_io::net::connect(&args.exec_endpoint).await?;
-    let exec_transport = rapace::Transport::stream(exec_stream);
+    let exec_transport = rapace::AnyTransport::stream(exec_stream);
     let exec_session = Arc::new(rapace::RpcSession::new(exec_transport));
     let exec_client = Arc::new(RheaClient::new(exec_session.clone()));
 
@@ -363,7 +363,7 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             tracing::debug!("New connection from {}", peer_addr);
 
-            let transport = rapace::Transport::stream(stream);
+            let transport = rapace::AnyTransport::stream(stream);
 
             // Create RPC session with even channel IDs (server uses 0, 2, 4, ...)
             let session = Arc::new(rapace::RpcSession::with_channel_start(transport, 0));

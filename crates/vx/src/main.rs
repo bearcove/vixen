@@ -238,7 +238,7 @@ fn create_progress_listener_dispatcher(
 }
 
 /// Connect to the aether, spawning it if necessary
-async fn get_or_spawn_aether(no_spawn: bool) -> Result<(AetherClient, tui::TuiHandle)> {
+async fn get_or_spawn_aether(no_spawn: bool) -> Result<(AetherClient<rapace::AnyTransport>, tui::TuiHandle)> {
     use vx_io::net::Endpoint;
 
     let vx_home = std::env::var("VX_HOME")
@@ -327,11 +327,11 @@ async fn get_or_spawn_aether(no_spawn: bool) -> Result<(AetherClient, tui::TuiHa
 
 async fn try_connect_daemon(
     endpoint: &vx_io::net::Endpoint,
-) -> Result<(AetherClient, tui::TuiHandle)> {
+) -> Result<(AetherClient<rapace::AnyTransport>, tui::TuiHandle)> {
     use std::sync::Arc;
 
     let stream = vx_io::net::connect(endpoint).await?;
-    let transport = rapace::Transport::stream(stream);
+    let transport = rapace::AnyTransport::stream(stream);
 
     // Create RPC session with odd channel IDs (client uses 1, 3, 5, ...)
     let session = Arc::new(rapace::RpcSession::with_channel_start(transport, 1));
