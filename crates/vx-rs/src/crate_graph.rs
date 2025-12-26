@@ -228,7 +228,7 @@ impl CrateId {
 
 impl std::fmt::Display for CrateId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.short_hex())
+        write!(f, "{}", self)
     }
 }
 

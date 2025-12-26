@@ -52,6 +52,10 @@ impl RheaService {
         };
 
         // 2. Add toolchain to prefix
+        info!(
+            toolchain_manifest = %request.toolchain_manifest,
+            "adding toolchain to VFS prefix"
+        );
         if let Err(e) = self
             .add_toolchain_to_prefix(&prefix_id, request.toolchain_manifest)
             .await
@@ -59,6 +63,7 @@ impl RheaService {
             self.remove_action_prefix(&prefix_id).await;
             return cleanup_and_error(&prefix_id, format!("failed to add toolchain: {}", e), start);
         }
+        debug!("toolchain added to prefix successfully");
 
         // 3. Add source tree to prefix
         if let Err(e) = self

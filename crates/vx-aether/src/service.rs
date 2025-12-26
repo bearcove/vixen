@@ -356,7 +356,7 @@ impl AetherService {
                     .ok_or_else(|| AetherError::TreeIngestion("no manifest hash returned".to_string()))?;
 
                 info!(
-                    source_manifest = %source_manifest.short_hex(),
+                    source_manifest = %source_manifest,
                     "Source tree ingested"
                 );
 

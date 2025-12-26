@@ -162,7 +162,7 @@ impl CassService {
         // Validate and compute spec_key first
         let spec_key = match spec.spec_key() {
             Ok(k) => {
-                tracing::Span::current().record("spec_key", k.short_hex());
+                tracing::Span::current().record("spec_key", k.to_string());
                 k
             }
             Err(e) => {
@@ -322,7 +322,7 @@ impl CassService {
         let rustc_tree_hash = self.put_blob(rustc_tree_json.into_bytes()).await;
 
         tracing::info!(
-            rustc_tree = %rustc_tree_hash.short_hex(),
+            rustc_tree = %rustc_tree_hash,
             files = rustc_tree.entries.len(),
             unique_blobs = rustc_tree.unique_blobs,
             total_bytes = rustc_tree.total_size_bytes,
@@ -359,7 +359,7 @@ impl CassService {
         let rust_std_tree_hash = self.put_blob(rust_std_tree_json.into_bytes()).await;
 
         tracing::info!(
-            rust_std_tree = %rust_std_tree_hash.short_hex(),
+            rust_std_tree = %rust_std_tree_hash,
             files = rust_std_tree.entries.len(),
             unique_blobs = rust_std_tree.unique_blobs,
             total_bytes = rust_std_tree.total_size_bytes,
@@ -405,15 +405,15 @@ impl CassService {
         if let Err(e) = self.publish_spec_mapping(&spec_key, &manifest_hash).await {
             tracing::warn!(
                 "failed to publish spec mapping for {}: {}",
-                spec_key.short_hex(),
+                spec_key,
                 e
             );
         }
 
         tracing::info!(
-            spec_key = %spec_key.short_hex(),
-            toolchain_id = %toolchain_id.short_hex(),
-            manifest_hash = %manifest_hash.short_hex(),
+            spec_key = %spec_key,
+            toolchain_id = %toolchain_id,
+            manifest_hash = %manifest_hash,
             "stored Rust toolchain in CAS"
         );
 
@@ -432,7 +432,7 @@ impl CassService {
         // Compute spec_key
         let spec_key = match spec.spec_key() {
             Ok(k) => {
-                tracing::Span::current().record("spec_key", k.short_hex());
+                tracing::Span::current().record("spec_key", k.to_string());
                 k
             }
             Err(e) => {
@@ -578,9 +578,9 @@ impl CassService {
         let toolchain_id = acquired.id.0;
 
         tracing::info!(
-            zig_exe = %zig_exe_hash.short_hex(),
-            lib = %lib_hash.short_hex(),
-            toolchain_id = %toolchain_id.short_hex(),
+            zig_exe = %zig_exe_hash,
+            lib = %lib_hash,
+            toolchain_id = %toolchain_id,
             "stored Zig toolchain blobs in CAS"
         );
 
@@ -623,15 +623,15 @@ impl CassService {
         if let Err(e) = self.publish_spec_mapping(&spec_key, &manifest_hash).await {
             tracing::warn!(
                 "failed to publish spec mapping for {}: {}",
-                spec_key.short_hex(),
+                spec_key,
                 e
             );
         }
 
         tracing::info!(
-            spec_key = %spec_key.short_hex(),
-            toolchain_id = %toolchain_id.short_hex(),
-            manifest_hash = %manifest_hash.short_hex(),
+            spec_key = %spec_key,
+            toolchain_id = %toolchain_id,
+            manifest_hash = %manifest_hash,
             "stored Zig toolchain in CAS"
         );
 

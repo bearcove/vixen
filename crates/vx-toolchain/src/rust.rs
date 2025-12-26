@@ -216,6 +216,12 @@ pub fn rust_toolchain_spec_cross(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RustToolchainId(pub Blake3Hash);
 
+impl std::fmt::Display for RustToolchainId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl RustToolchainId {
     /// Create from manifest SHA256 hashes and target triples.
     ///
@@ -246,6 +252,6 @@ impl RustToolchainId {
     }
 
     pub fn short_hex(&self) -> String {
-        self.0.short_hex()
+        self.0.to_hex()[..16].to_string()
     }
 }

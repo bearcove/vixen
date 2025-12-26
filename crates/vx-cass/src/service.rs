@@ -169,7 +169,7 @@ impl Cass for CassService {
                     {
                         tracing::warn!(
                             "failed to publish registry spec mapping for {}: {}",
-                            spec_key.short_hex(),
+                            spec_key,
                             e
                         );
                     }
@@ -177,8 +177,8 @@ impl Cass for CassService {
                     tracing::info!(
                         name = %spec.name,
                         version = %spec.version,
-                        spec_key = %spec_key.short_hex(),
-                        manifest_hash = %manifest_hash.short_hex(),
+                        spec_key = %spec_key,
+                        manifest_hash = %manifest_hash,
                         "stored registry crate in CAS"
                     );
 
@@ -221,8 +221,30 @@ impl Cass for CassService {
 
     async fn get_toolchain_manifest(&self, manifest_hash: Blake3Hash) -> Option<ToolchainManifest> {
         let path = self.manifest_path(&manifest_hash);
-        let json = tokio::fs::read_to_string(&path).await.ok()?;
-        facet_json::from_str(&json).ok()
+        tracing::debug!(
+            manifest_hash = %manifest_hash,
+            path = %path,
+            "get_toolchain_manifest: attempting to read"
+        );
+        match tokio::fs::read_to_string(&path).await {
+            Ok(json) => {
+                tracing::debug!(manifest_hash = %manifest_hash, "get_toolchain_manifest: file read successfully");
+                match facet_json::from_str(&json) {
+                    Ok(manifest) => {
+                        tracing::debug!(manifest_hash = %manifest_hash, "get_toolchain_manifest: parsed successfully");
+                        Some(manifest)
+                    }
+                    Err(e) => {
+                        tracing::warn!(manifest_hash = %manifest_hash, error = ?e, "get_toolchain_manifest: failed to parse JSON");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(manifest_hash = %manifest_hash, path = %path, error = ?e, "get_toolchain_manifest: file not found or read error");
+                None
+            }
+        }
     }
 
     async fn get_materialization_plan(
@@ -344,7 +366,7 @@ impl Cass for CassService {
         }
 
         tracing::info!(
-            manifest_hash = %manifest_hash.short_hex(),
+            manifest_hash = %manifest_hash,
             file_count = request.files.len(),
             total_bytes,
             new_blobs,

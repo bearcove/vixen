@@ -144,7 +144,7 @@ fn rust_toolchain_id_hex() {
     assert_eq!(hex.len(), 64);
 
     // Short hex is 16 chars
-    let short = id.0.short_hex();
+    let short = id.0;
     assert_eq!(short.len(), 16);
 }
 

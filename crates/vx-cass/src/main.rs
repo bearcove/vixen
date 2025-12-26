@@ -236,10 +236,29 @@ impl CassService {
         let hash = Blake3Hash::from_bytes(json.as_bytes());
         let path = self.manifest_path(&hash);
 
+        tracing::debug!(
+            manifest_hash = %hash,
+            path = %path,
+            exists = path.exists(),
+            "put_toolchain_manifest: preparing to write"
+        );
+
         if !path.exists() {
             if let Err(e) = atomic_write(&path, json.as_bytes()).await {
                 tracing::warn!("failed to write toolchain manifest to {}: {}", path, e);
+            } else {
+                tracing::debug!(
+                    manifest_hash = %hash,
+                    path = %path,
+                    "put_toolchain_manifest: wrote successfully"
+                );
             }
+        } else {
+            tracing::debug!(
+                manifest_hash = %hash,
+                path = %path,
+                "put_toolchain_manifest: already exists, skipping write"
+            );
         }
 
         hash

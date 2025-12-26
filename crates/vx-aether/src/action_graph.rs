@@ -251,10 +251,10 @@ impl ActionGraph {
         debug!(crate_count = crate_graph.nodes.len(), "Creating compilation actions");
         for (i, crate_node) in crate_graph.nodes.values().enumerate() {
             // Create RustCrate input
-            let crate_id_hex = crate_node.id.short_hex();
+            let crate_id_hex = crate_node.id;
             let rust_crate = RustCrate::new(
                 db,
-                crate_id_hex.clone(),
+                crate_id_hex.to_string(),
                 crate_node.crate_name.clone(),
                 crate_node.edition.as_str().to_string(),
                 crate_node.crate_type.as_str().to_string(),

@@ -30,12 +30,12 @@ impl Rhea for RheaService {
     }
 
     async fn compile_rust(&self, request: RustCompileRequest) -> RustCompileResult {
-        // Use VFS-based execution
+        tracing::info!("🔧 compile_rust via VFS");
         self.compile_rust_vfs(request).await
     }
 
     async fn compile_cc(&self, request: CcCompileRequest) -> CcCompileResult {
-        // Use VFS-based execution
+        tracing::info!("🔧 compile_cc via VFS");
         self.compile_cc_vfs(request).await
     }
 

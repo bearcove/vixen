@@ -685,8 +685,8 @@ async fn execute_action(
             let toolchain_id = result.toolchain_id.unwrap_or(manifest.toolchain_id);
 
             info!(
-                toolchain_id = %toolchain_id.short_hex(),
-                manifest_hash = %manifest_hash.short_hex(),
+                toolchain_id = %toolchain_id,
+                manifest_hash = %manifest_hash,
                 version = ?manifest.rust_version,
                 "toolchain acquired"
             );
@@ -730,7 +730,7 @@ async fn execute_action(
                     debug!(
                         name = %name,
                         version = %version,
-                        manifest_hash = %manifest_hash.short_hex(),
+                        manifest_hash = %manifest_hash,
                         was_cached = was_cached,
                         "acquired registry crate"
                     );
@@ -776,7 +776,7 @@ async fn execute_action(
                 match results_lock.get(&toolchain_idx) {
                     Some(ActionResult::ToolchainAcquired { toolchain_id, manifest_hash, .. }) => {
                         info!("COMPILE: using acquired toolchain manifest_hash={} toolchain_id={}",
-                              manifest_hash.short_hex(), toolchain_id.short_hex());
+                              manifest_hash, toolchain_id);
                         (*manifest_hash, *toolchain_id)
                     }
                     _ => {
@@ -832,10 +832,10 @@ async fn execute_action(
 
             info!("COMPILE: source closure computed for {}, updating picante", crate_name);
             // Update RustCrate with actual closure hash
-            let crate_id_hex = crate_id.short_hex();
+            let crate_id_hex = crate_id;
             rust_crate = crate::inputs::RustCrate::new(
                 &**db,
-                crate_id_hex,
+                crate_id_hex.to_string(),
                 crate_name.clone(),
                 edition.clone(),
                 crate_type.as_str().to_string(),
@@ -944,7 +944,7 @@ async fn execute_action(
             {
                 info!(
                     crate_name = %crate_name,
-                    manifest = %cached.short_hex(),
+                    manifest = %cached,
                     "cache hit"
                 );
                 // Track cache hit
@@ -1181,8 +1181,8 @@ async fn execute_action(
             };
 
             info!(
-                toolchain_id = %toolchain_id.short_hex(),
-                manifest_hash = %manifest_hash.short_hex(),
+                toolchain_id = %toolchain_id,
+                manifest_hash = %manifest_hash,
                 version = %version,
                 host = %host,
                 "Zig toolchain acquired"
@@ -1243,7 +1243,7 @@ async fn execute_action(
             info!(
                 source = %source,
                 output = %output,
-                object_hash = %object_hash.short_hex(),
+                object_hash = %object_hash,
                 "C object compiled"
             );
 
@@ -1318,7 +1318,7 @@ async fn execute_action(
             info!(
                 name = %name,
                 output = %output,
-                binary_hash = %binary_hash.short_hex(),
+                binary_hash = %binary_hash,
                 "C binary linked"
             );
 

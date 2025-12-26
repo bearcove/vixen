@@ -401,6 +401,7 @@ async fn main() -> Result<()> {
     // Mount the VFS on macOS
     #[cfg(target_os = "macos")]
     let mount_point: Option<Utf8PathBuf> = {
+        tracing::info!("🗂️  Attempting to mount VFS...");
         // Extract host and port from the bound address (format: "host:port")
         if let Endpoint::Tcp(addr_str) = &vfs_local_addr {
             // Parse "host:port" string
@@ -416,9 +417,9 @@ async fn main() -> Result<()> {
                 match mount_fskitty(&mount_path, host, port) {
                     Ok(()) => Some(mount_path),
                     Err(e) => {
-                        tracing::warn!("Failed to mount VFS: {}", e);
-                        tracing::warn!("Build actions will fail until VFS is mounted");
-                        None
+                        tracing::error!("❌ Failed to mount VFS: {}", e);
+                        tracing::error!("Cannot start rhea without VFS");
+                        std::process::exit(1);
                     }
                 }
             } else {
@@ -568,9 +569,9 @@ impl RheaService {
         toolchain_manifest_hash: Blake3Hash,
     ) -> RheaResult<()> {
         // Get the toolchain manifest from CAS
-        let manifest = self
+        let toolchain_manifest = self
             .cas
-            .get_manifest(toolchain_manifest_hash)
+            .get_toolchain_manifest(toolchain_manifest_hash)
             .await
             .map_err(|e| RheaError::CasFetch(format!("{:?}", e)))?
             .ok_or_else(|| {
@@ -580,18 +581,49 @@ impl RheaService {
                 ))
             })?;
 
-        // Add each output to the VFS prefix under toolchain/
-        for output in &manifest.outputs {
-            let path = format!("toolchain/{}", output.filename);
-            self.vfs
-                .add_file_to_prefix(
-                    prefix_id,
-                    &path,
-                    output.blob,
-                    0, // Size unknown, will be fetched on read
-                    output.executable,
-                )
-                .await;
+        // Add each component's tree to the VFS prefix under toolchain/
+        for component in &toolchain_manifest.components {
+            // Fetch the tree manifest for this component
+            let tree_manifest = self
+                .cas
+                .get_tree_manifest(component.tree_manifest)
+                .await
+                .map_err(|e| RheaError::CasFetch(format!("{:?}", e)))?
+                .ok_or_else(|| {
+                    RheaError::CasFetch(format!(
+                        "tree manifest {} not found for component {}",
+                        component.tree_manifest, component.name
+                    ))
+                })?;
+
+            // Add all files from the tree
+            for entry in &tree_manifest.entries {
+                // Only handle files (not symlinks yet)
+                if let vx_cass_proto::TreeEntryKind::File {
+                    blob,
+                    size,
+                    executable,
+                } = &entry.kind
+                {
+                    let path = if component.name == "rustc" {
+                        // rustc files go directly under toolchain/
+                        format!("toolchain/{}", entry.path)
+                    } else if component.name == "rust-std" {
+                        // rust-std files go under toolchain/sysroot/
+                        format!("toolchain/sysroot/{}", entry.path)
+                    } else if component.name == "zig-exe" {
+                        format!("toolchain/{}", entry.path)
+                    } else if component.name == "zig-lib" {
+                        format!("toolchain/{}", entry.path)
+                    } else {
+                        format!("toolchain/{}/{}", component.name, entry.path)
+                    };
+
+                    self.vfs
+                        .add_file_to_prefix(prefix_id, &path, *blob, *size, *executable)
+                        .await;
+                }
+            }
         }
 
         Ok(())
