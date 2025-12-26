@@ -1,7 +1,9 @@
 [package]
 name = "vx-vfs"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "vx-vfs"
@@ -11,21 +13,21 @@ path = "src/main.rs"
 # fs-kitty VFS protocol
 fs-kitty-proto = { path = "../../../fs-kitty/crates/fs-kitty-proto" }
 
-# RPC (use git version to match fs-kitty)
-rapace = { git = "https://github.com/bearcove/rapace", features = ["stream"] }
+# RPC
+rapace = { workspace = true }
 
-# Serialization (must match rapace's facet version from git)
-facet = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["camino"] }
+# Serialization
+facet = { workspace = true }
 
 # vixen CAS integration
-vx-cass-proto = { path = "../vx-cass-proto" }
+vx-cass-proto = { workspace = true }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true }
 
 # Logging
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Utilities
-camino = "1"
+camino = { workspace = true }

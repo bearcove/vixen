@@ -36,10 +36,10 @@ facet-cargo-toml = { git = "https://github.com/bearcove/facet-cargo-toml", branc
 picante = { path = "../picante/crates/picante", features = ["macros"] }
 
 # RPC
-rapace = { path = "../rapace/crates/rapace" }
+rapace = { git = "https://github.com/bearcove/rapace", features = ["stream"] }
 
 # process management
-ur-taking-me-with-you = { path = "../rapace/crates/ur-taking-me-with-you" }
+ur-taking-me-with-you = { git = "https://github.com/bearcove/rapace" }
 
 # hashing
 blake3 = "1"
