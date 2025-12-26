@@ -1,0 +1,31 @@
+[package]
+name = "vx-vfs"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "vx-vfs"
+path = "src/main.rs"
+
+[dependencies]
+# fs-kitty VFS protocol
+fs-kitty-proto = { path = "../../../fs-kitty/crates/fs-kitty-proto" }
+
+# RPC (use git version to match fs-kitty)
+rapace = { git = "https://github.com/bearcove/rapace", features = ["stream"] }
+
+# Serialization (must match rapace's facet version from git)
+facet = { git = "https://github.com/facet-rs/facet", branch = "main", features = ["camino"] }
+
+# vixen CAS integration
+vx-cass-proto = { path = "../vx-cass-proto" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+camino = "1"

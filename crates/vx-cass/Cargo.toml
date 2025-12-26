@@ -14,7 +14,7 @@ flate2 = "1"
 futures-util = { workspace = true }
 hex = "0.4"
 http-body-util = "0.1"
-hyper = { version = "1.5", features = ["client", "http1", "http2"] }
+hyper = { version = "1.8", features = ["client", "http1", "http2"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 pin-project-lite = "0.2"
