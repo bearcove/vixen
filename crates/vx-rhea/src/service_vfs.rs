@@ -5,8 +5,8 @@
 
 use camino::Utf8PathBuf;
 use jiff::Zoned;
-use std::process::Command;
 use std::time::Instant;
+use tokio::process::Command;
 use tracing::{debug, info};
 use vx_cass_proto::{NodeId, NodeManifest, OutputEntry};
 use vx_rhea_proto::{CcCompileRequest, CcCompileResult, RustCompileRequest, RustCompileResult};
@@ -34,9 +34,20 @@ impl RheaService {
 
         // 1. Create action prefix
         let prefix_id = self.create_action_prefix().await;
-        let prefix_path = rhea_mount_base().join(&prefix_id);
+        let mount_base = rhea_mount_base();
+        let prefix_path = mount_base.join(&prefix_id);
 
-        debug!(prefix_id = %prefix_id, prefix_path = %prefix_path, "created action prefix");
+        info!(prefix_id = %prefix_id, prefix_path = %prefix_path, "created action prefix");
+
+        // Check if VFS mount exists (use tokio::fs to avoid blocking the tokio executor)
+        match tokio::fs::metadata(mount_base.as_str()).await {
+            Ok(meta) => {
+                info!(mount_base = %mount_base, is_dir = meta.is_dir(), "VFS mount base exists");
+            }
+            Err(e) => {
+                info!(mount_base = %mount_base, error = %e, "VFS mount base does NOT exist");
+            }
+        }
 
         // Helper to return an error result (cleanup is done before calling this)
         let cleanup_and_error = |_prefix_id: &str, error: String, start: Instant| {
@@ -51,6 +62,16 @@ impl RheaService {
             }
         };
 
+        // Check if prefix directory exists after creation (use tokio::fs)
+        match tokio::fs::metadata(prefix_path.as_str()).await {
+            Ok(meta) => {
+                info!(prefix_path = %prefix_path, is_dir = meta.is_dir(), "prefix directory exists after creation");
+            }
+            Err(e) => {
+                info!(prefix_path = %prefix_path, error = %e, "prefix directory does NOT exist after creation");
+            }
+        }
+
         // 2. Add toolchain to prefix
         info!(
             toolchain_manifest = %request.toolchain_manifest,
@@ -63,7 +84,27 @@ impl RheaService {
             self.remove_action_prefix(&prefix_id).await;
             return cleanup_and_error(&prefix_id, format!("failed to add toolchain: {}", e), start);
         }
-        debug!("toolchain added to prefix successfully");
+        info!("toolchain added to prefix successfully");
+
+        // Dump VFS state to see what we actually have
+        self.vfs.dump_state(&prefix_id).await;
+
+        // Check toolchain directory after adding
+        let toolchain_dir = prefix_path.join("toolchain");
+        match tokio::fs::metadata(toolchain_dir.as_str()).await {
+            Ok(meta) => {
+                info!(toolchain_dir = %toolchain_dir, is_dir = meta.is_dir(), "toolchain directory exists");
+                // List contents
+                if let Ok(mut entries) = tokio::fs::read_dir(toolchain_dir.as_str()).await {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        info!(entry = ?entry.path(), "  toolchain entry");
+                    }
+                }
+            }
+            Err(e) => {
+                info!(toolchain_dir = %toolchain_dir, error = %e, "toolchain directory does NOT exist");
+            }
+        }
 
         // 3. Add source tree to prefix
         if let Err(e) = self
@@ -143,15 +184,54 @@ impl RheaService {
             cmd.env("PATH", path);
         }
 
-        debug!(
+        info!(
             rustc = %rustc_path,
             crate_name = %request.crate_name,
             crate_root = %crate_root,
             "executing rustc via VFS"
         );
 
+        // Debug: Check if rustc exists before executing
+        info!(rustc_path = %rustc_path, "checking if rustc exists");
+        match tokio::fs::metadata(rustc_path.as_str()).await {
+            Ok(meta) => {
+                info!(
+                    rustc_path = %rustc_path,
+                    is_file = meta.is_file(),
+                    len = meta.len(),
+                    permissions = ?meta.permissions(),
+                    "rustc metadata"
+                );
+            }
+            Err(e) => {
+                info!(rustc_path = %rustc_path, error = %e, "rustc does NOT exist");
+                // Try to list parent directory
+                let parent = rustc_path.parent().unwrap_or(&prefix_path);
+                info!(parent = %parent, "listing parent directory");
+                match tokio::fs::read_dir(parent.as_str()).await {
+                    Ok(mut entries) => {
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            info!(entry = ?entry.path(), "  entry in parent");
+                        }
+                    }
+                    Err(e) => {
+                        info!(parent = %parent, error = %e, "failed to read parent directory");
+                        // Try grandparent
+                        if let Some(grandparent) = parent.parent() {
+                            info!(grandparent = %grandparent, "listing grandparent");
+                            if let Ok(mut entries) = tokio::fs::read_dir(grandparent.as_str()).await {
+                                while let Ok(Some(entry)) = entries.next_entry().await {
+                                    info!(entry = ?entry.path(), "  entry in grandparent");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 7. Run rustc
-        let output = match cmd.output() {
+        let output = match cmd.output().await {
             Ok(o) => o,
             Err(e) => {
                 self.remove_action_prefix(&prefix_id).await;
@@ -369,7 +449,7 @@ impl RheaService {
         );
 
         // 6. Run zig cc
-        let output = match cmd.output() {
+        let output = match cmd.output().await {
             Ok(o) => o,
             Err(e) => {
                 self.remove_action_prefix(&prefix_id).await;

@@ -72,3 +72,20 @@ The vx build system consists of three services:
   - Runs rustc with proper sysroot configuration
   - Ingests build outputs back to CAS
   - Returns output manifest hashes
+
+## Async Filesystem Operations (MANDATORY)
+
+**ALWAYS use `tokio::fs::*` instead of `std::fs::*`** in async code. This codebase uses fs-kitty VFS mounts, and blocking syscalls on tokio worker threads cause deadlocks.
+
+| ❌ Never use | ✅ Always use |
+|-------------|---------------|
+| `std::fs::metadata()` | `tokio::fs::metadata()` |
+| `std::fs::read()` | `tokio::fs::read()` |
+| `std::fs::write()` | `tokio::fs::write()` |
+| `std::fs::create_dir_all()` | `tokio::fs::create_dir_all()` |
+| `std::fs::remove_file()` | `tokio::fs::remove_file()` |
+| `std::fs::remove_dir_all()` | `tokio::fs::remove_dir_all()` |
+| `std::fs::read_dir()` | `tokio::fs::read_dir()` |
+| `std::process::Command` | `tokio::process::Command` |
+
+This applies to **any** filesystem path that might go through VFS (especially `~/.rhea/`).
