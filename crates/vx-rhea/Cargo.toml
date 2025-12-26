@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# fs-kitty VFS protocol
+fs-kitty-proto = { path = "../../../fs-kitty/crates/fs-kitty-proto" }
+
 tracing-subscriber = { workspace = true }
 facet = { workspace = true }
 thiserror = { workspace = true }

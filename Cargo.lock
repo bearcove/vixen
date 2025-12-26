@@ -3680,6 +3680,7 @@ dependencies = [
  "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
  "facet-cargo-toml",
  "facet-json",
+ "fs-kitty-proto",
  "futures-util",
  "jiff",
  "rapace",
@@ -3761,20 +3762,6 @@ dependencies = [
  "uuid",
  "vx-cass-proto",
  "walkdir",
-]
-
-[[package]]
-name = "vx-vfs"
-version = "0.1.0"
-dependencies = [
- "camino",
- "facet 0.34.0 (git+https://github.com/facet-rs/facet?branch=main)",
- "fs-kitty-proto",
- "rapace",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "vx-cass-proto",
 ]
 
 [[package]]

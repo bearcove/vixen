@@ -16,11 +16,13 @@ pub(crate) mod extract;
 pub(crate) mod registry;
 pub(crate) mod service;
 pub(crate) mod toolchain;
+pub(crate) mod vfs;
 
 use error::{Result as RheaResult, RheaError};
 
 use camino::Utf8PathBuf;
 use eyre::Result;
+use fs_kitty_proto::VfsServer;
 use std::collections::HashMap;
 use std::sync::Arc;
 use vx_cass_proto::{Blake3Hash, CassClient};
@@ -28,6 +30,7 @@ use vx_io::net::{Endpoint, Listener};
 use vx_rhea_proto::RheaServer;
 
 use crate::registry::RegistryMaterializer;
+use crate::vfs::CasVfs;
 
 /// Type alias for inflight materialization tracking
 type InflightMaterializations = Arc<
@@ -45,8 +48,11 @@ struct Args {
     /// CAS endpoint
     cas_endpoint: Endpoint,
 
-    /// Bind endpoint
+    /// Bind endpoint for Rhea RPC service
     bind: Endpoint,
+
+    /// Bind endpoint for VFS server (fs-kitty)
+    vfs_bind: Endpoint,
 }
 
 impl Args {
@@ -90,11 +96,27 @@ impl Args {
             }
         };
 
+        // Parse VFS endpoint (defaults to Unix socket)
+        let vfs_bind = match std::env::var("VX_RHEA_VFS") {
+            Ok(v) => Endpoint::parse(&v)?,
+            Err(_) => {
+                #[cfg(unix)]
+                {
+                    vx_io::net::default_unix_endpoint(&vx_home, "rhea-vfs")
+                }
+                #[cfg(not(unix))]
+                {
+                    Endpoint::parse("127.0.0.1:9004")?
+                }
+            }
+        };
+
         Ok(Args {
             toolchains_dir,
             registry_cache_dir,
             cas_endpoint,
             bind,
+            vfs_bind,
         })
     }
 }
@@ -139,8 +161,8 @@ async fn main() -> Result<()> {
     let cas = connect_to_cas(&args.cas_endpoint).await?;
     tracing::info!("Connected to CAS");
 
-    // Initialize Exec service
-    tracing::info!("Initializing Exec service");
+    // Initialize services
+    tracing::info!("Initializing Rhea services");
     tracing::info!("  Toolchains: {}", args.toolchains_dir);
     tracing::info!("  Registry:   {}", args.registry_cache_dir);
 
@@ -148,29 +170,62 @@ async fn main() -> Result<()> {
     tokio::fs::create_dir_all(&args.toolchains_dir).await?;
     tokio::fs::create_dir_all(&args.registry_cache_dir).await?;
 
-    let exec = RheaService::new(Arc::new(cas), args.toolchains_dir, args.registry_cache_dir);
+    let cas = Arc::new(cas);
 
-    // Start server (TCP or Unix socket)
-    let listener = Listener::bind(&args.bind).await?;
-    tracing::info!("Exec listening on {}", args.bind);
+    // Create VFS (shared between VFS server and RheaService)
+    let vfs = Arc::new(CasVfs::new(cas.clone()));
+
+    // Create Rhea service (will use VFS for action execution)
+    let exec = RheaService::new(cas.clone(), args.toolchains_dir, args.registry_cache_dir, vfs.clone());
+
+    // Start Rhea RPC server
+    let rhea_listener = Listener::bind(&args.bind).await?;
+    tracing::info!("Rhea RPC listening on {}", args.bind);
+
+    let exec_for_rhea = exec.clone();
+    tokio::spawn(async move {
+        loop {
+            match rhea_listener.accept().await {
+                Ok((stream, peer_addr)) => {
+                    let exec = exec_for_rhea.clone();
+                    tokio::spawn(async move {
+                        tracing::debug!("Rhea connection from {}", peer_addr);
+                        let transport = rapace::Transport::stream(stream);
+                        let server = RheaServer::new(exec);
+                        if let Err(e) = server.serve(transport).await {
+                            tracing::warn!("Rhea connection error from {}: {}", peer_addr, e);
+                        }
+                        tracing::debug!("Rhea connection from {} closed", peer_addr);
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("Rhea accept error: {}", e);
+                }
+            }
+        }
+    });
+
+    // Start VFS server (fs-kitty)
+    let vfs_listener = Listener::bind(&args.vfs_bind).await?;
+    tracing::info!("VFS (fs-kitty) listening on {}", args.vfs_bind);
 
     loop {
-        let (stream, peer_addr) = listener.accept().await?;
-        let exec = exec.clone();
+        let (stream, peer_addr) = vfs_listener.accept().await?;
+        let vfs = Arc::clone(&vfs);
 
         tokio::spawn(async move {
-            tracing::debug!("New connection from {}", peer_addr);
+            tracing::debug!("VFS connection from {}", peer_addr);
 
-            // Create transport from stream
             let transport = rapace::Transport::stream(stream);
+            let session = Arc::new(rapace::RpcSession::new(transport.clone()));
+            let vfs_server = VfsServer::new(vfs);
+            session.set_dispatcher(vfs_server.into_session_dispatcher(transport));
 
-            // Serve the Exec service
-            let server = RheaServer::new(exec);
-            if let Err(e) = server.serve(transport).await {
-                tracing::warn!("Connection error from {}: {}", peer_addr, e);
+            if let Err(e) = session.run().await {
+                tracing::warn!("VFS connection error from {}: {}", peer_addr, e);
             }
 
-            tracing::debug!("Connection from {} closed", peer_addr);
+            tracing::debug!("VFS connection from {} closed", peer_addr);
         });
     }
 }
@@ -188,6 +243,9 @@ pub struct RheaServiceInner {
 
     /// Registry crate materializer
     pub(crate) registry_materializer: RegistryMaterializer,
+
+    /// VFS for hermetic action execution
+    pub(crate) vfs: Arc<CasVfs>,
 }
 
 /// Exec service handle - cloneable wrapper around shared inner state
@@ -209,6 +267,7 @@ impl RheaService {
         cas: Arc<CassClient>,
         toolchains_dir: Utf8PathBuf,
         registry_cache_dir: Utf8PathBuf,
+        vfs: Arc<CasVfs>,
     ) -> Self {
         Self {
             inner: Arc::new(RheaServiceInner {
@@ -216,6 +275,7 @@ impl RheaService {
                 cas,
                 toolchains_dir,
                 materializing: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                vfs,
             }),
         }
     }
