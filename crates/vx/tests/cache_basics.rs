@@ -15,29 +15,29 @@ fn fresh_build_succeeds() {
     create_hello_world(&env);
 
     // Print log locations for debugging
-    eprintln!("VX_HOME: {}", env.vx_home.path().display());
+    eprintln!("VX_HOME: {}", env.vx_home_path().display());
     eprintln!("Logs:");
-    eprintln!("  aether: {}/aether.log", env.vx_home.path().display());
-    eprintln!("  cass: {}/cass.log", env.vx_home.path().display());
-    eprintln!("  rhea: {}/rhea.log", env.vx_home.path().display());
+    eprintln!("  aether: {}/aether.log", env.vx_home_path().display());
+    eprintln!("  cass: {}/cass.log", env.vx_home_path().display());
+    eprintln!("  rhea: {}/rhea.log", env.vx_home_path().display());
 
     let result = env.build(false);
 
     // If build failed, print logs for debugging
     if !result.success {
-        let aether_log = env.vx_home.path().join("aether.log");
+        let aether_log = env.vx_home_path().join("aether.log");
         if let Ok(logs) = std::fs::read_to_string(&aether_log) {
             eprintln!("\n=== AETHER LOGS ===");
             eprintln!("{}", logs);
         }
 
-        let cass_log = env.vx_home.path().join("cass.log");
+        let cass_log = env.vx_home_path().join("cass.log");
         if let Ok(logs) = std::fs::read_to_string(&cass_log) {
             eprintln!("\n=== CASS LOGS ===");
             eprintln!("{}", logs);
         }
 
-        let rhea_log = env.vx_home.path().join("rhea.log");
+        let rhea_log = env.vx_home_path().join("rhea.log");
         if let Ok(logs) = std::fs::read_to_string(&rhea_log) {
             eprintln!("\n=== RHEA LOGS ===");
             eprintln!("{}", logs);

@@ -22,13 +22,17 @@ use tempfile::TempDir;
 /// A test environment with isolated CAS, project directories, and Unix sockets
 pub struct TestEnv {
     /// Temp dir for global CAS (simulates ~/.vx/)
+    /// When using VX_TEST_EXTERNAL_DAEMON, this may be a dummy TempDir
     pub vx_home: TempDir,
+    /// The actual VX_HOME path (may differ from vx_home.path() when using external daemon)
+    vx_home_path: PathBuf,
     /// Temp dir for the test project
     pub project: TempDir,
     /// The daemon process - lives as long as TestEnv
     /// When TestEnv drops, daemon dies (via dying_with_parent)
+    /// None when using VX_TEST_EXTERNAL_DAEMON
     #[allow(dead_code)]
-    daemon: Child,
+    daemon: Option<Child>,
 }
 
 impl TestEnv {
@@ -36,17 +40,58 @@ impl TestEnv {
     ///
     /// Spawns vx-aether daemon which lives for the duration of the test.
     /// Multiple `vx` commands will share this daemon.
+    ///
+    /// # External daemon mode
+    ///
+    /// Set `VX_TEST_EXTERNAL_DAEMON=1` to skip spawning and connect to an existing daemon.
+    /// Set `VX_TEST_VX_HOME=/path/to/home` to specify the VX_HOME for external daemon.
+    ///
+    /// Example for debugging under lldb:
+    /// ```bash
+    /// # Terminal 1: Run aether under lldb
+    /// mkdir -p /tmp/test-vx-debug
+    /// VX_HOME=/tmp/test-vx-debug lldb target/debug/vx-aether
+    /// # (lldb) run
+    ///
+    /// # Terminal 2: Run test connecting to that daemon
+    /// VX_TEST_EXTERNAL_DAEMON=1 VX_TEST_VX_HOME=/tmp/test-vx-debug cargo test fresh_build_succeeds
+    /// ```
     pub fn new() -> Self {
-        let vx_home = TempDir::new().expect("failed to create vx_home temp dir");
-        let project = TempDir::new().expect("failed to create project temp dir");
+        let use_external = std::env::var("VX_TEST_EXTERNAL_DAEMON").is_ok();
 
-        // Spawn the daemon
-        let daemon = Self::spawn_daemon(vx_home.path());
+        if use_external {
+            // External daemon mode - don't spawn, use fixed VX_HOME
+            let vx_home_path = std::env::var("VX_TEST_VX_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/tmp/vx-test-external"));
 
-        Self {
-            vx_home,
-            project,
-            daemon,
+            std::fs::create_dir_all(&vx_home_path).expect("failed to create VX_HOME");
+
+            let project = TempDir::new().expect("failed to create project temp dir");
+
+            eprintln!("Using external daemon at VX_HOME: {}", vx_home_path.display());
+
+            Self {
+                vx_home: TempDir::new().expect("dummy vx_home"),
+                vx_home_path,
+                project,
+                daemon: None,
+            }
+        } else {
+            // Normal mode - spawn isolated daemon
+            let vx_home = TempDir::new().expect("failed to create vx_home temp dir");
+            let vx_home_path = vx_home.path().to_path_buf();
+            let project = TempDir::new().expect("failed to create project temp dir");
+
+            // Spawn the daemon
+            let daemon = Self::spawn_daemon(&vx_home_path);
+
+            Self {
+                vx_home,
+                vx_home_path,
+                project,
+                daemon: Some(daemon),
+            }
         }
     }
 
@@ -113,12 +158,12 @@ impl TestEnv {
 
     /// Run `vx build` in this environment
     pub fn build(&self, release: bool) -> VxOutput {
-        self.build_with_home(self.vx_home.path(), release)
+        self.build_with_home(&self.vx_home_path, release)
     }
 
     /// Run `vx build` from a subdirectory within the project
     pub fn build_in_subdir(&self, subdir: &str, release: bool) -> VxOutput {
-        self.build_in_subdir_with_home(subdir, self.vx_home.path(), release)
+        self.build_in_subdir_with_home(subdir, &self.vx_home_path, release)
     }
 
     /// Run `vx build` from a subdirectory with a custom VX_HOME
@@ -173,7 +218,7 @@ impl TestEnv {
     pub fn clean(&self) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        self.setup_env(&mut cmd, self.vx_home.path());
+        self.setup_env(&mut cmd, &self.vx_home_path);
         cmd.arg("clean");
 
         let output = cmd.output().expect("failed to run vx");
@@ -184,7 +229,7 @@ impl TestEnv {
     pub fn explain(&self) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        self.setup_env(&mut cmd, self.vx_home.path());
+        self.setup_env(&mut cmd, &self.vx_home_path);
         cmd.arg("explain");
 
         let output = cmd.output().expect("failed to run vx");
@@ -195,7 +240,7 @@ impl TestEnv {
     pub fn explain_diff(&self) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        self.setup_env(&mut cmd, self.vx_home.path());
+        self.setup_env(&mut cmd, &self.vx_home_path);
         cmd.args(["explain", "--diff"]);
 
         let output = cmd.output().expect("failed to run vx");
@@ -206,7 +251,7 @@ impl TestEnv {
     pub fn explain_last_miss(&self) -> VxOutput {
         let mut cmd = Command::new(Self::vx_binary());
         cmd.current_dir(self.project.path());
-        self.setup_env(&mut cmd, self.vx_home.path());
+        self.setup_env(&mut cmd, &self.vx_home_path);
         cmd.args(["explain", "--last-miss"]);
 
         let output = cmd.output().expect("failed to run vx");
@@ -235,7 +280,7 @@ impl TestEnv {
 
     /// Check if a file exists in the CAS directory
     pub fn cas_file_exists(&self, relative_path: &str) -> bool {
-        self.vx_home.path().join(relative_path).exists()
+        self.vx_home_path.join(relative_path).exists()
     }
 
     /// Get the project path
@@ -245,7 +290,7 @@ impl TestEnv {
 
     /// Get the VX_HOME path
     pub fn vx_home_path(&self) -> &Path {
-        self.vx_home.path()
+        &self.vx_home_path
     }
 }
 
