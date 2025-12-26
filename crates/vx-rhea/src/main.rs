@@ -15,6 +15,7 @@ pub(crate) mod error;
 pub(crate) mod extract;
 pub(crate) mod registry;
 pub(crate) mod service;
+pub(crate) mod service_vfs;
 pub(crate) mod toolchain;
 pub(crate) mod vfs;
 
@@ -149,6 +150,35 @@ async fn is_socket_in_use(path: &Utf8PathBuf) -> bool {
     UnixStream::connect(path.as_std_path()).await.is_ok()
 }
 
+/// Check if fs-kitty extension is installed
+#[cfg(target_os = "macos")]
+fn check_fskitty_extension() -> Result<(), String> {
+    use std::process::Command;
+
+    let output = Command::new("pluginkit")
+        .args(["-m", "-p", "com.apple.fskit.fsmodule"])
+        .output()
+        .map_err(|e| format!("failed to run pluginkit: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    if stdout.contains("me.amos.fs-kitty") || stdout.contains("fskitty") {
+        Ok(())
+    } else {
+        Err(format!(
+            "fs-kitty extension not found.\n\
+             Install FsKitty.app and enable the extension in:\n\
+             System Settings → General → Login Items & Extensions → File System Extensions"
+        ))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_fskitty_extension() -> Result<(), String> {
+    // On Linux, we'll use FUSE instead - for now just pass
+    Ok(())
+}
+
 /// Check if there's a stale mount at the rhea mount point
 #[cfg(target_os = "macos")]
 fn check_stale_mount(rhea_home: &Utf8PathBuf) -> Option<String> {
@@ -189,6 +219,12 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::from_env()?;
+
+    // Check fs-kitty extension is installed (macOS)
+    if let Err(e) = check_fskitty_extension() {
+        tracing::warn!("{}", e);
+        // Don't fail - extension might be installed but not detected
+    }
 
     // Check for stale mounts
     let rhea_home = args.toolchains_dir.parent().unwrap_or(&args.toolchains_dir);
@@ -533,6 +569,7 @@ impl RheaService {
     ///
     /// This is the path that should be passed to sandboxed processes.
     /// Format: ~/.rhea/<prefix_id>/
+    #[allow(dead_code)] // Will be used for sandbox integration
     pub(crate) fn get_prefix_mount_path(&self, prefix_id: &str) -> Utf8PathBuf {
         // For now, return a path relative to rhea home
         // In the future, this will be the actual mount point
