@@ -36,6 +36,10 @@ struct BuildArgs {
     /// Don't auto-spawn daemon if not running (for tests)
     #[facet(args::named)]
     no_spawn: bool,
+
+    /// Disable TUI and use plain log output
+    #[facet(args::named)]
+    no_tui: bool,
 }
 
 /// Arguments for the `kill` subcommand
@@ -183,32 +187,54 @@ fn short_hex(hash: &str, verbose: bool) -> String {
     }
 }
 
-/// Progress listener that drives the TUI
+/// Progress listener that drives the TUI (or logs to console if TUI is disabled)
 struct ProgressListenerImpl {
-    tui: tui::TuiHandle,
+    tui: Option<tui::TuiHandle>,
+    next_action_id: std::sync::atomic::AtomicU64,
 }
 
 impl ProgressListenerImpl {
-    fn new(tui: tui::TuiHandle) -> Self {
-        Self { tui }
+    fn new(tui: Option<tui::TuiHandle>) -> Self {
+        Self {
+            tui,
+            next_action_id: std::sync::atomic::AtomicU64::new(1),
+        }
     }
 }
 
 impl ProgressListener for ProgressListenerImpl {
     async fn set_total(&self, total: u64) {
-        self.tui.set_total(total as usize).await;
+        if let Some(tui) = &self.tui {
+            tui.set_total(total as usize).await;
+        } else {
+            tracing::info!("Build: {} actions total", total);
+        }
     }
 
     async fn start_action(&self, action_type: ActionType) -> u64 {
-        self.tui.start_action(action_type).await
+        if let Some(tui) = &self.tui {
+            tui.start_action(action_type).await
+        } else {
+            let id = self.next_action_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tracing::info!("[{}] Starting: {:?}", id, action_type);
+            id
+        }
     }
 
     async fn complete_action(&self, action_id: u64) {
-        self.tui.complete_action(action_id).await;
+        if let Some(tui) = &self.tui {
+            tui.complete_action(action_id).await;
+        } else {
+            tracing::info!("[{}] Complete", action_id);
+        }
     }
 
     async fn log_message(&self, message: String) {
-        self.tui.log_message(message).await;
+        if let Some(tui) = &self.tui {
+            tui.log_message(message).await;
+        } else {
+            tracing::info!("{}", message);
+        }
     }
 }
 
@@ -238,7 +264,7 @@ fn create_progress_listener_dispatcher(
 }
 
 /// Connect to the aether, spawning it if necessary
-async fn get_or_spawn_aether(no_spawn: bool) -> Result<(AetherClient<rapace::AnyTransport>, tui::TuiHandle)> {
+async fn get_or_spawn_aether(no_spawn: bool, no_tui: bool) -> Result<(AetherClient<rapace::AnyTransport>, Option<tui::TuiHandle>)> {
     use vx_io::net::Endpoint;
 
     let vx_home = std::env::var("VX_HOME")
@@ -263,7 +289,7 @@ async fn get_or_spawn_aether(no_spawn: bool) -> Result<(AetherClient<rapace::Any
     let backoff_ms = [10, 50, 100, 500, 1000];
 
     // Try to connect first
-    match try_connect_daemon(&endpoint).await {
+    match try_connect_daemon(&endpoint, no_tui).await {
         Ok(result) => Ok(result),
         Err(e) => {
             // If no_spawn is set, don't try to spawn - just fail
@@ -313,21 +339,22 @@ async fn get_or_spawn_aether(no_spawn: bool) -> Result<(AetherClient<rapace::Any
             // Retry with backoff
             for (attempt, delay) in backoff_ms.iter().enumerate() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(*delay)).await;
-                if let Ok(result) = try_connect_daemon(&endpoint).await {
+                if let Ok(result) = try_connect_daemon(&endpoint, no_tui).await {
                     tracing::info!("Connected to daemon after {} attempts", attempt + 1);
                     return Ok(result);
                 }
             }
 
             // Final attempt
-            try_connect_daemon(&endpoint).await
+            try_connect_daemon(&endpoint, no_tui).await
         }
     }
 }
 
 async fn try_connect_daemon(
     endpoint: &vx_io::net::Endpoint,
-) -> Result<(AetherClient<rapace::AnyTransport>, tui::TuiHandle)> {
+    no_tui: bool,
+) -> Result<(AetherClient<rapace::AnyTransport>, Option<tui::TuiHandle>)> {
     use std::sync::Arc;
 
     let stream = vx_io::net::connect(endpoint).await?;
@@ -336,8 +363,12 @@ async fn try_connect_daemon(
     // Create RPC session with odd channel IDs (client uses 1, 3, 5, ...)
     let session = Arc::new(rapace::RpcSession::with_channel_start(transport, 1));
 
-    // Create TUI and progress listener
-    let tui = tui::TuiHandle::new();
+    // Create TUI and progress listener (only if TUI is enabled)
+    let tui = if no_tui {
+        None
+    } else {
+        Some(tui::TuiHandle::new())
+    };
     let progress_listener = Arc::new(ProgressListenerImpl::new(tui.clone()));
 
     // Set up bidirectional RPC: vx serves ProgressListener, aether serves Aether
@@ -363,10 +394,14 @@ async fn cmd_build(args: BuildArgs) -> Result<()> {
     let cwd = Utf8PathBuf::try_from(std::env::current_dir()?)?;
 
     // Connect to daemon (spawning if necessary) and set up TUI
-    let (daemon, tui) = get_or_spawn_aether(args.no_spawn).await?;
+    let (daemon, tui) = get_or_spawn_aether(args.no_spawn, args.no_tui).await?;
 
-    // Initialize tracing with TUI layer
-    init_tracing_with_tui(tui.clone());
+    // Initialize tracing - with TUI layer or plain output to stderr
+    if let Some(ref tui) = tui {
+        init_tracing_with_tui(tui.clone());
+    } else {
+        init_tracing_stderr();
+    }
 
     let request = BuildRequest {
         project_path: cwd.clone(),
@@ -375,8 +410,10 @@ async fn cmd_build(args: BuildArgs) -> Result<()> {
 
     let result = daemon.build(request).await?;
 
-    // Shutdown the TUI and wait for cleanup
-    tui.shutdown().await;
+    // Shutdown the TUI and wait for cleanup (if TUI was enabled)
+    if let Some(tui) = tui {
+        tui.shutdown().await;
+    }
 
     if result.success {
         // Print nice summary box (TUI has already cleaned up)
@@ -452,8 +489,8 @@ async fn cmd_kill(_args: KillArgs) -> Result<()> {
         }
     };
 
-    // Try to connect to daemon
-    match try_connect_daemon(&endpoint).await {
+    // Try to connect to daemon (no TUI needed for kill command)
+    match try_connect_daemon(&endpoint, true).await {
         Ok((daemon, _tui)) => {
             println!("{} daemon at {}", "Stopping".green().bold(), endpoint);
             if let Err(e) = daemon.shutdown().await {
@@ -505,7 +542,8 @@ async fn cmd_clean(args: CleanArgs) -> Result<()> {
     };
 
     if let Some(endpoint) = endpoint {
-        if let Ok((daemon, _tui)) = try_connect_daemon(&endpoint).await {
+        // No TUI needed for clean command
+        if let Ok((daemon, _tui)) = try_connect_daemon(&endpoint, true).await {
             tracing::debug!("Killing daemon before clean");
             let _ = daemon.shutdown().await;
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
