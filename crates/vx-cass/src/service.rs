@@ -72,9 +72,33 @@ impl Cass for CassService {
     }
 
     async fn get_manifest(&self, hash: ManifestHash) -> Option<NodeManifest> {
-        let path = self.manifest_path(&hash);
-        let json = tokio::fs::read_to_string(&path).await.ok()?;
-        facet_json::from_str(&json).ok()
+        // Node manifests (source/object) are stored as blobs, not in the manifests directory
+        let path = self.blob_path(&hash);
+        tracing::debug!(
+            manifest_hash = %hash,
+            path = %path,
+            "get_manifest: attempting to read from blob storage"
+        );
+
+        match tokio::fs::read_to_string(&path).await {
+            Ok(json) => {
+                tracing::debug!(manifest_hash = %hash, "get_manifest: blob read successfully");
+                match facet_json::from_str(&json) {
+                    Ok(manifest) => {
+                        tracing::debug!(manifest_hash = %hash, "get_manifest: parsed successfully");
+                        Some(manifest)
+                    }
+                    Err(e) => {
+                        tracing::warn!(manifest_hash = %hash, error = ?e, "get_manifest: failed to parse JSON");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(manifest_hash = %hash, path = %path, error = ?e, "get_manifest: blob not found or read error");
+                None
+            }
+        }
     }
 
     async fn put_blob(&self, data: Vec<u8>) -> BlobHash {
@@ -385,9 +409,33 @@ impl Cass for CassService {
     }
 
     async fn get_tree_manifest(&self, hash: ManifestHash) -> Option<TreeManifest> {
-        let path = self.tree_manifest_path(&hash);
-        let json = tokio::fs::read_to_string(&path).await.ok()?;
-        facet_json::from_str(&json).ok()
+        // Tree manifests are stored as blobs, not in the tree_manifests directory
+        let path = self.blob_path(&hash);
+        tracing::debug!(
+            manifest_hash = %hash,
+            path = %path,
+            "get_tree_manifest: attempting to read from blob storage"
+        );
+
+        match tokio::fs::read_to_string(&path).await {
+            Ok(json) => {
+                tracing::debug!(manifest_hash = %hash, "get_tree_manifest: blob read successfully");
+                match facet_json::from_str(&json) {
+                    Ok(manifest) => {
+                        tracing::debug!(manifest_hash = %hash, "get_tree_manifest: parsed successfully");
+                        Some(manifest)
+                    }
+                    Err(e) => {
+                        tracing::warn!(manifest_hash = %hash, error = ?e, "get_tree_manifest: failed to parse JSON");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(manifest_hash = %hash, path = %path, error = ?e, "get_tree_manifest: blob not found or read error");
+                None
+            }
+        }
     }
 
     async fn stream_blob(&self, blob: Blake3Hash) -> rapace::Streaming<Vec<u8>> {

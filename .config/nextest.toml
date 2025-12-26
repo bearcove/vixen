@@ -1,0 +1,14 @@
+# Nextest configuration for vx integration tests
+
+# Enable experimental setup scripts feature
+experimental = ["setup-scripts"]
+
+# Setup script to build daemon binaries before tests
+# Integration tests spawn vx-aether/vx-cass/vx-rhea from target/debug/
+# These aren't test dependencies, so cargo won't rebuild them automatically
+[scripts.setup.build-daemons]
+command = 'cargo build --bin vx-aether --bin vx-cass --bin vx-rhea'
+
+# Run the setup script for all tests
+[[profile.default.scripts]]
+setup = 'build-daemons'
