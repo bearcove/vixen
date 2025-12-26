@@ -21,7 +21,7 @@ pub(crate) mod vfs;
 
 use error::{Result as RheaResult, RheaError};
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use eyre::Result;
 use fs_kitty_proto::VfsServer;
 use std::collections::HashMap;
@@ -97,11 +97,18 @@ impl Args {
             }
         };
 
-        // Parse VFS endpoint (defaults to Unix socket)
+        // Parse VFS endpoint
+        // On macOS, default to TCP for fs-kitty URL mounting (fskitty://host:port)
+        // On other platforms, default to Unix socket
         let vfs_bind = match std::env::var("VX_RHEA_VFS") {
             Ok(v) => Endpoint::parse(&v)?,
             Err(_) => {
-                #[cfg(unix)]
+                #[cfg(target_os = "macos")]
+                {
+                    // Use port 0 to let OS pick an available port
+                    Endpoint::parse("127.0.0.1:0")?
+                }
+                #[cfg(all(unix, not(target_os = "macos")))]
                 {
                     vx_io::net::default_unix_endpoint(&vx_home, "rhea-vfs")
                 }
@@ -198,6 +205,68 @@ fn check_stale_mount(rhea_home: &Utf8PathBuf) -> Option<String> {
         }
     }
     None
+}
+
+/// Mount the VFS at ~/.rhea using fs-kitty
+#[cfg(target_os = "macos")]
+fn mount_fskitty(mount_point: &Utf8Path, host: &str, port: u16) -> Result<(), String> {
+    use std::process::Command;
+
+    // Ensure mount point exists
+    if let Err(e) = std::fs::create_dir_all(mount_point) {
+        return Err(format!("Failed to create mount point {}: {}", mount_point, e));
+    }
+
+    // Mount using: mount -t fskitty fskitty://host:port /mount/point
+    let url = format!("fskitty://{}:{}", host, port);
+    tracing::info!("Mounting fs-kitty at {} ({})", mount_point, url);
+
+    let output = Command::new("mount")
+        .arg("-t")
+        .arg("fskitty")
+        .arg(&url)
+        .arg(mount_point.as_str())
+        .output()
+        .map_err(|e| format!("Failed to execute mount: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Mount failed: {}", stderr.trim()));
+    }
+
+    tracing::info!("VFS mounted at {}", mount_point);
+    Ok(())
+}
+
+/// Unmount the VFS
+#[cfg(target_os = "macos")]
+fn unmount_fskitty(mount_point: &Utf8Path) {
+    use std::process::Command;
+
+    tracing::info!("Unmounting fs-kitty at {}", mount_point);
+
+    // Try regular unmount first
+    let output = Command::new("umount").arg(mount_point.as_str()).output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            tracing::info!("VFS unmounted successfully");
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            tracing::warn!("umount failed, trying force unmount: {}", stderr.trim());
+
+            // Try force unmount
+            let _ = Command::new("diskutil")
+                .arg("unmount")
+                .arg("force")
+                .arg(mount_point.as_str())
+                .output();
+        }
+        Err(e) => {
+            tracing::warn!("Failed to execute umount: {}", e);
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -324,7 +393,58 @@ async fn main() -> Result<()> {
             ));
         }
     };
-    tracing::info!("VFS (fs-kitty) listening on {}", args.vfs_bind);
+
+    // Get the actual bound address (important when using port 0)
+    let vfs_local_addr = vfs_listener.local_addr()?;
+    tracing::info!("VFS (fs-kitty) listening on {}", vfs_local_addr);
+
+    // Mount the VFS on macOS
+    #[cfg(target_os = "macos")]
+    let mount_point: Option<Utf8PathBuf> = {
+        // Extract host and port from the bound address (format: "host:port")
+        if let Endpoint::Tcp(addr_str) = &vfs_local_addr {
+            // Parse "host:port" string
+            let (host, port) = match addr_str.rsplit_once(':') {
+                Some((h, p)) => (h, p.parse::<u16>().ok()),
+                None => (addr_str.as_str(), None),
+            };
+
+            if let Some(port) = port {
+                // Mount at ~/.rhea (user's home directory)
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                let mount_path = Utf8PathBuf::from(format!("{}/.rhea", home));
+                match mount_fskitty(&mount_path, host, port) {
+                    Ok(()) => Some(mount_path),
+                    Err(e) => {
+                        tracing::warn!("Failed to mount VFS: {}", e);
+                        tracing::warn!("Build actions will fail until VFS is mounted");
+                        None
+                    }
+                }
+            } else {
+                tracing::warn!("Failed to parse port from VFS address: {}", addr_str);
+                None
+            }
+        } else {
+            tracing::warn!("VFS endpoint is not TCP, cannot mount fs-kitty");
+            None
+        }
+    };
+
+    // Set up shutdown handler to unmount
+    #[cfg(target_os = "macos")]
+    let mount_point_for_shutdown = mount_point.clone();
+
+    #[cfg(target_os = "macos")]
+    tokio::spawn(async move {
+        // Wait for ctrl-c
+        if let Ok(()) = tokio::signal::ctrl_c().await {
+            if let Some(mp) = mount_point_for_shutdown {
+                unmount_fskitty(&mp);
+            }
+            std::process::exit(0);
+        }
+    });
 
     loop {
         let (stream, peer_addr) = vfs_listener.accept().await?;
