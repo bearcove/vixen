@@ -141,6 +141,40 @@ async fn connect_to_cas(endpoint: &Endpoint) -> Result<vx_cass_proto::CassClient
     Ok(client)
 }
 
+/// Check if a socket endpoint is already in use by trying to connect
+#[cfg(unix)]
+async fn is_socket_in_use(path: &Utf8PathBuf) -> bool {
+    use tokio::net::UnixStream;
+    // Try to connect - if successful, someone is listening
+    UnixStream::connect(path.as_std_path()).await.is_ok()
+}
+
+/// Check if there's a stale mount at the rhea mount point
+#[cfg(target_os = "macos")]
+fn check_stale_mount(rhea_home: &Utf8PathBuf) -> Option<String> {
+    use std::process::Command;
+
+    // Check if ~/.rhea is a mount point
+    let output = Command::new("mount").output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    for line in stdout.lines() {
+        if line.contains(rhea_home.as_str()) && line.contains("fskitty") {
+            return Some(format!(
+                "Stale fs-kitty mount detected at {}\n\
+                 To clean up, run: umount {} or diskutil unmount force {}",
+                rhea_home, rhea_home, rhea_home
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn check_stale_mount(_rhea_home: &Utf8PathBuf) -> Option<String> {
+    None // Only macOS uses FSKit for now
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // If spawned by parent, die when parent dies
@@ -155,6 +189,35 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::from_env()?;
+
+    // Check for stale mounts
+    let rhea_home = args.toolchains_dir.parent().unwrap_or(&args.toolchains_dir);
+    if let Some(warning) = check_stale_mount(&rhea_home.to_path_buf()) {
+        tracing::warn!("{}", warning);
+    }
+
+    // Check if another rhea instance is already running
+    #[cfg(unix)]
+    {
+        if let Endpoint::Unix(ref path) = args.bind {
+            if path.exists() && is_socket_in_use(path).await {
+                return Err(eyre::eyre!(
+                    "Another vx-rhea instance is already running (socket {} is in use).\n\
+                     Kill the existing instance or use a different VX_RHEA endpoint.",
+                    path
+                ));
+            }
+        }
+        if let Endpoint::Unix(ref path) = args.vfs_bind {
+            if path.exists() && is_socket_in_use(path).await {
+                return Err(eyre::eyre!(
+                    "VFS socket {} is already in use.\n\
+                     Kill the existing instance or use a different VX_RHEA_VFS endpoint.",
+                    path
+                ));
+            }
+        }
+    }
 
     // Connect to CAS
     tracing::info!("Connecting to CAS at {}", args.cas_endpoint);
@@ -179,7 +242,16 @@ async fn main() -> Result<()> {
     let exec = RheaService::new(cas.clone(), args.toolchains_dir, args.registry_cache_dir, vfs.clone());
 
     // Start Rhea RPC server
-    let rhea_listener = Listener::bind(&args.bind).await?;
+    let rhea_listener = match Listener::bind(&args.bind).await {
+        Ok(l) => l,
+        Err(e) => {
+            return Err(eyre::eyre!(
+                "Failed to bind Rhea RPC socket at {}: {}\n\
+                 Another instance may be running, or the socket file is stale.",
+                args.bind, e
+            ));
+        }
+    };
     tracing::info!("Rhea RPC listening on {}", args.bind);
 
     let exec_for_rhea = exec.clone();
@@ -206,7 +278,16 @@ async fn main() -> Result<()> {
     });
 
     // Start VFS server (fs-kitty)
-    let vfs_listener = Listener::bind(&args.vfs_bind).await?;
+    let vfs_listener = match Listener::bind(&args.vfs_bind).await {
+        Ok(l) => l,
+        Err(e) => {
+            return Err(eyre::eyre!(
+                "Failed to bind VFS socket at {}: {}\n\
+                 Another instance may be running, or the socket file is stale.",
+                args.vfs_bind, e
+            ));
+        }
+    };
     tracing::info!("VFS (fs-kitty) listening on {}", args.vfs_bind);
 
     loop {
@@ -304,4 +385,171 @@ impl RheaService {
     async fn materialize_toolchain(&self, manifest_hash: Blake3Hash) -> RheaResult<Utf8PathBuf> {
         self.materialize_toolchain_impl(manifest_hash).await
     }
+
+    // ========================================================================
+    // VFS Prefix Management (for hermetic action execution)
+    // ========================================================================
+
+    /// Create a new action prefix in the VFS
+    ///
+    /// Returns the prefix ID (e.g., "build-01JFX...") which can be used
+    /// to add files and later clean up.
+    pub(crate) async fn create_action_prefix(&self) -> String {
+        use jiff::Timestamp;
+        // Generate a unique prefix ID using timestamp + random suffix
+        let ts = Timestamp::now().as_millisecond();
+        let prefix_id = format!("build-{:x}-{:04x}", ts, rand_u16());
+        let (id, _item_id) = self.vfs.create_prefix(prefix_id).await;
+        id
+    }
+
+    /// Add a toolchain to an action prefix
+    ///
+    /// Populates `<prefix>/toolchain/` with the toolchain's files from CAS.
+    pub(crate) async fn add_toolchain_to_prefix(
+        &self,
+        prefix_id: &str,
+        toolchain_manifest_hash: Blake3Hash,
+    ) -> RheaResult<()> {
+        // Get the toolchain manifest from CAS
+        let manifest = self
+            .cas
+            .get_manifest(toolchain_manifest_hash)
+            .await
+            .map_err(|e| RheaError::CasFetch(format!("{:?}", e)))?
+            .ok_or_else(|| {
+                RheaError::CasFetch(format!(
+                    "toolchain manifest {} not found",
+                    toolchain_manifest_hash
+                ))
+            })?;
+
+        // Add each output to the VFS prefix under toolchain/
+        for output in &manifest.outputs {
+            let path = format!("toolchain/{}", output.filename);
+            self.vfs
+                .add_file_to_prefix(
+                    prefix_id,
+                    &path,
+                    output.blob,
+                    0, // Size unknown, will be fetched on read
+                    output.executable,
+                )
+                .await;
+        }
+
+        Ok(())
+    }
+
+    /// Add a source tree to an action prefix
+    ///
+    /// Populates `<prefix>/src/` with the source tree's files from CAS.
+    pub(crate) async fn add_source_tree_to_prefix(
+        &self,
+        prefix_id: &str,
+        source_manifest_hash: Blake3Hash,
+    ) -> RheaResult<()> {
+        // Get the source manifest from CAS
+        let manifest = self
+            .cas
+            .get_manifest(source_manifest_hash)
+            .await
+            .map_err(|e| RheaError::CasFetch(format!("{:?}", e)))?
+            .ok_or_else(|| {
+                RheaError::CasFetch(format!(
+                    "source manifest {} not found",
+                    source_manifest_hash
+                ))
+            })?;
+
+        // Add each file to the VFS prefix under src/
+        for output in &manifest.outputs {
+            let path = format!("src/{}", output.filename);
+            self.vfs
+                .add_file_to_prefix(prefix_id, &path, output.blob, 0, output.executable)
+                .await;
+        }
+
+        Ok(())
+    }
+
+    /// Add a dependency artifact to an action prefix
+    ///
+    /// Places the dependency's rlib at `<prefix>/deps/<extern_name>.rlib`
+    pub(crate) async fn add_dep_to_prefix(
+        &self,
+        prefix_id: &str,
+        extern_name: &str,
+        manifest_hash: Blake3Hash,
+    ) -> RheaResult<()> {
+        // Get the dependency manifest
+        let manifest = self
+            .cas
+            .get_manifest(manifest_hash)
+            .await
+            .map_err(|e| RheaError::CasFetch(format!("{:?}", e)))?
+            .ok_or_else(|| {
+                RheaError::CasFetch(format!("dependency manifest {} not found", manifest_hash))
+            })?;
+
+        // Find the rlib output
+        let rlib = manifest
+            .outputs
+            .iter()
+            .find(|o| o.logical == "rlib")
+            .ok_or_else(|| {
+                RheaError::CasFetch(format!("no rlib in manifest for {}", extern_name))
+            })?;
+
+        let path = format!("deps/lib{}.rlib", extern_name);
+        self.vfs
+            .add_file_to_prefix(prefix_id, &path, rlib.blob, 0, false)
+            .await;
+
+        Ok(())
+    }
+
+    /// Create the output directory in a prefix
+    pub(crate) async fn create_output_dir_in_prefix(&self, prefix_id: &str) {
+        self.vfs.add_dir_to_prefix(prefix_id, "out").await;
+    }
+
+    /// Flush all written files in a prefix to CAS
+    ///
+    /// Returns a map of relative paths (e.g., "out/libfoo.rlib") to CAS hashes.
+    pub(crate) async fn flush_prefix_outputs(
+        &self,
+        prefix_id: &str,
+    ) -> HashMap<String, Blake3Hash> {
+        self.vfs.flush_prefix_to_cas(prefix_id).await
+    }
+
+    /// Clean up an action prefix
+    pub(crate) async fn remove_action_prefix(&self, prefix_id: &str) {
+        self.vfs.remove_prefix(prefix_id).await;
+    }
+
+    /// Get the VFS mount path for an action prefix
+    ///
+    /// This is the path that should be passed to sandboxed processes.
+    /// Format: ~/.rhea/<prefix_id>/
+    pub(crate) fn get_prefix_mount_path(&self, prefix_id: &str) -> Utf8PathBuf {
+        // For now, return a path relative to rhea home
+        // In the future, this will be the actual mount point
+        let rhea_home = self
+            .toolchains_dir
+            .parent()
+            .unwrap_or(&self.toolchains_dir);
+        rhea_home.join(prefix_id)
+    }
+}
+
+/// Generate a random u16 for prefix uniqueness
+fn rand_u16() -> u16 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    (nanos & 0xFFFF) as u16
 }
